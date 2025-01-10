@@ -9,6 +9,7 @@
   "private": false,
   "devDependencies": {
     "@tsconfig/recommended": "^1.0.7",
+    "@types/imapflow": "^1.0.19",
     "@types/node": "^22.3.0",
     "typescript": "^5.5.2"
   },
@@ -27,6 +28,8 @@
   ],
   "type": "module",
   "dependencies": {
-    "@biomejs/biome": "^1.9.4"
+    "@biomejs/biome": "^1.9.4",
+    "dbus-next": "^0.10.2",
+    "imapflow": "^1.0.174"
   }
 }
