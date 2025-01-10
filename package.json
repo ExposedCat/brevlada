@@ -11,6 +11,7 @@
     "@tsconfig/recommended": "^1.0.7",
     "@types/imapflow": "^1.0.19",
     "@types/node": "^22.3.0",
+    "@types/nodemailer": "^6.4.17",
     "typescript": "^5.5.2"
   },
   "scripts": {
@@ -30,6 +31,7 @@
   "dependencies": {
     "@biomejs/biome": "^1.9.4",
     "dbus-next": "^0.10.2",
-    "imapflow": "^1.0.174"
+    "imapflow": "^1.0.174",
+    "nodemailer": "^6.9.16"
   }
 }
