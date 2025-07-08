@@ -1,11 +1,8 @@
-import gi
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Gtk
+from utils.toolkit import Gtk
 
 class AppButton(Gtk.Button):
 
-    def __init__(self, variant="default", expandable=False, **kwargs):
+    def __init__(self, variant="default", expandable=False, class_names=None, children=None, **kwargs):
         super().__init__(**kwargs)
 
         self.add_css_class("flat")
@@ -17,6 +14,20 @@ class AppButton(Gtk.Button):
             pass
         elif variant == "primary":
             pass
+
+        if class_names:
+            if isinstance(class_names, str):
+                self.add_css_class(class_names)
+            elif isinstance(class_names, list):
+                for class_name in class_names:
+                    self.add_css_class(class_name)
+
+        if children:
+            if isinstance(children, list):
+                for child in children:
+                    self.set_child(child)
+            else:
+                self.set_child(children)
 
         self._selected = False
 

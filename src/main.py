@@ -1,20 +1,11 @@
-import gi
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib, Gio
+from utils.toolkit import Gtk, Adw, GLib, Gio
 import dbus
 import imaplib
 import ssl
 import threading
-import base64
 import os
 import logging
 from components.button import AppButton
-try:
-    from resources import load_resources
-    load_resources()
-except ImportError:
-    pass
 from components.container import Sidebar, NavigationList, ContentItem, ScrollContainer, ButtonContainer, ContentContainer
 from components.ui import AppIcon, AppText
 
@@ -24,10 +15,15 @@ class MyWindow(Adw.ApplicationWindow):
         self.set_title("Online Accounts")
         self.set_default_size(1200, 800)
 
-        # Setup logging
         logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-        # Register icon theme
+        try:
+            resource = Gio.resource_load('resources.gresource')
+            Gio.resources_register(resource)
+            logging.info("Resources loaded successfully")
+        except Exception as e:
+            logging.error(f"Could not load resources: {e}")
+
         display = self.get_display()
         if display:
             icon_theme = Gtk.IconTheme.get_for_display(display)
@@ -75,7 +71,12 @@ class MyWindow(Adw.ApplicationWindow):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
-        self.content_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        self.content_area = ContentContainer(
+            spacing=20,
+            class_names="main-content",
+            children=[]
+        )
+        self.content_area.set_orientation(Gtk.Orientation.VERTICAL)
         self.content_area.set_margin_top(30)
         self.content_area.set_margin_bottom(30)
         self.content_area.set_margin_start(30)
@@ -83,15 +84,23 @@ class MyWindow(Adw.ApplicationWindow):
         self.content_area.set_vexpand(True)
         self.content_area.set_hexpand(True)
 
-        self.empty_state = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=15)
+        self.empty_state = ContentContainer(
+            spacing=15,
+            class_names="empty-state"
+        )
+        self.empty_state.set_orientation(Gtk.Orientation.VERTICAL)
         self.empty_state.set_halign(Gtk.Align.CENTER)
         self.empty_state.set_valign(Gtk.Align.CENTER)
 
-        empty_icon = Gtk.Image.new_from_icon_name("mail-unread-symbolic")
+        empty_icon = AppIcon("mail-unread-symbolic", class_names="empty-icon")
         empty_icon.set_pixel_size(64)
         empty_icon.set_opacity(0.5)
 
-        empty_label = Gtk.Label()
+        empty_label = AppText(
+            text="Select an account to view details",
+            class_names="empty-label",
+            expandable=False
+        )
         empty_label.set_markup("<span size='large'>Select an account to view details</span>")
         empty_label.set_opacity(0.7)
 
@@ -100,19 +109,24 @@ class MyWindow(Adw.ApplicationWindow):
 
         self.content_area.append(self.empty_state)
 
-        self.account_details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=15)
+        self.account_details = ContentContainer(
+            spacing=15,
+            class_names="account-details"
+        )
+        self.account_details.set_orientation(Gtk.Orientation.VERTICAL)
         self.account_details.set_visible(False)
         self.content_area.append(self.account_details)
 
-        content_scroll = Gtk.ScrolledWindow()
-        content_scroll.set_vexpand(True)
-        content_scroll.set_child(self.content_area)
+        content_scroll = ScrollContainer(
+            class_names="content-scroll",
+            children=self.content_area
+        )
 
-        sidebar = Sidebar()
+        sidebar = Sidebar(class_names="main-sidebar")
 
-        sidebar_scroll = ScrollContainer()
+        sidebar_scroll = ScrollContainer(class_names="sidebar-scroll")
 
-        self.sidebar_list = NavigationList()
+        self.sidebar_list = NavigationList(class_names="main-navigation")
         self.sidebar_list.connect("row-selected", self.on_account_selected)
 
         sidebar_scroll.set_child(self.sidebar_list)
@@ -129,7 +143,6 @@ class MyWindow(Adw.ApplicationWindow):
 
         self.accounts_data = []
 
-        # Track expanded state of folders (nested structure)
         self.expanded_folders = {}
 
         self.load_accounts()
@@ -149,9 +162,9 @@ class MyWindow(Adw.ApplicationWindow):
         self.selected_folder_button = None
         button.set_selected(True)
 
+        # Select the row in the sidebar
+        self.sidebar_list.select_row(account_row)
         self.on_account_selected(self.sidebar_list, account_row)
-
-
 
     def get_folder_icon(self, folder_name):
         folder_upper = folder_name.upper()
@@ -178,13 +191,13 @@ class MyWindow(Adw.ApplicationWindow):
             return "folder-symbolic"
 
     def on_expand_clicked(self, button, account_row):
-        if account_row.expanded:
+        if getattr(account_row, 'expanded', False):
             self.collapse_account(account_row)
         else:
             self.expand_account(account_row)
 
     def on_folder_button_clicked(self, button, folder_row):
-        if folder_row.has_children:
+        if getattr(folder_row, 'has_children', False):
             account_key = folder_row.parent_account["email"]
             folder_key = f"{account_key}:{folder_row.full_path}"
 
@@ -204,44 +217,39 @@ class MyWindow(Adw.ApplicationWindow):
 
             self.on_account_selected(self.sidebar_list, folder_row)
 
-    def get_oauth2_token(self, account_path):
+    def get_oauth2_token(self, account_data):
         try:
-            logging.info(f"Getting OAuth2 token for account: {account_path}")
             bus = dbus.SessionBus()
-            goa_proxy = bus.get_object('org.gnome.OnlineAccounts', account_path)
+            account_obj = bus.get_object('org.gnome.OnlineAccounts', account_data['path'])
+            oauth2_props = dbus.Interface(account_obj, 'org.gnome.OnlineAccounts.OAuth2Based')
+            access_token = oauth2_props.GetAccessToken()
+            return access_token[0] if access_token else None
 
-            # Ensure credentials are fresh before getting token
-            account_interface = dbus.Interface(goa_proxy, 'org.gnome.OnlineAccounts.Account')
-            try:
-                expires_in = account_interface.EnsureCredentials()
-                logging.info(f"Ensured credentials, expires in: {expires_in} seconds")
-            except Exception as e:
-                logging.warning(f"Could not ensure credentials: {e}")
-
-            oauth2_interface = dbus.Interface(goa_proxy, 'org.gnome.OnlineAccounts.OAuth2Based')
-            token_info = oauth2_interface.GetAccessToken()
-            if token_info:
-                logging.info(f"Successfully got OAuth2 token, expires in: {token_info[1]} seconds")
-                return token_info[0]
-            else:
-                logging.warning("OAuth2 token is empty")
-                return None
         except Exception as e:
-            logging.error(f"Failed to get OAuth2 token: {e}")
+            logging.error(f"Error getting OAuth2 token: {e}")
             return None
 
-    def get_mail_settings(self, account_path):
+    def get_mail_settings(self, account_data):
         try:
-            logging.info(f"Getting mail settings for account: {account_path}")
             bus = dbus.SessionBus()
-            goa_proxy = bus.get_object('org.gnome.OnlineAccounts', account_path)
-            props_interface = dbus.Interface(goa_proxy, 'org.freedesktop.DBus.Properties')
-            mail_props = props_interface.GetAll('org.gnome.OnlineAccounts.Mail')
-            logging.info(f"Mail settings: {dict(mail_props)}")
-            return mail_props
+            account_obj = bus.get_object('org.gnome.OnlineAccounts', account_data['path'])
+            mail_props = dbus.Interface(account_obj, 'org.freedesktop.DBus.Properties')
+
+            # Get all mail properties at once
+            mail_properties = mail_props.GetAll('org.gnome.OnlineAccounts.Mail')
+
+            return {
+                'email': mail_properties.get('EmailAddress', ''),
+                'imap_host': mail_properties.get('ImapHost', 'imap.gmail.com'),
+                'imap_port': mail_properties.get('ImapPort', 993),
+                'imap_use_ssl': mail_properties.get('ImapUseSsl', True),
+                'imap_use_tls': mail_properties.get('ImapUseTls', False),
+                'imap_username': mail_properties.get('ImapUserName', mail_properties.get('EmailAddress', ''))
+            }
+
         except Exception as e:
-            logging.error(f"Failed to get mail settings: {e}")
-            return {}
+            logging.error(f"Error getting mail settings: {e}")
+            return None
 
     def authenticate_imap_oauth2(self, mail, email, token):
         logging.info(f"Attempting OAuth2 authentication for {email}")
@@ -262,15 +270,12 @@ class MyWindow(Adw.ApplicationWindow):
             logging.error(f"OAuth2 authentication failed: {e}")
             raise
 
-
-
     def fetch_imap_folders(self, account_data, callback):
         def fetch_folders():
             try:
                 email = account_data["email"]
 
-                # Get mail settings from GNOME Online Accounts
-                mail_settings = self.get_mail_settings(account_data["path"])
+                mail_settings = self.get_mail_settings(account_data)
 
                 if not mail_settings:
                     error_msg = "Error: Could not get mail settings"
@@ -279,11 +284,10 @@ class MyWindow(Adw.ApplicationWindow):
                     GLib.idle_add(callback, [error_msg])
                     return
 
-                server = mail_settings.get('ImapHost', 'imap.gmail.com')
-                use_ssl = mail_settings.get('ImapUseSsl', True)
-                username = mail_settings.get('ImapUserName', email)
+                server = mail_settings.get('imap_host', 'imap.gmail.com')
+                use_ssl = mail_settings.get('imap_use_ssl', True)
+                username = mail_settings.get('imap_username', email)
 
-                # Check if account has OAuth2 interface
                 auth_xoauth2 = account_data.get("has_oauth2", False)
 
                 logging.info(f"Connecting to IMAP server: {server}, SSL: {use_ssl}, OAuth2: {auth_xoauth2}")
@@ -302,10 +306,9 @@ class MyWindow(Adw.ApplicationWindow):
                     logging.info("IMAP connection established")
                     authenticated = False
 
-                    # Try OAuth2 authentication
                     if auth_xoauth2:
                         logging.info("Account supports OAuth2, attempting authentication")
-                        token = self.get_oauth2_token(account_data["path"])
+                        token = self.get_oauth2_token(account_data)
                         if token:
                             try:
                                 self.authenticate_imap_oauth2(mail, username, token)
@@ -325,7 +328,6 @@ class MyWindow(Adw.ApplicationWindow):
                         GLib.idle_add(callback, [error_msg])
                         return
 
-                    # List folders
                     logging.info("Listing IMAP folders")
                     status, folder_list = mail.list()
                     logging.info(f"IMAP LIST status: {status}, found {len(folder_list) if folder_list else 0} folders")
@@ -334,20 +336,23 @@ class MyWindow(Adw.ApplicationWindow):
                     if status == 'OK':
                         folders = []
                         for folder_info in folder_list:
-                            if isinstance(folder_info, bytes):
-                                folder_info = folder_info.decode('utf-8')
+                            if folder_info:
+                                if isinstance(folder_info, bytes):
+                                    folder_info = folder_info.decode('utf-8')
+                                elif isinstance(folder_info, tuple):
+                                    folder_info = folder_info[0].decode('utf-8') if folder_info[0] else ''
+                                else:
+                                    folder_info = str(folder_info)
 
-                            # Parse folder name from IMAP LIST response
-                            parts = folder_info.split('"')
-                            if len(parts) >= 3:
-                                folder_name = parts[-2]
-                                if folder_name and folder_name not in folders:
-                                    folders.append(folder_name)
+                                parts = folder_info.split('"')
+                                if len(parts) >= 3:
+                                    folder_name = parts[-2]
+                                    if folder_name and folder_name not in folders:
+                                        folders.append(folder_name)
 
                         if not folders:
                             folders = ["INBOX"]
 
-                        # Sort folders by importance
                         folders.sort(key=lambda x: (
                             0 if x.upper() == 'INBOX' else
                             1 if any(sent in x.upper() for sent in ['SENT', 'OUTBOX']) else
@@ -369,7 +374,7 @@ class MyWindow(Adw.ApplicationWindow):
                     elif "SSL" in str(e) or "certificate" in str(e).lower():
                         error_msg = "Error: SSL/TLS connection failed"
                     else:
-                        error_msg = f"Error: IMAP connection failed"
+                        error_msg = "Error: IMAP connection failed"
                     folders = [error_msg]
 
                 self.account_folders[account_data["path"]] = folders
@@ -387,7 +392,7 @@ class MyWindow(Adw.ApplicationWindow):
         thread.start()
 
     def expand_account(self, account_row):
-        account_row.expanded = True
+        setattr(account_row, 'expanded', True)
         account_row.expand_button.set_icon_name("pan-down-symbolic")
 
         account_path = account_row.account_data["path"]
@@ -403,26 +408,30 @@ class MyWindow(Adw.ApplicationWindow):
             self.fetch_imap_folders(account_row.account_data, on_folders_fetched)
 
     def add_loading_row(self, account_row):
-        loading_row = Gtk.ListBoxRow()
-        loading_row.is_loading = True
-        loading_row.parent_account = account_row.account_data
+        loading_row = ContentItem(class_names="loading-row")
+        setattr(loading_row, 'is_loading', True)
+        setattr(loading_row, 'parent_account', account_row.account_data)
 
-        loading_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        loading_box.set_margin_top(8)
-        loading_box.set_margin_bottom(8)
-        loading_box.set_margin_start(32)
-        loading_box.set_margin_end(12)
+        loading_container = ButtonContainer(
+            spacing=10,
+            class_names="loading-container"
+        )
+        loading_container.set_margin_top(8)
+        loading_container.set_margin_bottom(8)
+        loading_container.set_margin_start(32)
+        loading_container.set_margin_end(12)
 
-        spinner = Gtk.Spinner()
-        spinner.start()
-        loading_box.append(spinner)
+        loading_spinner = Gtk.Spinner()
+        loading_spinner.start()
+        loading_container.append(loading_spinner)
 
-        loading_label = Gtk.Label(label="Loading folders...")
-        loading_label.set_halign(Gtk.Align.START)
-        loading_label.add_css_class("dim-label")
-        loading_box.append(loading_label)
+        loading_text = AppText(
+            text="Loading folders...",
+            class_names=["loading-text", "dim-label"]
+        )
+        loading_container.append(loading_text)
 
-        loading_row.set_child(loading_box)
+        loading_row.set_child(loading_container)
 
         account_index = 0
         for i, row in enumerate(self.get_sidebar_rows()):
@@ -434,12 +443,11 @@ class MyWindow(Adw.ApplicationWindow):
 
     def remove_loading_row(self, account_row):
         for row in self.get_sidebar_rows():
-            if hasattr(row, 'is_loading') and row.is_loading and row.parent_account == account_row.account_data:
+            if hasattr(row, 'is_loading') and hasattr(row, 'parent_account') and getattr(row, 'parent_account') == account_row.account_data:
                 self.sidebar_list.remove(row)
                 break
 
     def organize_folders_hierarchy(self, folders):
-        """Organize folders into a true nested hierarchy"""
         root_folders = {}
 
         for folder in folders:
@@ -447,10 +455,8 @@ class MyWindow(Adw.ApplicationWindow):
                 root_folders[folder] = {'name': folder, 'full_path': folder, 'children': {}, 'is_error': True}
                 continue
 
-            # Split folder path into parts
             parts = []
             if folder.startswith("[") and "]" in folder:
-                # Handle format like [Gmail]/Sent
                 bracket_part = folder.split("]")[0] + "]"
                 remaining = folder[len(bracket_part):]
                 parts.append(bracket_part)
@@ -461,7 +467,6 @@ class MyWindow(Adw.ApplicationWindow):
             else:
                 parts = folder.split("/")
 
-            # Build nested structure
             current_level = root_folders
             current_path = ""
 
@@ -490,89 +495,92 @@ class MyWindow(Adw.ApplicationWindow):
                 account_index = i
                 break
 
-        # Organize folders into hierarchy
         organized_folders = self.organize_folders_hierarchy(folders)
         current_index = 0
 
-        # Add folders recursively
         current_index = self.add_folder_level(organized_folders, account_row, account_index + 1, current_index, 0)
 
     def add_folder_level(self, folder_dict, account_row, insert_position, current_index, level):
-        """Recursively add folders at the current level"""
         for folder_name, folder_data in sorted(folder_dict.items()):
-            # Skip INBOX folder at root level
             if level == 0 and folder_data['full_path'].upper() == 'INBOX':
                 continue
             if folder_data['is_error']:
-                error_row = ContentItem()
-                error_row.is_folder = True
-                error_row.folder_name = folder_data['name']
-                error_row.parent_account = account_row.account_data
+                error_row = ContentItem(class_names="error-folder-item")
+                setattr(error_row, 'is_folder', True)
+                setattr(error_row, 'folder_name', folder_data['name'])
+                setattr(error_row, 'parent_account', account_row.account_data)
 
-                button_container = ButtonContainer()
-                button_container.set_margin_start(45 * (level + 1))
+                error_container = ButtonContainer(class_names="error-container")
+                error_container.set_margin_start(45 * (level + 1))
 
-                error_button = AppButton(variant="primary", expandable=True)
-                error_box = ContentContainer()
+                error_button = AppButton(
+                    variant="primary",
+                    expandable=True,
+                    class_names=["error-button"]
+                )
+                error_box = ContentContainer(class_names="error-content")
 
-                error_icon = AppIcon("dialog-error-symbolic")
-                error_text = AppText(folder_data['name'])
+                error_icon = AppIcon("dialog-error-symbolic", class_names="error-icon")
+                error_text = AppText(folder_data['name'], class_names="error-text")
                 error_box.append(error_icon)
                 error_box.append(error_text)
 
                 error_button.set_child(error_box)
-                button_container.append(error_button)
+                error_container.append(error_button)
 
-                error_row.set_child(button_container)
-                error_row.main_box = button_container
-                error_row.folder_button = error_button
+                error_row.set_child(error_container)
+                setattr(error_row, 'main_box', error_container)
+                setattr(error_row, 'folder_button', error_button)
 
                 self.sidebar_list.insert(error_row, insert_position + current_index)
                 current_index += 1
             else:
-                folder_row = ContentItem()
-                folder_row.is_folder = True
-                folder_row.folder_name = folder_data['name']
-                folder_row.full_path = folder_data['full_path']
-                folder_row.parent_account = account_row.account_data
-                folder_row.has_children = len(folder_data['children']) > 0
-                folder_row.children_data = folder_data['children']
-                folder_row.level = level
+                folder_row = ContentItem(class_names="folder-item")
+                setattr(folder_row, 'is_folder', True)
+                setattr(folder_row, 'folder_name', folder_data['name'])
+                setattr(folder_row, 'full_path', folder_data['full_path'])
+                setattr(folder_row, 'parent_account', account_row.account_data)
+                setattr(folder_row, 'has_children', len(folder_data['children']) > 0)
+                setattr(folder_row, 'children_data', folder_data['children'])
+                setattr(folder_row, 'level', level)
 
                 icon_name = self.get_folder_icon(folder_data['full_path'])
 
-                button_container = ButtonContainer()
-                button_container.set_margin_start(45 * (level + 1))
+                folder_container = ButtonContainer(class_names="folder-container")
+                folder_container.set_margin_start(45 * (level + 1))
 
-                folder_button = AppButton(variant="primary", expandable=True)
-                folder_box = ContentContainer()
+                folder_button = AppButton(
+                    variant="primary",
+                    expandable=True,
+                    class_names=["folder-button"]
+                )
+                folder_box = ContentContainer(class_names="folder-content")
 
-                if folder_row.has_children:
+                if getattr(folder_row, 'has_children'):
                     account_key = account_row.account_data["email"]
                     folder_key = f"{account_key}:{folder_data['full_path']}"
                     is_expanded = self.expanded_folders.get(folder_key, False)
-                    arrow_icon = AppIcon("pan-end-symbolic" if not is_expanded else "pan-down-symbolic")
+                    arrow_icon = AppIcon("pan-end-symbolic" if not is_expanded else "pan-down-symbolic", class_names="arrow-icon")
                     folder_box.append(arrow_icon)
                 else:
-                    folder_icon = AppIcon(icon_name)
+                    folder_icon = AppIcon(icon_name, class_names="folder-icon")
                     folder_box.append(folder_icon)
 
-                folder_text = AppText(folder_data['name'])
+                folder_text = AppText(folder_data['name'], class_names="folder-text")
                 folder_box.append(folder_text)
 
                 folder_button.set_child(folder_box)
                 folder_button.connect("clicked", self.on_folder_button_clicked, folder_row)
-                button_container.append(folder_button)
+                folder_container.append(folder_button)
 
-                folder_row.set_child(button_container)
-                folder_row.main_box = button_container
-                folder_row.folder_button = folder_button
+                folder_row.set_child(folder_container)
+                setattr(folder_row, 'main_box', folder_container)
+                setattr(folder_row, 'folder_button', folder_button)
 
                 self.sidebar_list.insert(folder_row, insert_position + current_index)
                 current_index += 1
 
-                # Add children if folder is expanded
-                if folder_row.has_children:
+                if getattr(folder_row, 'has_children'):
                     account_key = account_row.account_data["email"]
                     folder_key = f"{account_key}:{folder_data['full_path']}"
                     if self.expanded_folders.get(folder_key, False):
@@ -592,23 +600,20 @@ class MyWindow(Adw.ApplicationWindow):
 
         self.expanded_folders[folder_key] = True
 
-        # Update the arrow icon
-        if folder_row.has_children:
+        if getattr(folder_row, 'has_children'):
             folder_box = folder_row.folder_button.get_child()
             arrow_icon = folder_box.get_first_child()
             arrow_icon.set_from_icon_name("pan-down-symbolic")
 
-        # Find the position of this folder row
         folder_index = 0
         for i, row in enumerate(self.get_sidebar_rows()):
             if row == folder_row:
                 folder_index = i
                 break
 
-        # Add children after the parent folder
         account_row = None
         for row in self.get_sidebar_rows():
-            if hasattr(row, 'account_data') and row.account_data["email"] == account_key:
+            if hasattr(row, 'account_data') and getattr(row, 'account_data')["email"] == account_key:
                 account_row = row
                 break
 
@@ -627,22 +632,18 @@ class MyWindow(Adw.ApplicationWindow):
 
         self.expanded_folders[folder_key] = False
 
-        # Update the arrow icon
-        if folder_row.has_children:
+        if getattr(folder_row, 'has_children'):
             folder_box = folder_row.folder_button.get_child()
             arrow_icon = folder_box.get_first_child()
             arrow_icon.set_from_icon_name("pan-end-symbolic")
 
-        # Remove all descendant rows for this folder
         self.remove_folder_descendants(folder_row)
 
     def remove_folder_descendants(self, parent_folder_row):
-        """Remove all descendants of a folder recursively"""
         rows_to_remove = []
         parent_level = parent_folder_row.level
         account_key = parent_folder_row.parent_account["email"]
 
-        # Find all rows that are descendants of this folder
         found_parent = False
         for row in self.get_sidebar_rows():
             if row == parent_folder_row:
@@ -650,26 +651,23 @@ class MyWindow(Adw.ApplicationWindow):
                 continue
 
             if found_parent and hasattr(row, 'level') and hasattr(row, 'parent_account'):
-                if row.parent_account["email"] == account_key:
-                    if row.level > parent_level:
+                if getattr(row, 'parent_account')["email"] == account_key:
+                    if getattr(row, 'level') > parent_level:
                         rows_to_remove.append(row)
-                        # Also mark this folder as collapsed if it was expanded
                         if hasattr(row, 'full_path'):
                             descendant_key = f"{account_key}:{row.full_path}"
                             if descendant_key in self.expanded_folders:
                                 self.expanded_folders[descendant_key] = False
                     else:
-                        # We've reached a folder at the same level or higher, stop
                         break
 
         for row in rows_to_remove:
             self.sidebar_list.remove(row)
 
     def collapse_account(self, account_row):
-        account_row.expanded = False
+        setattr(account_row, 'expanded', False)
         account_row.expand_button.set_icon_name("pan-end-symbolic")
 
-        # Reset folder expansion state for this account
         account_email = account_row.account_data["email"]
         keys_to_remove = []
         for key in self.expanded_folders:
@@ -679,10 +677,9 @@ class MyWindow(Adw.ApplicationWindow):
         for key in keys_to_remove:
             del self.expanded_folders[key]
 
-        # Remove all folder rows for this account
         rows_to_remove = []
         for row in self.get_sidebar_rows():
-            if hasattr(row, 'parent_account') and row.parent_account["email"] == account_email:
+            if hasattr(row, 'parent_account') and getattr(row, 'parent_account')["email"] == account_email:
                 rows_to_remove.append(row)
 
         for row in rows_to_remove:
@@ -690,10 +687,13 @@ class MyWindow(Adw.ApplicationWindow):
 
     def get_sidebar_rows(self):
         rows = []
-        row = self.sidebar_list.get_first_child()
-        while row:
+        index = 0
+        while True:
+            row = self.sidebar_list.get_row_at_index(index)
+            if row is None:
+                break
             rows.append(row)
-            row = row.get_next_sibling()
+            index += 1
         return rows
 
     def on_paned_position_changed(self, paned, param):
@@ -720,31 +720,52 @@ class MyWindow(Adw.ApplicationWindow):
                 self.account_details.remove(child)
                 child = self.account_details.get_first_child()
 
-            name_label = Gtk.Label()
+            name_label = AppText(
+                text=folder_full_path,
+                class_names="folder-title"
+            )
             name_label.set_markup(f"<span size='xx-large' weight='bold'>{folder_full_path}</span>")
             name_label.set_halign(Gtk.Align.START)
             name_label.set_margin_bottom(15)
             self.account_details.append(name_label)
 
-            account_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-            account_label = Gtk.Label(label="Account:")
+            account_container = ContentContainer(
+                spacing=10,
+                class_names="account-info-row"
+            )
+            account_container.set_orientation(Gtk.Orientation.HORIZONTAL)
+            account_label = AppText(
+                text="Account:",
+                class_names=["dim-label"]
+            )
             account_label.set_halign(Gtk.Align.START)
-            account_label.add_css_class("dim-label")
-            account_value = Gtk.Label(label=account_data["account_name"])
+            account_value = AppText(
+                text=account_data["account_name"],
+                class_names="account-value"
+            )
             account_value.set_halign(Gtk.Align.START)
-            account_box.append(account_label)
-            account_box.append(account_value)
-            self.account_details.append(account_box)
+            account_container.append(account_label)
+            account_container.append(account_value)
+            self.account_details.append(account_container)
 
-            folder_info_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-            folder_info_label = Gtk.Label(label="Folder:")
+            folder_info_container = ContentContainer(
+                spacing=10,
+                class_names="folder-info-row"
+            )
+            folder_info_container.set_orientation(Gtk.Orientation.HORIZONTAL)
+            folder_info_label = AppText(
+                text="Folder:",
+                class_names=["dim-label"]
+            )
             folder_info_label.set_halign(Gtk.Align.START)
-            folder_info_label.add_css_class("dim-label")
-            folder_info_value = Gtk.Label(label=folder_full_path)
+            folder_info_value = AppText(
+                text=folder_full_path,
+                class_names="folder-value"
+            )
             folder_info_value.set_halign(Gtk.Align.START)
-            folder_info_box.append(folder_info_label)
-            folder_info_box.append(folder_info_value)
-            self.account_details.append(folder_info_box)
+            folder_info_container.append(folder_info_label)
+            folder_info_container.append(folder_info_value)
+            self.account_details.append(folder_info_container)
 
             self.empty_state.set_visible(False)
             self.account_details.set_visible(True)
@@ -763,31 +784,52 @@ class MyWindow(Adw.ApplicationWindow):
             self.account_details.remove(child)
             child = self.account_details.get_first_child()
 
-        name_label = Gtk.Label()
+        name_label = AppText(
+            text=account_data['account_name'],
+            class_names="account-title"
+        )
         name_label.set_markup(f"<span size='xx-large' weight='bold'>{account_data['account_name']}</span>")
         name_label.set_halign(Gtk.Align.START)
         name_label.set_margin_bottom(15)
         self.account_details.append(name_label)
 
-        provider_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        provider_label = Gtk.Label(label="Provider:")
+        provider_container = ContentContainer(
+            spacing=10,
+            class_names="provider-info-row"
+        )
+        provider_container.set_orientation(Gtk.Orientation.HORIZONTAL)
+        provider_label = AppText(
+            text="Provider:",
+            class_names=["dim-label"]
+        )
         provider_label.set_halign(Gtk.Align.START)
-        provider_label.add_css_class("dim-label")
-        provider_value = Gtk.Label(label=account_data["provider"])
+        provider_value = AppText(
+            text=account_data["provider"],
+            class_names="provider-value"
+        )
         provider_value.set_halign(Gtk.Align.START)
-        provider_box.append(provider_label)
-        provider_box.append(provider_value)
-        self.account_details.append(provider_box)
+        provider_container.append(provider_label)
+        provider_container.append(provider_value)
+        self.account_details.append(provider_container)
 
-        email_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        email_label = Gtk.Label(label="Email:")
+        email_container = ContentContainer(
+            spacing=10,
+            class_names="email-info-row"
+        )
+        email_container.set_orientation(Gtk.Orientation.HORIZONTAL)
+        email_label = AppText(
+            text="Email:",
+            class_names=["dim-label"]
+        )
         email_label.set_halign(Gtk.Align.START)
-        email_label.add_css_class("dim-label")
-        email_value = Gtk.Label(label=account_data["email"])
+        email_value = AppText(
+            text=account_data["email"],
+            class_names="email-value"
+        )
         email_value.set_halign(Gtk.Align.START)
-        email_box.append(email_label)
-        email_box.append(email_value)
-        self.account_details.append(email_box)
+        email_container.append(email_label)
+        email_container.append(email_value)
+        self.account_details.append(email_container)
 
         self.empty_state.set_visible(False)
         self.account_details.set_visible(True)
@@ -795,17 +837,13 @@ class MyWindow(Adw.ApplicationWindow):
     def load_accounts(self):
         try:
             bus = dbus.SessionBus()
+            goa_proxy = bus.get_object('org.gnome.OnlineAccounts', '/org/gnome/OnlineAccounts')
 
-            goa_proxy = bus.get_object('org.gnome.OnlineAccounts',
-                                      '/org/gnome/OnlineAccounts')
-
-            obj_manager = dbus.Interface(goa_proxy,
-                                        'org.freedesktop.DBus.ObjectManager')
+            obj_manager = dbus.Interface(goa_proxy, 'org.freedesktop.DBus.ObjectManager')
 
             managed_objects = obj_manager.GetManagedObjects()
 
             found_accounts = False
-
             self.accounts_data = []
 
             for path, interfaces in managed_objects.items():
@@ -821,77 +859,119 @@ class MyWindow(Adw.ApplicationWindow):
                         mail = managed_objects[path]['org.gnome.OnlineAccounts.Mail']
                         email_address = mail.get('EmailAddress', 'No email address')
 
+                        # Use email address as account name if PresentationIdentity is not available or empty
+                        if (account_name == 'Unknown' or not account_name) and email_address != 'No email address':
+                            account_name = email_address
+
                         has_oauth2 = 'org.gnome.OnlineAccounts.OAuth2Based' in managed_objects[path]
 
-                        self.accounts_data.append({
+                        account_data = {
                             "path": path,
                             "account_name": account_name,
                             "provider": provider,
                             "email": email_address,
                             "has_oauth2": has_oauth2
-                        })
+                        }
 
-                        account_row = Gtk.ListBoxRow()
-                        account_row.account_data = self.accounts_data[-1]
-                        account_row.expanded = False
+                        self.accounts_data.append(account_data)
 
-                        button_container = ButtonContainer()
+                        account_row = ContentItem(class_names="account-item")
+                        setattr(account_row, 'account_data', account_data)
+                        setattr(account_row, 'expanded', False)
 
-                        expand_button = AppButton(variant="expand")
+                        account_container = ButtonContainer(
+                            spacing=6,
+                            class_names="account-container"
+                        )
+
+                        expand_button = AppButton(
+                            variant="expand",
+                            class_names=["expand-button", "account-expand"]
+                        )
                         expand_button.set_icon_name("pan-end-symbolic")
                         expand_button.connect("clicked", self.on_expand_clicked, account_row)
-                        button_container.append(expand_button)
 
-                        account_button = AppButton(variant="primary", expandable=True)
+                        account_button = AppButton(
+                            variant="primary",
+                            expandable=True,
+                            class_names=["account-button"]
+                        )
 
-                        account_box = ContentContainer()
-                        account_icon = AppIcon("mail-unread-symbolic")
-                        account_text = AppText(email_address)
+                        account_box = ContentContainer(
+                            class_names="account-content"
+                        )
+                        account_icon = AppIcon(
+                            "mail-unread-symbolic",
+                            class_names="account-icon"
+                        )
+                        account_text = AppText(
+                            text=account_name,
+                            class_names="account-text"
+                        )
                         account_box.append(account_icon)
                         account_box.append(account_text)
 
                         account_button.set_child(account_box)
                         account_button.connect("clicked", self.on_account_button_clicked, account_row)
-                        button_container.append(account_button)
 
-                        account_row.set_child(button_container)
-                        account_row.main_box = button_container
-                        account_row.expand_button = expand_button
-                        account_row.account_button = account_button
+                        account_container.append(expand_button)
+                        account_container.append(account_button)
+
+                        account_row.set_child(account_container)
+                        setattr(account_row, 'main_box', account_container)
+                        setattr(account_row, 'expand_button', expand_button)
+                        setattr(account_row, 'account_button', account_button)
+
+                        # Make the row selectable
+                        account_row.set_selectable(True)
+
                         self.sidebar_list.append(account_row)
 
             if not found_accounts:
-                no_accounts_row = Gtk.ListBoxRow()
-                no_accounts_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                no_accounts_box.set_margin_top(20)
+                no_accounts_row = ContentItem(class_names="no-accounts-item")
+                no_accounts_container = ContentContainer(
+                    class_names="no-accounts-container"
+                )
+                no_accounts_container.set_orientation(Gtk.Orientation.VERTICAL)
+                no_accounts_container.set_margin_top(20)
 
-                no_accounts = Gtk.Label(label="No email accounts found")
-                no_accounts.add_css_class("dim-label")
-                no_accounts_box.append(no_accounts)
+                no_accounts_text = AppText(
+                    text="No email accounts found",
+                    class_names=["dim-label"],
+                    expandable=False
+                )
+                no_accounts_container.append(no_accounts_text)
 
-                no_accounts_row.set_child(no_accounts_box)
+                no_accounts_row.set_child(no_accounts_container)
                 self.sidebar_list.append(no_accounts_row)
 
         except Exception as e:
-            error_row = Gtk.ListBoxRow()
-            error_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            error_box.set_margin_top(20)
+            error_row = ContentItem(class_names="error-item")
+            error_container = ContentContainer(
+                class_names="error-container"
+            )
+            error_container.set_orientation(Gtk.Orientation.VERTICAL)
+            error_container.set_margin_top(20)
 
-            error_label = Gtk.Label(label=f"Error loading accounts: {str(e)}")
-            error_label.add_css_class("error")
-            error_box.append(error_label)
+            error_text = AppText(
+                text=f"Error loading accounts: {str(e)}",
+                class_names=["error"],
+                expandable=False
+            )
+            error_container.append(error_text)
 
-            error_row.set_child(error_box)
+            error_row.set_child(error_container)
             self.sidebar_list.append(error_row)
 
 class MyApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="org.example.OnlineAccountsList",
-                         flags=Gio.ApplicationFlags.FLAGS_NONE)
+        super().__init__(application_id="org.example.OnlineAccounts")
+        self.connect("activate", self.do_activate)
 
     def do_activate(self):
-        win = MyWindow(self)
-        win.present()
+        self.window = MyWindow(self)
+        self.window.present()
 
-app = MyApp()
-app.run()
+if __name__ == "__main__":
+    app = MyApp()
+    app.run(None)

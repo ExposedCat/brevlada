@@ -1,7 +1,4 @@
-import gi
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Gtk
+from utils.toolkit import Gtk, Pango
 
 class ContentBox(Gtk.Box):
     """A reusable content box component with icon and text"""
@@ -36,7 +33,7 @@ class ContentBox(Gtk.Box):
         self._text_label = Gtk.Label(label=text)
         self._text_label.set_halign(Gtk.Align.START)
         self._text_label.set_hexpand(True)
-        self._text_label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+        self._text_label.set_ellipsize(Pango.EllipsizeMode.END)
         self._text_label.add_css_class("content-text")
         self.append(self._text_label)
 
@@ -51,12 +48,12 @@ class ButtonContainer(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=spacing, **kwargs)
         self.add_css_class("button-container")
 
-class ContentItem(Gtk.ListBoxRow):
+class ContentListItem(Gtk.ListBoxRow):
     """A base content item for lists"""
 
     def __init__(self, item_type="base", **kwargs):
         super().__init__(**kwargs)
-        self.add_css_class("content-item")
+        self.add_css_class("content-list-item")
 
         if item_type != "base":
-            self.add_css_class(f"content-item-{item_type}")
+            self.add_css_class(f"content-list-item-{item_type}")

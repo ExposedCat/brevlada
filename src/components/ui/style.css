@@ -1,0 +1,19 @@
+.error-icon {
+    color: @error_color;
+    opacity: 0.8;
+}
+
+.error-text {
+    color: @error_color;
+    font-size: 0.9em;
+    opacity: 0.9;
+}
+
+.dim-label {
+    opacity: 0.65;
+}
+
+.error {
+    color: @error_color;
+    font-weight: bold;
+}

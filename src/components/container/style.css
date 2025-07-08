@@ -1,0 +1,20 @@
+.sidebar {
+    background-color: @headerbar_bg_color;
+    padding: 6px;
+}
+
+.navigation-list {
+    background-color: @headerbar_bg_color;
+}
+
+.navigation-list row {
+    background: transparent;
+}
+
+.navigation-list row:hover {
+    background: transparent;
+}
+
+.navigation-list row:selected {
+    background: transparent;
+}
