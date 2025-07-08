@@ -1,12 +1,9 @@
-from utils.toolkit import Gtk, GLib
+from utils.toolkit import Gtk
 import dbus
-import imaplib
-import ssl
-import threading
-import logging
 from components.button import AppButton
 from components.container import NavigationList, ContentItem, ScrollContainer, ButtonContainer, ContentContainer
 from components.ui import AppIcon, AppText
+from utils.mail import fetch_imap_folders
 
 class AccountsSidebar(Gtk.Box):
     def __init__(self, class_names=None, **kwargs):
@@ -105,166 +102,6 @@ class AccountsSidebar(Gtk.Box):
             if self.selection_callback:
                 self.selection_callback(self.sidebar_list, folder_row)
 
-    def get_oauth2_token(self, account_data):
-        try:
-            bus = dbus.SessionBus()
-            account_obj = bus.get_object('org.gnome.OnlineAccounts', account_data['path'])
-            oauth2_props = dbus.Interface(account_obj, 'org.gnome.OnlineAccounts.OAuth2Based')
-            access_token = oauth2_props.GetAccessToken()
-            return access_token[0] if access_token else None
-        except Exception as e:
-            logging.error(f"Error getting OAuth2 token: {e}")
-            return None
-
-    def get_mail_settings(self, account_data):
-        try:
-            bus = dbus.SessionBus()
-            account_obj = bus.get_object('org.gnome.OnlineAccounts', account_data['path'])
-            mail_props = dbus.Interface(account_obj, 'org.freedesktop.DBus.Properties')
-
-            mail_properties = mail_props.GetAll('org.gnome.OnlineAccounts.Mail')
-
-            return {
-                'email': mail_properties.get('EmailAddress', ''),
-                'imap_host': mail_properties.get('ImapHost', 'imap.gmail.com'),
-                'imap_port': mail_properties.get('ImapPort', 993),
-                'imap_username': mail_properties.get('ImapUserName', ''),
-                'imap_use_ssl': mail_properties.get('ImapUseSsl', True),
-                'imap_use_tls': mail_properties.get('ImapUseTls', True),
-                'imap_accept_ssl_errors': mail_properties.get('ImapAcceptSslErrors', False),
-            }
-        except Exception:
-            logging.error("Error getting mail settings")
-            return None
-
-    def authenticate_imap_oauth2(self, mail, username, token):
-        auth_string = f'user={username}\x01auth=Bearer {token}\x01\x01'
-
-        def auth_callback(response):
-            return auth_string.encode('utf-8')
-
-        try:
-            mail.authenticate('XOAUTH2', auth_callback)
-        except Exception as e:
-            raise
-
-    def fetch_imap_folders(self, account_data, callback):
-        def fetch_folders():
-            try:
-                email = account_data["email"]
-
-                mail_settings = self.get_mail_settings(account_data)
-
-                if not mail_settings:
-                    error_msg = "Error: Could not get mail settings"
-                    logging.error(f"No mail settings for account: {account_data['path']}")
-                    self.account_folders[account_data["path"]] = [error_msg]
-                    GLib.idle_add(callback, [error_msg])
-                    return
-
-                server = mail_settings.get('imap_host', 'imap.gmail.com')
-                port = mail_settings.get('imap_port', 993)
-                use_ssl = mail_settings.get('imap_use_ssl', True)
-                username = mail_settings.get('imap_username', email)
-
-                auth_xoauth2 = account_data.get("has_oauth2", False)
-
-                logging.info(f"Connecting to IMAP server: {server}, SSL: {use_ssl}, OAuth2: {auth_xoauth2}")
-
-                folders = []
-                authenticated = False
-
-                if use_ssl:
-                    context = ssl.create_default_context()
-                    context.check_hostname = False
-                    context.verify_mode = ssl.CERT_NONE
-                    mail = imaplib.IMAP4_SSL(server, port, ssl_context=context)
-                else:
-                    mail = imaplib.IMAP4(server, port)
-                    if mail_settings.get('imap_use_tls', True):
-                        mail.starttls()
-
-                if auth_xoauth2:
-                    logging.info("Account supports OAuth2, attempting authentication")
-                    token = self.get_oauth2_token(account_data)
-                    if token:
-                        try:
-                            self.authenticate_imap_oauth2(mail, username, token)
-                            authenticated = True
-                            logging.info("OAuth2 authentication successful")
-                        except Exception as e:
-                            logging.error(f"OAuth2 authentication failed: {e}")
-                    else:
-                        logging.error("Failed to get OAuth2 token")
-                else:
-                    logging.warning("Account does not support OAuth2")
-
-                if not authenticated:
-                    error_msg = "Error: Authentication failed - OAuth2 required"
-                    logging.error(f"Authentication failed for {email}")
-                    self.account_folders[account_data["path"]] = [error_msg]
-                    GLib.idle_add(callback, [error_msg])
-                    return
-
-                try:
-                    status, folder_list = mail.list()
-                    if status == 'OK':
-                        for folder_line in folder_list:
-                            if folder_line:
-                                if isinstance(folder_line, bytes):
-                                    folder_line = folder_line.decode('utf-8')
-                                elif isinstance(folder_line, tuple):
-                                    folder_line = folder_line[0].decode('utf-8') if folder_line[0] else ''
-                                else:
-                                    folder_line = str(folder_line)
-
-                                if '"' in folder_line:
-                                    parts = folder_line.split('"')
-                                    if len(parts) >= 3:
-                                        folder_name = parts[-2]
-                                        folders.append(folder_name)
-                                else:
-                                    parts = folder_line.split()
-                                    if len(parts) >= 3:
-                                        folder_name = ' '.join(parts[2:])
-                                        folders.append(folder_name)
-
-                    if folders:
-                        folders.sort()
-                        logging.info(f"Found {len(folders)} folders for {email}")
-                    else:
-                        folders = ["Error: No folders found"]
-                        logging.warning(f"No folders found for {email}")
-
-                    mail.logout()
-
-                except Exception as e:
-                    logging.error(f"Error fetching folders: {e}")
-                    if "Authentication" in str(e) or "login" in str(e).lower() or "AUTHENTICATE" in str(e):
-                        error_msg = "Error: Authentication failed - check account credentials"
-                    elif "timeout" in str(e).lower() or "connection" in str(e).lower():
-                        error_msg = "Error: Connection failed - check network"
-                    elif "SSL" in str(e) or "certificate" in str(e).lower():
-                        error_msg = "Error: SSL/TLS connection failed"
-                    else:
-                        error_msg = "Error: IMAP connection failed"
-
-                    folders = [error_msg]
-
-                self.account_folders[account_data["path"]] = folders
-                GLib.idle_add(callback, folders)
-
-            except Exception as e:
-                logging.error(f"Failed to fetch folders: {e}")
-                error_msg = "Error: Failed to connect to mail server"
-                folders = [error_msg]
-                self.account_folders[account_data["path"]] = folders
-                GLib.idle_add(callback, folders)
-
-        thread = threading.Thread(target=fetch_folders)
-        thread.daemon = True
-        thread.start()
-
     def expand_account(self, account_row):
         setattr(account_row, 'expanded', True)
         account_row.expand_button.set_icon_name("pan-down-symbolic")
@@ -277,33 +114,33 @@ class AccountsSidebar(Gtk.Box):
 
             def on_folders_fetched(folders):
                 self.remove_loading_row(account_row)
+                self.account_folders[account_path] = folders
                 self.add_folder_rows(account_row, folders)
 
-            self.fetch_imap_folders(account_row.account_data, on_folders_fetched)
+            fetch_imap_folders(account_row.account_data, on_folders_fetched)
 
     def add_loading_row(self, account_row):
         loading_row = ContentItem(class_names="loading-row")
         setattr(loading_row, 'is_loading', True)
         setattr(loading_row, 'parent_account', account_row.account_data)
 
-        loading_container = ButtonContainer(
-            spacing=10,
-            class_names="loading-container"
-        )
-        loading_container.set_margin_top(8)
-        loading_container.set_margin_bottom(8)
-        loading_container.set_margin_start(32)
-        loading_container.set_margin_end(12)
-
         loading_spinner = Gtk.Spinner()
         loading_spinner.start()
-        loading_container.append(loading_spinner)
 
         loading_text = AppText(
             text="Loading folders...",
             class_names=["loading-text", "dim-label"]
         )
-        loading_container.append(loading_text)
+
+        loading_container = ButtonContainer(
+            spacing=10,
+            class_names="loading-container",
+            children=[loading_spinner, loading_text]
+        )
+        loading_container.set_margin_top(8)
+        loading_container.set_margin_bottom(8)
+        loading_container.set_margin_start(32)
+        loading_container.set_margin_end(12)
 
         loading_row.set_child(loading_container)
 
@@ -384,23 +221,27 @@ class AccountsSidebar(Gtk.Box):
                 setattr(error_row, 'folder_name', folder_data['name'])
                 setattr(error_row, 'parent_account', account_row.account_data)
 
-                error_container = ButtonContainer(class_names="error-container")
-                error_container.set_margin_start(45 * (level + 1))
+
 
                 error_button = AppButton(
                     variant="primary",
                     expandable=True,
                     class_names=["error-button"]
                 )
-                error_box = ContentContainer(class_names="error-content")
-
                 error_icon = AppIcon("dialog-error-symbolic", class_names="error-icon")
                 error_text = AppText(folder_data['name'], class_names="error-text")
-                error_box.append(error_icon)
-                error_box.append(error_text)
+
+                error_box = ContentContainer(
+                    class_names="error-content",
+                    children=[error_icon, error_text]
+                )
 
                 error_button.set_child(error_box)
-                error_container.append(error_button)
+                error_container = ButtonContainer(
+                    class_names="error-container",
+                    children=[error_button]
+                )
+                error_container.set_margin_start(45 * (level + 1))
 
                 error_row.set_child(error_container)
                 setattr(error_row, 'main_box', error_container)
@@ -420,32 +261,38 @@ class AccountsSidebar(Gtk.Box):
 
                 icon_name = self.get_folder_icon(folder_data['full_path'])
 
-                folder_container = ButtonContainer(class_names="folder-container")
-                folder_container.set_margin_start(45 * (level + 1))
-
                 folder_button = AppButton(
                     variant="primary",
                     expandable=True,
                     class_names=["folder-button"]
                 )
-                folder_box = ContentContainer(class_names="folder-content")
+
+                folder_text = AppText(folder_data['name'], class_names="folder-text")
 
                 if getattr(folder_row, 'has_children'):
                     account_key = account_row.account_data["email"]
                     folder_key = f"{account_key}:{folder_data['full_path']}"
                     is_expanded = self.expanded_folders.get(folder_key, False)
                     arrow_icon = AppIcon("pan-end-symbolic" if not is_expanded else "pan-down-symbolic", class_names="arrow-icon")
-                    folder_box.append(arrow_icon)
+                    folder_box = ContentContainer(
+                        class_names="folder-content",
+                        children=[arrow_icon, folder_text]
+                    )
                 else:
                     folder_icon = AppIcon(icon_name, class_names="folder-icon")
-                    folder_box.append(folder_icon)
-
-                folder_text = AppText(folder_data['name'], class_names="folder-text")
-                folder_box.append(folder_text)
+                    folder_box = ContentContainer(
+                        class_names="folder-content",
+                        children=[folder_icon, folder_text]
+                    )
 
                 folder_button.set_child(folder_box)
                 folder_button.connect("clicked", self.on_folder_button_clicked, folder_row)
-                folder_container.append(folder_button)
+
+                folder_container = ButtonContainer(
+                    class_names="folder-container",
+                    children=[folder_button]
+                )
+                folder_container.set_margin_start(45 * (level + 1))
 
                 folder_row.set_child(folder_container)
                 setattr(folder_row, 'main_box', folder_container)
@@ -614,10 +461,7 @@ class AccountsSidebar(Gtk.Box):
                         setattr(account_row, 'account_data', account_data)
                         setattr(account_row, 'expanded', False)
 
-                        account_container = ButtonContainer(
-                            spacing=6,
-                            class_names="account-container"
-                        )
+
 
                         expand_button = AppButton(
                             variant="expand",
@@ -632,9 +476,6 @@ class AccountsSidebar(Gtk.Box):
                             class_names=["account-button"]
                         )
 
-                        account_box = ContentContainer(
-                            class_names="account-content"
-                        )
                         account_icon = AppIcon(
                             "mail-unread-symbolic",
                             class_names="account-icon"
@@ -643,14 +484,20 @@ class AccountsSidebar(Gtk.Box):
                             text=account_name,
                             class_names="account-text"
                         )
-                        account_box.append(account_icon)
-                        account_box.append(account_text)
+
+                        account_box = ContentContainer(
+                            class_names="account-content",
+                            children=[account_icon, account_text]
+                        )
 
                         account_button.set_child(account_box)
                         account_button.connect("clicked", self.on_account_button_clicked, account_row)
 
-                        account_container.append(expand_button)
-                        account_container.append(account_button)
+                        account_container = ButtonContainer(
+                            spacing=6,
+                            class_names="account-container",
+                            children=[expand_button, account_button]
+                        )
 
                         account_row.set_child(account_container)
                         setattr(account_row, 'main_box', account_container)
@@ -663,36 +510,36 @@ class AccountsSidebar(Gtk.Box):
 
             if not found_accounts:
                 no_accounts_row = ContentItem(class_names="no-accounts-item")
-                no_accounts_container = ContentContainer(
-                    class_names="no-accounts-container"
-                )
-                no_accounts_container.set_orientation(Gtk.Orientation.VERTICAL)
-                no_accounts_container.set_margin_top(20)
-
                 no_accounts_text = AppText(
                     text="No email accounts found",
                     class_names=["dim-label"],
                     expandable=False
                 )
-                no_accounts_container.append(no_accounts_text)
+
+                no_accounts_container = ContentContainer(
+                    class_names="no-accounts-container",
+                    children=[no_accounts_text]
+                )
+                no_accounts_container.set_orientation(Gtk.Orientation.VERTICAL)
+                no_accounts_container.set_margin_top(20)
 
                 no_accounts_row.set_child(no_accounts_container)
                 self.sidebar_list.append(no_accounts_row)
 
         except Exception as e:
             error_row = ContentItem(class_names="error-item")
-            error_container = ContentContainer(
-                class_names="error-container"
-            )
-            error_container.set_orientation(Gtk.Orientation.VERTICAL)
-            error_container.set_margin_top(20)
-
             error_text = AppText(
                 text=f"Error loading accounts: {str(e)}",
                 class_names=["error"],
                 expandable=False
             )
-            error_container.append(error_text)
+
+            error_container = ContentContainer(
+                class_names="error-container",
+                children=[error_text]
+            )
+            error_container.set_orientation(Gtk.Orientation.VERTICAL)
+            error_container.set_margin_top(20)
 
             error_row.set_child(error_container)
             self.sidebar_list.append(error_row)
