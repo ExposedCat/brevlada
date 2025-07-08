@@ -1,8 +1,2 @@
-# Built application
-dist
-
-# Built dependencies
-node_modules
-
-# Sensitive data
-.env
+__pycache__
+.ropeproject

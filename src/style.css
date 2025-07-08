@@ -1,0 +1,91 @@
+
+.sidebar {
+    background-color: @headerbar_bg_color;
+    padding: 6px;
+}
+
+
+paned > separator {
+    min-width: 1px;
+    background-color: transparent;
+    border: none;
+    margin: 0;
+}
+
+
+.navigation-list {
+    background-color: @headerbar_bg_color;
+}
+
+
+button.flat {
+    padding: 8px;
+}
+
+.navigation-list row {
+    background: transparent;
+}
+
+.navigation-list row:hover {
+    background: transparent;
+}
+
+.navigation-list row:selected {
+    background: transparent;
+}
+
+.content-item-indented {
+    margin-left: 45px;
+}
+
+
+.sidebar-header {
+    background-color: @headerbar_bg_color;
+    color: @headerbar_fg_color;
+    border: none;
+    box-shadow: none;
+    border-right: 1px solid transparent;
+    margin-right: -1px;
+}
+
+.content-header {
+    border-left: none;
+    margin-left: -1px;
+    border: none;
+    box-shadow: none;
+}
+
+.unified-header {
+    border: none;
+    box-shadow: none;
+    background: none;
+}
+
+
+.sidebar-header headerbar,
+.content-header headerbar,
+toolbarview,
+toolbarview > * {
+    border: none;
+    box-shadow: none;
+}
+
+.content-header {
+    min-width: 0;
+    hexpand: true;
+}
+
+.sidebar-header {
+    min-width: 0;
+}
+
+.error-icon {
+    color: @error_color;
+    opacity: 0.8;
+}
+
+.error-text {
+    color: @error_color;
+    font-size: 0.9em;
+    opacity: 0.9;
+}
