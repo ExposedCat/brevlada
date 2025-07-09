@@ -5,23 +5,23 @@ from components.container import NavigationList, ContentItem, ScrollContainer, B
 from components.ui import AppIcon, AppText
 from utils.mail import fetch_imap_folders
 
-class AccountsSidebar(Gtk.Box):
+class AccountsSidebar:
     def __init__(self, class_names=None, **kwargs):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, **kwargs)
-        self.add_css_class("sidebar")
+        self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, **kwargs)
+        self.widget.add_css_class("sidebar")
 
         if class_names:
             if isinstance(class_names, str):
-                self.add_css_class(class_names)
+                self.widget.add_css_class(class_names)
             elif isinstance(class_names, list):
                 for class_name in class_names:
-                    self.add_css_class(class_name)
+                    self.widget.add_css_class(class_name)
 
         self.sidebar_scroll = ScrollContainer(class_names="sidebar-scroll")
         self.sidebar_list = NavigationList(class_names="main-navigation")
 
-        self.sidebar_scroll.set_child(self.sidebar_list)
-        self.append(self.sidebar_scroll)
+        self.sidebar_scroll.widget.set_child(self.sidebar_list.widget)
+        self.widget.append(self.sidebar_scroll.widget)
 
         self.accounts_data = []
         self.account_folders = {}
@@ -33,7 +33,7 @@ class AccountsSidebar(Gtk.Box):
         self.load_accounts()
 
     def connect_row_selected(self, callback):
-        self.sidebar_list.connect("row-selected", callback)
+        self.sidebar_list.widget.connect("row-selected", callback)
         self.selection_callback = callback
 
     def get_folder_icon(self, folder_name):
@@ -72,11 +72,11 @@ class AccountsSidebar(Gtk.Box):
         if self.selected_folder_button:
             self.selected_folder_button.set_selected(False)
 
-        self.selected_account_button = button
+        self.selected_account_button = account_row.account_button
         self.selected_folder_button = None
-        button.set_selected(True)
+        account_row.account_button.set_selected(True)
 
-        self.sidebar_list.select_row(account_row)
+        self.sidebar_list.widget.select_row(account_row.widget)
         if self.selection_callback:
             self.selection_callback(self.sidebar_list, account_row)
 
@@ -95,9 +95,9 @@ class AccountsSidebar(Gtk.Box):
             if self.selected_folder_button:
                 self.selected_folder_button.set_selected(False)
 
-            self.selected_folder_button = button
+            self.selected_folder_button = folder_row.folder_button
             self.selected_account_button = None
-            button.set_selected(True)
+            folder_row.folder_button.set_selected(True)
 
             if self.selection_callback:
                 self.selection_callback(self.sidebar_list, folder_row)
@@ -123,6 +123,8 @@ class AccountsSidebar(Gtk.Box):
         loading_row = ContentItem(class_names="loading-row")
         setattr(loading_row, 'is_loading', True)
         setattr(loading_row, 'parent_account', account_row.account_data)
+        setattr(loading_row.widget, 'is_loading', True)
+        setattr(loading_row.widget, 'parent_account', account_row.account_data)
 
         loading_spinner = Gtk.Spinner()
         loading_spinner.start()
@@ -135,27 +137,27 @@ class AccountsSidebar(Gtk.Box):
         loading_container = ButtonContainer(
             spacing=10,
             class_names="loading-container",
-            children=[loading_spinner, loading_text]
+            children=[loading_spinner, loading_text.widget],
+            margin_top=8,
+            margin_bottom=8,
+            margin_start=32,
+            margin_end=12
         )
-        loading_container.set_margin_top(8)
-        loading_container.set_margin_bottom(8)
-        loading_container.set_margin_start(32)
-        loading_container.set_margin_end(12)
 
-        loading_row.set_child(loading_container)
+        loading_row.widget.set_child(loading_container.widget)
 
         account_index = 0
         for i, row in enumerate(self.get_sidebar_rows()):
-            if row == account_row:
+            if row == account_row.widget:
                 account_index = i
                 break
 
-        self.sidebar_list.insert(loading_row, account_index + 1)
+        self.sidebar_list.widget.insert(loading_row.widget, account_index + 1)
 
     def remove_loading_row(self, account_row):
         for row in self.get_sidebar_rows():
             if hasattr(row, 'is_loading') and hasattr(row, 'parent_account') and getattr(row, 'parent_account') == account_row.account_data:
-                self.sidebar_list.remove(row)
+                self.sidebar_list.widget.remove(row)
                 break
 
     def organize_folders_hierarchy(self, folders):
@@ -233,21 +235,23 @@ class AccountsSidebar(Gtk.Box):
 
                 error_box = ContentContainer(
                     class_names="error-content",
-                    children=[error_icon, error_text]
+                    children=[error_icon.widget, error_text.widget]
                 )
 
-                error_button.set_child(error_box)
+                error_button.widget.set_child(error_box.widget)
                 error_container = ButtonContainer(
                     class_names="error-container",
-                    children=[error_button]
+                    children=[error_button.widget],
+                    margin_start=45 * (level + 1)
                 )
-                error_container.set_margin_start(45 * (level + 1))
 
-                error_row.set_child(error_container)
+                error_row.widget.set_child(error_container.widget)
                 setattr(error_row, 'main_box', error_container)
                 setattr(error_row, 'folder_button', error_button)
+                setattr(error_row.widget, 'main_box', error_container)
+                setattr(error_row.widget, 'folder_button', error_button)
 
-                self.sidebar_list.insert(error_row, insert_position + current_index)
+                self.sidebar_list.widget.insert(error_row.widget, insert_position + current_index)
                 current_index += 1
             else:
                 folder_row = ContentItem(class_names="folder-item")
@@ -276,29 +280,36 @@ class AccountsSidebar(Gtk.Box):
                     arrow_icon = AppIcon("pan-end-symbolic" if not is_expanded else "pan-down-symbolic", class_names="arrow-icon")
                     folder_box = ContentContainer(
                         class_names="folder-content",
-                        children=[arrow_icon, folder_text]
+                        children=[arrow_icon.widget, folder_text.widget]
                     )
                 else:
                     folder_icon = AppIcon(icon_name, class_names="folder-icon")
                     folder_box = ContentContainer(
                         class_names="folder-content",
-                        children=[folder_icon, folder_text]
+                        children=[folder_icon.widget, folder_text.widget]
                     )
 
-                folder_button.set_child(folder_box)
+                folder_button.widget.set_child(folder_box.widget)
                 folder_button.connect("clicked", self.on_folder_button_clicked, folder_row)
 
                 folder_container = ButtonContainer(
                     class_names="folder-container",
-                    children=[folder_button]
+                    children=[folder_button.widget],
+                    margin_start=45 * (level + 1)
                 )
-                folder_container.set_margin_start(45 * (level + 1))
 
-                folder_row.set_child(folder_container)
+                folder_row.widget.set_child(folder_container.widget)
                 setattr(folder_row, 'main_box', folder_container)
                 setattr(folder_row, 'folder_button', folder_button)
+                setattr(folder_row.widget, 'main_box', folder_container)
+                setattr(folder_row.widget, 'folder_button', folder_button)
+                setattr(folder_row.widget, 'parent_account', account_row.account_data)
+                setattr(folder_row.widget, 'full_path', folder_data['full_path'])
+                setattr(folder_row.widget, 'level', level)
+                setattr(folder_row.widget, 'has_children', folder_data.get('children'))
+                setattr(folder_row.widget, 'children_data', folder_data.get('children', {}))
 
-                self.sidebar_list.insert(folder_row, insert_position + current_index)
+                self.sidebar_list.widget.insert(folder_row.widget, insert_position + current_index)
                 current_index += 1
 
                 if getattr(folder_row, 'has_children'):
@@ -328,7 +339,7 @@ class AccountsSidebar(Gtk.Box):
 
         folder_index = 0
         for i, row in enumerate(self.get_sidebar_rows()):
-            if row == folder_row:
+            if row == folder_row.widget:
                 folder_index = i
                 break
 
@@ -383,7 +394,7 @@ class AccountsSidebar(Gtk.Box):
                         break
 
         for row in rows_to_remove:
-            self.sidebar_list.remove(row)
+            self.sidebar_list.widget.remove(row)
 
     def collapse_account(self, account_row):
         setattr(account_row, 'expanded', False)
@@ -404,13 +415,13 @@ class AccountsSidebar(Gtk.Box):
                 rows_to_remove.append(row)
 
         for row in rows_to_remove:
-            self.sidebar_list.remove(row)
+            self.sidebar_list.widget.remove(row)
 
     def get_sidebar_rows(self):
         rows = []
         index = 0
         while True:
-            row = self.sidebar_list.get_row_at_index(index)
+            row = self.sidebar_list.widget.get_row_at_index(index)
             if row is None:
                 break
             rows.append(row)
@@ -486,27 +497,32 @@ class AccountsSidebar(Gtk.Box):
                         )
 
                         account_box = ContentContainer(
+                            spacing=6,
                             class_names="account-content",
-                            children=[account_icon, account_text]
+                            children=[account_icon.widget, account_text.widget]
                         )
 
-                        account_button.set_child(account_box)
+                        account_button.widget.set_child(account_box.widget)
                         account_button.connect("clicked", self.on_account_button_clicked, account_row)
 
                         account_container = ButtonContainer(
-                            spacing=6,
                             class_names="account-container",
-                            children=[expand_button, account_button]
+                            spacing=4,
+                            children=[expand_button.widget, account_button.widget]
                         )
 
-                        account_row.set_child(account_container)
+                        account_row.widget.set_child(account_container.widget)
                         setattr(account_row, 'main_box', account_container)
                         setattr(account_row, 'expand_button', expand_button)
                         setattr(account_row, 'account_button', account_button)
+                        setattr(account_row.widget, 'main_box', account_container)
+                        setattr(account_row.widget, 'expand_button', expand_button)
+                        setattr(account_row.widget, 'account_button', account_button)
+                        setattr(account_row.widget, 'account_data', account_data)
 
-                        account_row.set_selectable(True)
+                        account_row.widget.set_selectable(True)
 
-                        self.sidebar_list.append(account_row)
+                        self.sidebar_list.widget.append(account_row.widget)
 
             if not found_accounts:
                 no_accounts_row = ContentItem(class_names="no-accounts-item")
@@ -517,14 +533,15 @@ class AccountsSidebar(Gtk.Box):
                 )
 
                 no_accounts_container = ContentContainer(
-                    class_names="no-accounts-container",
-                    children=[no_accounts_text]
+                    spacing=6,
+                    class_names="no-accounts-content",
+                    children=[no_accounts_text.widget],
+                    margin_top=20
                 )
-                no_accounts_container.set_orientation(Gtk.Orientation.VERTICAL)
-                no_accounts_container.set_margin_top(20)
+                no_accounts_container.widget.set_orientation(Gtk.Orientation.VERTICAL)
 
-                no_accounts_row.set_child(no_accounts_container)
-                self.sidebar_list.append(no_accounts_row)
+                no_accounts_row.widget.set_child(no_accounts_container.widget)
+                self.sidebar_list.widget.append(no_accounts_row.widget)
 
         except Exception as e:
             error_row = ContentItem(class_names="error-item")
@@ -535,11 +552,12 @@ class AccountsSidebar(Gtk.Box):
             )
 
             error_container = ContentContainer(
-                class_names="error-container",
-                children=[error_text]
+                spacing=6,
+                class_names="error-content",
+                children=[error_text.widget],
+                margin_top=20
             )
-            error_container.set_orientation(Gtk.Orientation.VERTICAL)
-            error_container.set_margin_top(20)
+            error_container.widget.set_orientation(Gtk.Orientation.VERTICAL)
 
-            error_row.set_child(error_container)
-            self.sidebar_list.append(error_row)
+            error_row.widget.set_child(error_container.widget)
+            self.sidebar_list.widget.append(error_row.widget)
