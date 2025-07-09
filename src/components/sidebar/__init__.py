@@ -124,15 +124,13 @@ class AccountsSidebar:
         loading_spinner = Gtk.Spinner()
         loading_spinner.start()
 
-        loading_text = AppText(
-            text="Loading folders...",
-            class_names=["loading-text", "dim-label"]
-        )
-
         loading_container = ButtonContainer(
             spacing=10,
             class_names="loading-container",
-            children=[loading_spinner, loading_text.widget],
+            children=[loading_spinner, AppText(
+                text="Loading folders...",
+                class_names=["loading-text", "dim-label"]
+            ).widget],
             margin_top=8,
             margin_bottom=8,
             margin_start=32,
@@ -206,7 +204,7 @@ class AccountsSidebar:
     def add_folder_rows(self, account_row, folders):
         account_index = 0
         for i, row in enumerate(self.get_sidebar_rows()):
-            if row == account_row:
+            if row == account_row.widget:
                 account_index = i
                 break
 
@@ -325,7 +323,7 @@ class AccountsSidebar:
                             folder_data['children'],
                             account_row,
                             insert_position + current_index,
-                            current_index,
+                            0,
                             level + 1
                         )
 
@@ -380,23 +378,18 @@ class AccountsSidebar:
         rows_to_remove = []
         parent_level = parent_folder_row.level
         account_key = parent_folder_row.parent_account["email"]
+        parent_full_path = parent_folder_row.full_path
 
-        found_parent = False
         for row in self.get_sidebar_rows():
-            if row == parent_folder_row:
-                found_parent = True
-                continue
-
-            if found_parent and hasattr(row, 'level') and hasattr(row, 'parent_account'):
-                if getattr(row, 'parent_account')["email"] == account_key:
-                    if getattr(row, 'level') > parent_level:
-                        rows_to_remove.append(row)
-                        if hasattr(row, 'full_path'):
-                            descendant_key = f"{account_key}:{row.full_path}"
-                            if descendant_key in self.expanded_folders:
-                                self.expanded_folders[descendant_key] = False
-                    else:
-                        break
+            if (hasattr(row, 'level') and hasattr(row, 'parent_account') and
+                hasattr(row, 'full_path')):
+                if (getattr(row, 'parent_account')["email"] == account_key and
+                    getattr(row, 'level') > parent_level and
+                    getattr(row, 'full_path').startswith(parent_full_path + "/")):
+                    rows_to_remove.append(row)
+                    descendant_key = f"{account_key}:{row.full_path}"
+                    if descendant_key in self.expanded_folders:
+                        self.expanded_folders[descendant_key] = False
 
         for row in rows_to_remove:
             self.sidebar_list.widget.remove(row)
@@ -479,19 +472,16 @@ class AccountsSidebar:
                         )
                         expand_button.set_icon_name("pan-end-symbolic")
 
-                        account_icon = AppIcon(
-                            "mail-unread-symbolic",
-                            class_names="account-icon"
-                        )
-                        account_text = AppText(
-                            text=account_data["account_name"],
-                            class_names=["account-text"]
-                        )
-
                         account_box = ContentContainer(
                             spacing=6,
                             class_names="account-content",
-                            children=[account_icon.widget, account_text.widget]
+                            children=[AppIcon(
+                                "mail-unread-symbolic",
+                                class_names="account-icon"
+                            ).widget, AppText(
+                                text=account_data["account_name"],
+                                class_names=["account-text"]
+                            ).widget]
                         )
 
                         account_button = AppButton(
@@ -528,16 +518,14 @@ class AccountsSidebar:
                         self.sidebar_list.widget.append(account_row.widget)
 
             if not found_accounts:
-                no_accounts_text = AppText(
-                    text="No accounts found",
-                    class_names=["no-accounts-text", "dim-label"]
-                )
-
                 no_accounts_container = ContentContainer(
                     spacing=6,
                     orientation=Gtk.Orientation.VERTICAL,
                     class_names="no-accounts-content",
-                    children=[no_accounts_text.widget],
+                    children=[AppText(
+                        text="No accounts found",
+                        class_names=["no-accounts-text", "dim-label"]
+                    ).widget],
                     margin_top=20
                 )
 
@@ -548,16 +536,14 @@ class AccountsSidebar:
                 self.sidebar_list.widget.append(no_accounts_row.widget)
 
         except Exception as e:
-            error_text = AppText(
-                text=f"Error loading accounts: {str(e)}",
-                class_names=["error-text", "dim-label"]
-            )
-
             error_container = ContentContainer(
                 spacing=6,
                 orientation=Gtk.Orientation.VERTICAL,
                 class_names="error-content",
-                children=[error_text.widget],
+                children=[AppText(
+                    text=f"Error loading accounts: {str(e)}",
+                    class_names=["error-text", "dim-label"]
+                ).widget],
                 margin_top=20
             )
 

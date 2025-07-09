@@ -143,41 +143,35 @@ class MyWindow(Adw.ApplicationWindow):
             name_label.set_markup(f"<span size='xx-large' weight='bold'>{folder_full_path}</span>")
             self.account_details.widget.append(name_label.widget)
 
-            account_label = AppText(
-                text="Account:",
-                class_names=["dim-label"],
-                halign=Gtk.Align.START
-            )
-            account_value = AppText(
-                text=account_data["account_name"],
-                class_names="account-value",
-                halign=Gtk.Align.START
-            )
-
             account_container = ContentContainer(
                 spacing=10,
                 orientation=Gtk.Orientation.HORIZONTAL,
                 class_names="account-info-row",
-                children=[account_label.widget, account_value.widget]
+                children=[AppText(
+                    text="Account:",
+                    class_names=["dim-label"],
+                    halign=Gtk.Align.START
+                ).widget, AppText(
+                    text=account_data["account_name"],
+                    class_names="account-value",
+                    halign=Gtk.Align.START
+                ).widget]
             )
             self.account_details.widget.append(account_container.widget)
-
-            folder_info_label = AppText(
-                text="Folder:",
-                class_names=["dim-label"],
-                halign=Gtk.Align.START
-            )
-            folder_info_value = AppText(
-                text=folder_full_path,
-                class_names="folder-value",
-                halign=Gtk.Align.START
-            )
 
             folder_info_container = ContentContainer(
                 spacing=10,
                 orientation=Gtk.Orientation.HORIZONTAL,
                 class_names="folder-info-row",
-                children=[folder_info_label.widget, folder_info_value.widget]
+                children=[AppText(
+                    text="Folder:",
+                    class_names=["dim-label"],
+                    halign=Gtk.Align.START
+                ).widget, AppText(
+                    text=folder_full_path,
+                    class_names="folder-value",
+                    halign=Gtk.Align.START
+                ).widget]
             )
             self.account_details.widget.append(folder_info_container.widget)
 
@@ -207,41 +201,35 @@ class MyWindow(Adw.ApplicationWindow):
         name_label.set_markup(f"<span size='xx-large' weight='bold'>{account_data['account_name']}</span>")
         self.account_details.widget.append(name_label.widget)
 
-        provider_label = AppText(
-            text="Provider:",
-            class_names=["dim-label"],
-            halign=Gtk.Align.START
-        )
-        provider_value = AppText(
-            text=account_data["provider"],
-            class_names="provider-value",
-            halign=Gtk.Align.START
-        )
-
         provider_container = ContentContainer(
             spacing=10,
             orientation=Gtk.Orientation.HORIZONTAL,
             class_names="provider-info-row",
-            children=[provider_label.widget, provider_value.widget]
+            children=[AppText(
+                text="Provider:",
+                class_names=["dim-label"],
+                halign=Gtk.Align.START
+            ).widget, AppText(
+                text=account_data["provider"],
+                class_names="provider-value",
+                halign=Gtk.Align.START
+            ).widget]
         )
         self.account_details.widget.append(provider_container.widget)
-
-        email_label = AppText(
-            text="Email:",
-            class_names=["dim-label"],
-            halign=Gtk.Align.START
-        )
-        email_value = AppText(
-            text=account_data["email"],
-            class_names="email-value",
-            halign=Gtk.Align.START
-        )
 
         email_container = ContentContainer(
             spacing=10,
             orientation=Gtk.Orientation.HORIZONTAL,
             class_names="email-info-row",
-            children=[email_label.widget, email_value.widget]
+            children=[AppText(
+                text="Email:",
+                class_names=["dim-label"],
+                halign=Gtk.Align.START
+            ).widget, AppText(
+                text=account_data["email"],
+                class_names="email-value",
+                halign=Gtk.Align.START
+            ).widget]
         )
         self.account_details.widget.append(email_container.widget)
 
