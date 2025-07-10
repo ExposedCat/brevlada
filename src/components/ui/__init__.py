@@ -1,8 +1,22 @@
 from utils.toolkit import Gtk, Pango
 
+
 class AppIcon:
-    def __init__(self, icon_name, halign=None, valign=None, class_names=None, h_fill=None, w_fill=None,
-                 margin=None, margin_top=None, margin_bottom=None, margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        icon_name,
+        halign=None,
+        valign=None,
+        class_names=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.Image(**kwargs)
         self.widget.set_from_icon_name(icon_name)
 
@@ -52,9 +66,24 @@ class AppIcon:
     def set_opacity(self, opacity):
         self.widget.set_opacity(opacity)
 
+
 class AppText:
-    def __init__(self, text="", expandable=True, halign=Gtk.Align.START, valign=None, class_names=None, h_fill=None, w_fill=None,
-                 margin=None, margin_top=None, margin_bottom=None, margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        text="",
+        expandable=True,
+        halign=Gtk.Align.START,
+        valign=None,
+        class_names=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.Label(label=text, **kwargs)
 
         if halign is not None:

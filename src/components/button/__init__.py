@@ -1,9 +1,24 @@
 from utils.toolkit import Gtk
 
+
 class AppButton:
-    def __init__(self, variant="default", expandable=False, halign=None, valign=None, class_names=None, children=None,
-                 h_fill=None, w_fill=None, margin=None, margin_top=None, margin_bottom=None,
-                 margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        variant="default",
+        expandable=False,
+        halign=None,
+        valign=None,
+        class_names=None,
+        children=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.Button(**kwargs)
 
         self.widget.add_css_class("flat")

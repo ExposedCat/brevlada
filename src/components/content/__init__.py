@@ -1,10 +1,13 @@
 from utils.toolkit import Gtk, Pango
 
+
 class ContentBox(Gtk.Box):
     """A reusable content box component with icon and text"""
 
     def __init__(self, icon_name=None, text="", spacing=10, **kwargs):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=spacing, **kwargs)
+        super().__init__(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=spacing, **kwargs
+        )
         self.add_css_class("content-box")
 
         self._icon = None
@@ -41,12 +44,16 @@ class ContentBox(Gtk.Box):
         """Get the current text"""
         return self._text_label.get_text() if self._text_label else ""
 
+
 class ButtonContainer(Gtk.Box):
     """A container for buttons"""
 
     def __init__(self, spacing=0, **kwargs):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=spacing, **kwargs)
+        super().__init__(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=spacing, **kwargs
+        )
         self.add_css_class("button-container")
+
 
 class ContentListItem(Gtk.ListBoxRow):
     """A base content item for lists"""

@@ -1,8 +1,24 @@
 from utils.toolkit import Gtk
 
+
 class ButtonContainer:
-    def __init__(self, spacing=6, orientation=Gtk.Orientation.HORIZONTAL, halign=None, valign=None, class_names=None, children=None, h_fill=None, w_fill=None,
-                 margin=None, margin_top=None, margin_bottom=None, margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        spacing=6,
+        orientation=Gtk.Orientation.HORIZONTAL,
+        halign=None,
+        valign=None,
+        class_names=None,
+        children=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.Box(orientation=orientation, spacing=spacing, **kwargs)
 
         if halign is not None:
@@ -49,10 +65,26 @@ class ButtonContainer:
                     self.widget.append(child)
             else:
                 self.widget.append(children)
+
 
 class ContentContainer:
-    def __init__(self, spacing=10, orientation=Gtk.Orientation.HORIZONTAL, halign=None, valign=None, class_names=None, children=None, h_fill=None, w_fill=None,
-                 margin=None, margin_top=None, margin_bottom=None, margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        spacing=10,
+        orientation=Gtk.Orientation.HORIZONTAL,
+        halign=None,
+        valign=None,
+        class_names=None,
+        children=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.Box(orientation=orientation, spacing=spacing, **kwargs)
 
         if halign is not None:
@@ -100,9 +132,24 @@ class ContentContainer:
             else:
                 self.widget.append(children)
 
+
 class NavigationList:
-    def __init__(self, selection_mode=Gtk.SelectionMode.NONE, halign=None, valign=None, class_names=None, children=None, h_fill=None, w_fill=None,
-                 margin=None, margin_top=None, margin_bottom=None, margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        selection_mode=Gtk.SelectionMode.NONE,
+        halign=None,
+        valign=None,
+        class_names=None,
+        children=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.ListBox(**kwargs)
         self.widget.set_selection_mode(selection_mode)
         self.widget.add_css_class("navigation-list")
@@ -152,9 +199,24 @@ class NavigationList:
             else:
                 self.widget.append(children)
 
+
 class ContentItem:
-    def __init__(self, indent=False, halign=None, valign=None, class_names=None, children=None, h_fill=None, w_fill=None,
-                 margin=None, margin_top=None, margin_bottom=None, margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        indent=False,
+        halign=None,
+        valign=None,
+        class_names=None,
+        children=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.ListBoxRow(**kwargs)
 
         if indent:
@@ -207,8 +269,23 @@ class ContentItem:
 
 
 class ScrollContainer:
-    def __init__(self, h_policy=Gtk.PolicyType.NEVER, v_policy=Gtk.PolicyType.AUTOMATIC, halign=None, valign=None, class_names=None, children=None, h_fill=None, w_fill=None,
-                 margin=None, margin_top=None, margin_bottom=None, margin_start=None, margin_end=None, **kwargs):
+    def __init__(
+        self,
+        h_policy=Gtk.PolicyType.NEVER,
+        v_policy=Gtk.PolicyType.AUTOMATIC,
+        halign=None,
+        valign=None,
+        class_names=None,
+        children=None,
+        h_fill=None,
+        w_fill=None,
+        margin=None,
+        margin_top=None,
+        margin_bottom=None,
+        margin_start=None,
+        margin_end=None,
+        **kwargs
+    ):
         self.widget = Gtk.ScrolledWindow(**kwargs)
         self.widget.set_vexpand(True)
         self.widget.set_policy(h_policy, v_policy)

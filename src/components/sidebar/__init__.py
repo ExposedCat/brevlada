@@ -1,9 +1,16 @@
 from utils.toolkit import Gtk
 import dbus
 from components.button import AppButton
-from components.container import NavigationList, ContentItem, ScrollContainer, ButtonContainer, ContentContainer
+from components.container import (
+    NavigationList,
+    ContentItem,
+    ScrollContainer,
+    ButtonContainer,
+    ContentContainer,
+)
 from components.ui import AppIcon, AppText
 from utils.mail import fetch_imap_folders
+
 
 class AccountsSidebar:
     def __init__(self, class_names=None, **kwargs):
@@ -19,8 +26,7 @@ class AccountsSidebar:
 
         self.sidebar_list = NavigationList(class_names="main-navigation")
         self.sidebar_scroll = ScrollContainer(
-            class_names="sidebar-scroll",
-            children=self.sidebar_list.widget
+            class_names="sidebar-scroll", children=self.sidebar_list.widget
         )
         self.widget.append(self.sidebar_scroll.widget)
 
@@ -42,7 +48,11 @@ class AccountsSidebar:
 
         if folder_upper == "INBOX":
             return "mail-unread-symbolic"
-        elif "SENT MAIL" in folder_upper or "SENT" in folder_upper or "ITEMS" in folder_upper:
+        elif (
+            "SENT MAIL" in folder_upper
+            or "SENT" in folder_upper
+            or "ITEMS" in folder_upper
+        ):
             return "mail-send-symbolic"
         elif "DRAFT" in folder_upper:
             return "document-edit-symbolic"
@@ -62,7 +72,7 @@ class AccountsSidebar:
             return "folder-symbolic"
 
     def on_expand_clicked(self, button, account_row):
-        if getattr(account_row, 'expanded', False):
+        if getattr(account_row, "expanded", False):
             self.collapse_account(account_row)
         else:
             self.expand_account(account_row)
@@ -82,11 +92,14 @@ class AccountsSidebar:
             self.selection_callback(self.sidebar_list, account_row)
 
     def on_folder_button_clicked(self, button, folder_row):
-        if getattr(folder_row, 'has_children', False):
+        if getattr(folder_row, "has_children", False):
             account_key = folder_row.parent_account["email"]
             folder_key = f"{account_key}:{folder_row.full_path}"
 
-            if folder_key in self.expanded_folders and self.expanded_folders[folder_key]:
+            if (
+                folder_key in self.expanded_folders
+                and self.expanded_folders[folder_key]
+            ):
                 self.collapse_folder(folder_row)
             else:
                 self.expand_folder(folder_row)
@@ -104,7 +117,7 @@ class AccountsSidebar:
                 self.selection_callback(self.sidebar_list, folder_row)
 
     def expand_account(self, account_row):
-        setattr(account_row, 'expanded', True)
+        setattr(account_row, "expanded", True)
         account_row.expand_button.set_icon_name("pan-down-symbolic")
 
         account_path = account_row.account_data["path"]
@@ -127,24 +140,25 @@ class AccountsSidebar:
         loading_container = ButtonContainer(
             spacing=10,
             class_names="loading-container",
-            children=[loading_spinner, AppText(
-                text="Loading folders...",
-                class_names=["loading-text", "dim-label"]
-            ).widget],
+            children=[
+                loading_spinner,
+                AppText(
+                    text="Loading folders...", class_names=["loading-text", "dim-label"]
+                ).widget,
+            ],
             margin_top=8,
             margin_bottom=8,
             margin_start=32,
-            margin_end=12
+            margin_end=12,
         )
 
         loading_row = ContentItem(
-            class_names="loading-row",
-            children=loading_container.widget
+            class_names="loading-row", children=loading_container.widget
         )
-        setattr(loading_row, 'is_loading', True)
-        setattr(loading_row, 'parent_account', account_row.account_data)
-        setattr(loading_row.widget, 'is_loading', True)
-        setattr(loading_row.widget, 'parent_account', account_row.account_data)
+        setattr(loading_row, "is_loading", True)
+        setattr(loading_row, "parent_account", account_row.account_data)
+        setattr(loading_row.widget, "is_loading", True)
+        setattr(loading_row.widget, "parent_account", account_row.account_data)
 
         account_index = 0
         for i, row in enumerate(self.get_sidebar_rows()):
@@ -156,7 +170,11 @@ class AccountsSidebar:
 
     def remove_loading_row(self, account_row):
         for row in self.get_sidebar_rows():
-            if hasattr(row, 'is_loading') and hasattr(row, 'parent_account') and getattr(row, 'parent_account') == account_row.account_data:
+            if (
+                hasattr(row, "is_loading")
+                and hasattr(row, "parent_account")
+                and getattr(row, "parent_account") == account_row.account_data
+            ):
                 self.sidebar_list.widget.remove(row)
                 break
 
@@ -165,13 +183,18 @@ class AccountsSidebar:
 
         for folder in folders:
             if folder.startswith("Error:"):
-                root_folders[folder] = {'name': folder, 'full_path': folder, 'children': {}, 'is_error': True}
+                root_folders[folder] = {
+                    "name": folder,
+                    "full_path": folder,
+                    "children": {},
+                    "is_error": True,
+                }
                 continue
 
             parts = []
             if folder.startswith("[") and "]" in folder:
                 bracket_part = folder.split("]")[0] + "]"
-                remaining = folder[len(bracket_part):]
+                remaining = folder[len(bracket_part) :]
                 parts.append(bracket_part)
                 if remaining.startswith("/"):
                     remaining = remaining[1:]
@@ -191,13 +214,13 @@ class AccountsSidebar:
 
                 if part not in current_level:
                     current_level[part] = {
-                        'name': part,
-                        'full_path': current_path,
-                        'children': {},
-                        'is_error': False
+                        "name": part,
+                        "full_path": current_path,
+                        "children": {},
+                        "is_error": False,
                     }
 
-                current_level = current_level[part]['children']
+                current_level = current_level[part]["children"]
 
         return root_folders
 
@@ -211,108 +234,119 @@ class AccountsSidebar:
         organized_folders = self.organize_folders_hierarchy(folders)
         current_index = 0
 
-        current_index = self.add_folder_level(organized_folders, account_row, account_index + 1, current_index, 0)
+        current_index = self.add_folder_level(
+            organized_folders, account_row, account_index + 1, current_index, 0
+        )
 
-    def add_folder_level(self, folder_dict, account_row, insert_position, current_index, level):
+    def add_folder_level(
+        self, folder_dict, account_row, insert_position, current_index, level
+    ):
         for folder_name, folder_data in sorted(folder_dict.items()):
-            if level == 0 and folder_data['full_path'].upper() == 'INBOX':
+            if level == 0 and folder_data["full_path"].upper() == "INBOX":
                 continue
-            if folder_data['is_error']:
+            if folder_data["is_error"]:
                 error_row = ContentItem(class_names="error-folder-item")
-                setattr(error_row, 'is_folder', True)
-                setattr(error_row, 'folder_name', folder_data['name'])
-                setattr(error_row, 'parent_account', account_row.account_data)
-
-
+                setattr(error_row, "is_folder", True)
+                setattr(error_row, "folder_name", folder_data["name"])
+                setattr(error_row, "parent_account", account_row.account_data)
 
                 error_icon = AppIcon("dialog-error-symbolic", class_names="error-icon")
-                error_text = AppText(folder_data['name'], class_names="error-text")
+                error_text = AppText(folder_data["name"], class_names="error-text")
 
                 error_box = ContentContainer(
                     class_names="error-content",
-                    children=[error_icon.widget, error_text.widget]
+                    children=[error_icon.widget, error_text.widget],
                 )
 
                 error_button = AppButton(
                     variant="expand",
                     class_names=["error-button"],
-                    children=error_box.widget
+                    children=error_box.widget,
                 )
                 error_container = ButtonContainer(
                     class_names="error-container",
                     children=[error_button.widget],
-                    margin_start=45 * (level + 1)
+                    margin_start=45 * (level + 1),
                 )
 
                 error_row = ContentItem(
-                    class_names="error-row",
-                    children=error_container.widget
+                    class_names="error-row", children=error_container.widget
                 )
-                setattr(error_row, 'main_box', error_container)
-                setattr(error_row, 'folder_button', error_button)
-                setattr(error_row.widget, 'main_box', error_container)
-                setattr(error_row.widget, 'folder_button', error_button)
+                setattr(error_row, "main_box", error_container)
+                setattr(error_row, "folder_button", error_button)
+                setattr(error_row.widget, "main_box", error_container)
+                setattr(error_row.widget, "folder_button", error_button)
 
-                self.sidebar_list.widget.insert(error_row.widget, insert_position + current_index)
+                self.sidebar_list.widget.insert(
+                    error_row.widget, insert_position + current_index
+                )
                 current_index += 1
             else:
-                icon_name = self.get_folder_icon(folder_data['full_path'])
-                folder_text = AppText(folder_data['name'], class_names="folder-text")
+                icon_name = self.get_folder_icon(folder_data["full_path"])
+                folder_text = AppText(folder_data["name"], class_names="folder-text")
 
                 account_key = account_row.account_data["email"]
                 folder_key = f"{account_key}:{folder_data['full_path']}"
                 is_expanded = self.expanded_folders.get(folder_key, False)
-                has_children = bool(folder_data.get('children'))
+                has_children = bool(folder_data.get("children"))
 
                 if has_children:
-                    arrow_icon = AppIcon("pan-end-symbolic" if not is_expanded else "pan-down-symbolic", class_names="arrow-icon")
+                    arrow_icon = AppIcon(
+                        "pan-end-symbolic" if not is_expanded else "pan-down-symbolic",
+                        class_names="arrow-icon",
+                    )
                     folder_box = ContentContainer(
                         class_names="folder-content",
-                        children=[arrow_icon.widget, folder_text.widget]
+                        children=[arrow_icon.widget, folder_text.widget],
                     )
                 else:
                     folder_icon = AppIcon(icon_name, class_names="folder-icon")
                     folder_box = ContentContainer(
                         class_names="folder-content",
-                        children=[folder_icon.widget, folder_text.widget]
+                        children=[folder_icon.widget, folder_text.widget],
                     )
 
                 folder_button = AppButton(
                     variant="expand",
                     class_names=["folder-button"],
-                    children=folder_box.widget
+                    children=folder_box.widget,
                 )
 
                 folder_container = ButtonContainer(
                     class_names="folder-container",
                     children=[folder_button.widget],
-                    margin_start=45 * (level + 1)
+                    margin_start=45 * (level + 1),
                 )
 
                 folder_row = ContentItem(
-                    class_names="folder-item",
-                    children=folder_container.widget
+                    class_names="folder-item", children=folder_container.widget
                 )
-                setattr(folder_row, 'is_folder', True)
-                setattr(folder_row, 'folder_name', folder_data['name'])
-                setattr(folder_row, 'full_path', folder_data['full_path'])
-                setattr(folder_row, 'parent_account', account_row.account_data)
-                setattr(folder_row, 'level', level)
-                setattr(folder_row, 'children_data', folder_data.get('children', {}))
-                setattr(folder_row, 'has_children', has_children)
-                setattr(folder_row, 'main_box', folder_container)
-                setattr(folder_row, 'folder_button', folder_button)
-                setattr(folder_row.widget, 'main_box', folder_container)
-                setattr(folder_row.widget, 'folder_button', folder_button)
-                setattr(folder_row.widget, 'parent_account', account_row.account_data)
-                setattr(folder_row.widget, 'full_path', folder_data['full_path'])
-                setattr(folder_row.widget, 'level', level)
-                setattr(folder_row.widget, 'has_children', has_children)
-                setattr(folder_row.widget, 'children_data', folder_data.get('children', {}))
+                setattr(folder_row, "is_folder", True)
+                setattr(folder_row, "folder_name", folder_data["name"])
+                setattr(folder_row, "full_path", folder_data["full_path"])
+                setattr(folder_row, "parent_account", account_row.account_data)
+                setattr(folder_row, "level", level)
+                setattr(folder_row, "children_data", folder_data.get("children", {}))
+                setattr(folder_row, "has_children", has_children)
+                setattr(folder_row, "main_box", folder_container)
+                setattr(folder_row, "folder_button", folder_button)
+                setattr(folder_row.widget, "main_box", folder_container)
+                setattr(folder_row.widget, "folder_button", folder_button)
+                setattr(folder_row.widget, "parent_account", account_row.account_data)
+                setattr(folder_row.widget, "full_path", folder_data["full_path"])
+                setattr(folder_row.widget, "level", level)
+                setattr(folder_row.widget, "has_children", has_children)
+                setattr(
+                    folder_row.widget, "children_data", folder_data.get("children", {})
+                )
 
-                folder_button.connect("clicked", self.on_folder_button_clicked, folder_row)
+                folder_button.connect(
+                    "clicked", self.on_folder_button_clicked, folder_row
+                )
 
-                self.sidebar_list.widget.insert(folder_row.widget, insert_position + current_index)
+                self.sidebar_list.widget.insert(
+                    folder_row.widget, insert_position + current_index
+                )
                 current_index += 1
 
                 if has_children:
@@ -320,11 +354,11 @@ class AccountsSidebar:
                     folder_key = f"{account_key}:{folder_data['full_path']}"
                     if self.expanded_folders.get(folder_key, False):
                         current_index += self.add_folder_level(
-                            folder_data['children'],
+                            folder_data["children"],
                             account_row,
                             insert_position + current_index,
                             0,
-                            level + 1
+                            level + 1,
                         )
 
         return current_index
@@ -335,7 +369,7 @@ class AccountsSidebar:
 
         self.expanded_folders[folder_key] = True
 
-        if getattr(folder_row, 'has_children'):
+        if getattr(folder_row, "has_children"):
             folder_box = folder_row.folder_button.get_child()
             arrow_icon = folder_box.get_first_child()
             arrow_icon.set_from_icon_name("pan-down-symbolic")
@@ -348,7 +382,10 @@ class AccountsSidebar:
 
         account_row = None
         for row in self.get_sidebar_rows():
-            if hasattr(row, 'account_data') and getattr(row, 'account_data')["email"] == account_key:
+            if (
+                hasattr(row, "account_data")
+                and getattr(row, "account_data")["email"] == account_key
+            ):
                 account_row = row
                 break
 
@@ -358,7 +395,7 @@ class AccountsSidebar:
                 account_row,
                 folder_index + 1,
                 0,
-                folder_row.level + 1
+                folder_row.level + 1,
             )
 
     def collapse_folder(self, folder_row):
@@ -367,7 +404,7 @@ class AccountsSidebar:
 
         self.expanded_folders[folder_key] = False
 
-        if getattr(folder_row, 'has_children'):
+        if getattr(folder_row, "has_children"):
             folder_box = folder_row.folder_button.get_child()
             arrow_icon = folder_box.get_first_child()
             arrow_icon.set_from_icon_name("pan-end-symbolic")
@@ -381,11 +418,16 @@ class AccountsSidebar:
         parent_full_path = parent_folder_row.full_path
 
         for row in self.get_sidebar_rows():
-            if (hasattr(row, 'level') and hasattr(row, 'parent_account') and
-                hasattr(row, 'full_path')):
-                if (getattr(row, 'parent_account')["email"] == account_key and
-                    getattr(row, 'level') > parent_level and
-                    getattr(row, 'full_path').startswith(parent_full_path + "/")):
+            if (
+                hasattr(row, "level")
+                and hasattr(row, "parent_account")
+                and hasattr(row, "full_path")
+            ):
+                if (
+                    getattr(row, "parent_account")["email"] == account_key
+                    and getattr(row, "level") > parent_level
+                    and getattr(row, "full_path").startswith(parent_full_path + "/")
+                ):
                     rows_to_remove.append(row)
                     descendant_key = f"{account_key}:{row.full_path}"
                     if descendant_key in self.expanded_folders:
@@ -395,7 +437,7 @@ class AccountsSidebar:
             self.sidebar_list.widget.remove(row)
 
     def collapse_account(self, account_row):
-        setattr(account_row, 'expanded', False)
+        setattr(account_row, "expanded", False)
         account_row.expand_button.set_icon_name("pan-end-symbolic")
 
         account_email = account_row.account_data["email"]
@@ -409,7 +451,10 @@ class AccountsSidebar:
 
         rows_to_remove = []
         for row in self.get_sidebar_rows():
-            if hasattr(row, 'parent_account') and getattr(row, 'parent_account')["email"] == account_email:
+            if (
+                hasattr(row, "parent_account")
+                and getattr(row, "parent_account")["email"] == account_email
+            ):
                 rows_to_remove.append(row)
 
         for row in rows_to_remove:
@@ -429,9 +474,13 @@ class AccountsSidebar:
     def load_accounts(self):
         try:
             bus = dbus.SessionBus()
-            goa_proxy = bus.get_object('org.gnome.OnlineAccounts', '/org/gnome/OnlineAccounts')
+            goa_proxy = bus.get_object(
+                "org.gnome.OnlineAccounts", "/org/gnome/OnlineAccounts"
+            )
 
-            obj_manager = dbus.Interface(goa_proxy, 'org.freedesktop.DBus.ObjectManager')
+            obj_manager = dbus.Interface(
+                goa_proxy, "org.freedesktop.DBus.ObjectManager"
+            )
 
             managed_objects = obj_manager.GetManagedObjects()
 
@@ -439,79 +488,93 @@ class AccountsSidebar:
             self.accounts_data = []
 
             for path, interfaces in managed_objects.items():
-                if 'org.gnome.OnlineAccounts.Account' in interfaces:
-                    account = interfaces['org.gnome.OnlineAccounts.Account']
+                if "org.gnome.OnlineAccounts.Account" in interfaces:
+                    account = interfaces["org.gnome.OnlineAccounts.Account"]
 
-                    if path in managed_objects and 'org.gnome.OnlineAccounts.Mail' in managed_objects[path]:
+                    if (
+                        path in managed_objects
+                        and "org.gnome.OnlineAccounts.Mail" in managed_objects[path]
+                    ):
                         found_accounts = True
 
-                        account_name = account.get('PresentationIdentity', 'Unknown')
-                        provider = account.get('ProviderName', 'Unknown')
+                        account_name = account.get("PresentationIdentity", "Unknown")
+                        provider = account.get("ProviderName", "Unknown")
 
-                        mail = managed_objects[path]['org.gnome.OnlineAccounts.Mail']
-                        email_address = mail.get('EmailAddress', 'No email address')
+                        mail = managed_objects[path]["org.gnome.OnlineAccounts.Mail"]
+                        email_address = mail.get("EmailAddress", "No email address")
 
-                        if (account_name == 'Unknown' or not account_name) and email_address != 'No email address':
+                        if (
+                            account_name == "Unknown" or not account_name
+                        ) and email_address != "No email address":
                             account_name = email_address
 
-                        has_oauth2 = 'org.gnome.OnlineAccounts.OAuth2Based' in managed_objects[path]
+                        has_oauth2 = (
+                            "org.gnome.OnlineAccounts.OAuth2Based"
+                            in managed_objects[path]
+                        )
 
                         account_data = {
                             "path": path,
                             "account_name": account_name,
                             "provider": provider,
                             "email": email_address,
-                            "has_oauth2": has_oauth2
+                            "has_oauth2": has_oauth2,
                         }
 
                         self.accounts_data.append(account_data)
 
                         expand_button = AppButton(
                             variant="expand",
-                            class_names=["expand-button", "account-expand"]
+                            class_names=["expand-button", "account-expand"],
                         )
                         expand_button.set_icon_name("pan-end-symbolic")
 
                         account_box = ContentContainer(
                             spacing=6,
                             class_names="account-content",
-                            children=[AppIcon(
-                                "mail-unread-symbolic",
-                                class_names="account-icon"
-                            ).widget, AppText(
-                                text=account_data["account_name"],
-                                class_names=["account-text"]
-                            ).widget]
+                            children=[
+                                AppIcon(
+                                    "mail-unread-symbolic", class_names="account-icon"
+                                ).widget,
+                                AppText(
+                                    text=account_data["account_name"],
+                                    class_names=["account-text"],
+                                ).widget,
+                            ],
                         )
 
                         account_button = AppButton(
                             variant="primary",
                             expandable=True,
                             class_names=["account-button"],
-                            children=account_box.widget
+                            children=account_box.widget,
                         )
 
                         account_container = ButtonContainer(
                             class_names="account-container",
                             spacing=6,
-                            children=[expand_button.widget, account_button.widget]
+                            children=[expand_button.widget, account_button.widget],
                         )
 
                         account_row = ContentItem(
                             class_names="account-item",
-                            children=account_container.widget
+                            children=account_container.widget,
                         )
-                        setattr(account_row, 'account_data', account_data)
+                        setattr(account_row, "account_data", account_data)
 
-                        expand_button.connect("clicked", self.on_expand_clicked, account_row)
-                        account_button.connect("clicked", self.on_account_button_clicked, account_row)
-                        setattr(account_row, 'main_box', account_container)
-                        setattr(account_row, 'expand_button', expand_button)
-                        setattr(account_row, 'account_button', account_button)
-                        setattr(account_row.widget, 'main_box', account_container)
-                        setattr(account_row.widget, 'expand_button', expand_button)
-                        setattr(account_row.widget, 'account_button', account_button)
-                        setattr(account_row.widget, 'account_data', account_data)
+                        expand_button.connect(
+                            "clicked", self.on_expand_clicked, account_row
+                        )
+                        account_button.connect(
+                            "clicked", self.on_account_button_clicked, account_row
+                        )
+                        setattr(account_row, "main_box", account_container)
+                        setattr(account_row, "expand_button", expand_button)
+                        setattr(account_row, "account_button", account_button)
+                        setattr(account_row.widget, "main_box", account_container)
+                        setattr(account_row.widget, "expand_button", expand_button)
+                        setattr(account_row.widget, "account_button", account_button)
+                        setattr(account_row.widget, "account_data", account_data)
 
                         account_row.widget.set_selectable(True)
 
@@ -522,16 +585,18 @@ class AccountsSidebar:
                     spacing=6,
                     orientation=Gtk.Orientation.VERTICAL,
                     class_names="no-accounts-content",
-                    children=[AppText(
-                        text="No accounts found",
-                        class_names=["no-accounts-text", "dim-label"]
-                    ).widget],
-                    margin_top=20
+                    children=[
+                        AppText(
+                            text="No accounts found",
+                            class_names=["no-accounts-text", "dim-label"],
+                        ).widget
+                    ],
+                    margin_top=20,
                 )
 
                 no_accounts_row = ContentItem(
                     class_names="no-accounts-item",
-                    children=no_accounts_container.widget
+                    children=no_accounts_container.widget,
                 )
                 self.sidebar_list.widget.append(no_accounts_row.widget)
 
@@ -540,15 +605,16 @@ class AccountsSidebar:
                 spacing=6,
                 orientation=Gtk.Orientation.VERTICAL,
                 class_names="error-content",
-                children=[AppText(
-                    text=f"Error loading accounts: {str(e)}",
-                    class_names=["error-text", "dim-label"]
-                ).widget],
-                margin_top=20
+                children=[
+                    AppText(
+                        text=f"Error loading accounts: {str(e)}",
+                        class_names=["error-text", "dim-label"],
+                    ).widget
+                ],
+                margin_top=20,
             )
 
             error_row = ContentItem(
-                class_names="error-item",
-                children=error_container.widget
+                class_names="error-item", children=error_container.widget
             )
             self.sidebar_list.widget.append(error_row.widget)

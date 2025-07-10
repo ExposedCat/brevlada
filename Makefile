@@ -3,3 +3,6 @@ build:
 
 start:
 	python3 src/main.py
+
+format:
+	black src

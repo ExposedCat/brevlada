@@ -1,10 +1,12 @@
 from utils.toolkit import Gtk, Adw
 
+
 class UnifiedHeader:
     def __init__(self):
         self.widget = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.widget.set_size_request(-1, 48)
         self.widget.add_css_class("unified-header")
+
 
 class SidebarHeader:
     def __init__(self, title="Accounts", width=350):
@@ -13,6 +15,7 @@ class SidebarHeader:
         self.widget.set_show_end_title_buttons(False)
         self.widget.set_size_request(width, -1)
         self.widget.add_css_class("sidebar-header")
+
 
 class ContentHeader:
     def __init__(self, title="Online Accounts", subtitle="Select an account"):

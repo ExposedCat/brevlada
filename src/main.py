@@ -6,16 +6,19 @@ from components.container import ScrollContainer, ContentContainer
 from components.ui import AppIcon, AppText
 from components.header import UnifiedHeader, SidebarHeader, ContentHeader
 
+
 class MyWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Online Accounts")
         self.set_default_size(1200, 800)
 
-        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.basicConfig(
+            level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+        )
 
         try:
-            resource = Gio.resource_load('resources.gresource')
+            resource = Gio.resource_load("resources.gresource")
             Gio.resources_register(resource)
             logging.info("Resources loaded successfully")
         except Exception as e:
@@ -44,16 +47,11 @@ class MyWindow(Adw.ApplicationWindow):
         self.paned.connect("notify::position", self.on_paned_position_changed)
 
         css_provider = Gtk.CssProvider()
-        css_file = os.path.join(os.path.dirname(__file__), 'style.css')
+        css_file = os.path.join(os.path.dirname(__file__), "style.css")
         css_provider.load_from_path(css_file)
         Gtk.StyleContext.add_provider_for_display(
-            self.get_display(),
-            css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            self.get_display(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
-
-
-
 
         empty_icon = AppIcon("mail-unread-symbolic", class_names="empty-icon")
         empty_icon.set_pixel_size(64)
@@ -62,9 +60,11 @@ class MyWindow(Adw.ApplicationWindow):
         empty_label = AppText(
             text="Select an account to view details",
             class_names="empty-label",
-            expandable=False
+            expandable=False,
         )
-        empty_label.set_markup("<span size='large'>Select an account to view details</span>")
+        empty_label.set_markup(
+            "<span size='large'>Select an account to view details</span>"
+        )
         empty_label.set_opacity(0.7)
 
         self.empty_state = ContentContainer(
@@ -73,13 +73,13 @@ class MyWindow(Adw.ApplicationWindow):
             halign=Gtk.Align.CENTER,
             valign=Gtk.Align.CENTER,
             class_names="empty-state",
-            children=[empty_icon.widget, empty_label.widget]
+            children=[empty_icon.widget, empty_label.widget],
         )
 
         self.account_details = ContentContainer(
             spacing=15,
             orientation=Gtk.Orientation.VERTICAL,
-            class_names="account-details"
+            class_names="account-details",
         )
         self.account_details.widget.set_visible(False)
 
@@ -90,12 +90,11 @@ class MyWindow(Adw.ApplicationWindow):
             children=[self.empty_state.widget, self.account_details.widget],
             margin=30,
             h_fill=True,
-            w_fill=True
+            w_fill=True,
         )
 
         content_scroll = ScrollContainer(
-            class_names="content-scroll",
-            children=self.content_area.widget
+            class_names="content-scroll", children=self.content_area.widget
         )
 
         sidebar = AccountsSidebar(class_names="main-sidebar")
@@ -121,12 +120,14 @@ class MyWindow(Adw.ApplicationWindow):
             self.content_header.window_title.set_subtitle("Select an account")
             return
 
-        if hasattr(row, 'is_folder') and row.is_folder:
+        if hasattr(row, "is_folder") and row.is_folder:
             account_data = row.parent_account
             folder_name = row.folder_name
-            folder_full_path = getattr(row, 'full_path', folder_name)
+            folder_full_path = getattr(row, "full_path", folder_name)
 
-            self.content_header.window_title.set_title(f"{account_data['provider']} - {folder_full_path}")
+            self.content_header.window_title.set_title(
+                f"{account_data['provider']} - {folder_full_path}"
+            )
             self.content_header.window_title.set_subtitle(account_data["account_name"])
 
             child = self.account_details.widget.get_first_child()
@@ -138,24 +139,29 @@ class MyWindow(Adw.ApplicationWindow):
                 text=folder_full_path,
                 class_names="folder-title",
                 margin_bottom=15,
-                halign=Gtk.Align.START
+                halign=Gtk.Align.START,
             )
-            name_label.set_markup(f"<span size='xx-large' weight='bold'>{folder_full_path}</span>")
+            name_label.set_markup(
+                f"<span size='xx-large' weight='bold'>{folder_full_path}</span>"
+            )
             self.account_details.widget.append(name_label.widget)
 
             account_container = ContentContainer(
                 spacing=10,
                 orientation=Gtk.Orientation.HORIZONTAL,
                 class_names="account-info-row",
-                children=[AppText(
-                    text="Account:",
-                    class_names=["dim-label"],
-                    halign=Gtk.Align.START
-                ).widget, AppText(
-                    text=account_data["account_name"],
-                    class_names="account-value",
-                    halign=Gtk.Align.START
-                ).widget]
+                children=[
+                    AppText(
+                        text="Account:",
+                        class_names=["dim-label"],
+                        halign=Gtk.Align.START,
+                    ).widget,
+                    AppText(
+                        text=account_data["account_name"],
+                        class_names="account-value",
+                        halign=Gtk.Align.START,
+                    ).widget,
+                ],
             )
             self.account_details.widget.append(account_container.widget)
 
@@ -163,15 +169,18 @@ class MyWindow(Adw.ApplicationWindow):
                 spacing=10,
                 orientation=Gtk.Orientation.HORIZONTAL,
                 class_names="folder-info-row",
-                children=[AppText(
-                    text="Folder:",
-                    class_names=["dim-label"],
-                    halign=Gtk.Align.START
-                ).widget, AppText(
-                    text=folder_full_path,
-                    class_names="folder-value",
-                    halign=Gtk.Align.START
-                ).widget]
+                children=[
+                    AppText(
+                        text="Folder:",
+                        class_names=["dim-label"],
+                        halign=Gtk.Align.START,
+                    ).widget,
+                    AppText(
+                        text=folder_full_path,
+                        class_names="folder-value",
+                        halign=Gtk.Align.START,
+                    ).widget,
+                ],
             )
             self.account_details.widget.append(folder_info_container.widget)
 
@@ -179,7 +188,7 @@ class MyWindow(Adw.ApplicationWindow):
             self.account_details.widget.set_visible(True)
             return
 
-        if not hasattr(row, 'account_data'):
+        if not hasattr(row, "account_data"):
             return
 
         account_data = row.account_data
@@ -193,27 +202,30 @@ class MyWindow(Adw.ApplicationWindow):
             child = self.account_details.widget.get_first_child()
 
         name_label = AppText(
-            text=account_data['account_name'],
+            text=account_data["account_name"],
             class_names="account-title",
             margin_bottom=15,
-            halign=Gtk.Align.START
+            halign=Gtk.Align.START,
         )
-        name_label.set_markup(f"<span size='xx-large' weight='bold'>{account_data['account_name']}</span>")
+        name_label.set_markup(
+            f"<span size='xx-large' weight='bold'>{account_data['account_name']}</span>"
+        )
         self.account_details.widget.append(name_label.widget)
 
         provider_container = ContentContainer(
             spacing=10,
             orientation=Gtk.Orientation.HORIZONTAL,
             class_names="provider-info-row",
-            children=[AppText(
-                text="Provider:",
-                class_names=["dim-label"],
-                halign=Gtk.Align.START
-            ).widget, AppText(
-                text=account_data["provider"],
-                class_names="provider-value",
-                halign=Gtk.Align.START
-            ).widget]
+            children=[
+                AppText(
+                    text="Provider:", class_names=["dim-label"], halign=Gtk.Align.START
+                ).widget,
+                AppText(
+                    text=account_data["provider"],
+                    class_names="provider-value",
+                    halign=Gtk.Align.START,
+                ).widget,
+            ],
         )
         self.account_details.widget.append(provider_container.widget)
 
@@ -221,21 +233,21 @@ class MyWindow(Adw.ApplicationWindow):
             spacing=10,
             orientation=Gtk.Orientation.HORIZONTAL,
             class_names="email-info-row",
-            children=[AppText(
-                text="Email:",
-                class_names=["dim-label"],
-                halign=Gtk.Align.START
-            ).widget, AppText(
-                text=account_data["email"],
-                class_names="email-value",
-                halign=Gtk.Align.START
-            ).widget]
+            children=[
+                AppText(
+                    text="Email:", class_names=["dim-label"], halign=Gtk.Align.START
+                ).widget,
+                AppText(
+                    text=account_data["email"],
+                    class_names="email-value",
+                    halign=Gtk.Align.START,
+                ).widget,
+            ],
         )
         self.account_details.widget.append(email_container.widget)
 
         self.empty_state.widget.set_visible(False)
         self.account_details.widget.set_visible(True)
-
 
 
 class MyApp(Adw.Application):
@@ -245,6 +257,7 @@ class MyApp(Adw.Application):
     def do_activate(self):
         self.window = MyWindow(self)
         self.window.present()
+
 
 if __name__ == "__main__":
     app = MyApp()
