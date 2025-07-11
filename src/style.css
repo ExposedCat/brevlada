@@ -4,13 +4,17 @@ button.flat {
 }
 
 /* Container component styles */
+.sidebar-wrapper {
+    background-color: @sidebar_bg_color;
+}
+
 .sidebar {
-    background-color: @headerbar_bg_color;
+    background-color: transparent;
     padding: 6px;
 }
 
 .navigation-list {
-    background-color: @headerbar_bg_color;
+    background-color: transparent;
 }
 
 .navigation-list row {
@@ -56,12 +60,12 @@ button.flat {
 
 /* UI component styles */
 .error-icon {
-    color: @error_color;
+
     opacity: 0.8;
 }
 
 .error-text {
-    color: @error_color;
+
     font-size: 0.9em;
     opacity: 0.9;
 }
@@ -71,36 +75,54 @@ button.flat {
 }
 
 .error {
-    color: @error_color;
+
     font-weight: bold;
 }
 
 /* Main layout styles */
 paned > separator {
-    min-width: 1px;
+    min-width: 0;
     background-color: transparent;
     border: none;
     margin: 0;
+    opacity: 0;
+}
+
+paned {
+    height: 100%;
+}
+
+.main-content {
+    height: 100%;
+}
+
+.content-scroll {
+    height: 100%;
 }
 
 /* Header styles */
 .sidebar-header {
-    background-color: @headerbar_bg_color;
-    color: @headerbar_fg_color;
+    background-color: transparent;
     border: none;
     box-shadow: none;
-    border-right: 1px solid transparent;
-    margin-right: -1px;
     min-width: 0;
 }
 
 .content-header {
-    border-left: none;
-    margin-left: -1px;
     border: none;
     box-shadow: none;
     min-width: 0;
+}
 
+.message-list-wrapper {
+    border-right: 1px solid @borders;
+}
+
+.message-list-header {
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    min-width: 0;
 }
 
 .unified-header {
@@ -111,8 +133,213 @@ paned > separator {
 
 .sidebar-header headerbar,
 .content-header headerbar,
+.message-list-header headerbar,
 toolbarview,
 toolbarview > * {
     border: none;
     box-shadow: none;
+}
+
+/* Message List Component Styles */
+.message-list {
+    background-color: transparent;
+    min-height: 100%;
+    height: 100%;
+}
+
+.message-list-scroll {
+    min-height: 200px;
+    height: 100%;
+}
+
+.message-list-content {
+    background-color: transparent;
+    border-radius: 6px;
+    min-height: 100%;
+}
+
+.message-list-empty-state {
+    padding: 48px 24px;
+    min-height: 200px;
+}
+
+.message-list-empty-icon {
+
+    margin-bottom: 12px;
+}
+
+.message-list-empty-text {
+
+    font-size: 14px;
+}
+
+.message-list-loading-state {
+    padding: 48px 24px;
+    min-height: 200px;
+}
+
+.message-list-loading-spinner {
+    width: 32px;
+    height: 32px;
+    margin-bottom: 12px;
+}
+
+.message-list-loading-text {
+
+    font-size: 14px;
+}
+
+.message-list-error-state {
+    padding: 48px 24px;
+    min-height: 200px;
+}
+
+.message-list-error-icon {
+    margin-bottom: 12px;
+}
+
+.message-list-error-text {
+}
+
+.message-list-retry-button {
+}
+
+.message-list-retry-button:hover {
+
+}
+
+.message-row {
+}
+
+
+
+
+
+
+
+
+
+.message-row-sender {
+}
+
+.message-row-sender-unread {
+}
+
+.message-row-subject {
+}
+
+.message-row-subject-unread {
+}
+
+.message-row-date {
+}
+
+.message-row-read-indicator {
+
+    opacity: 0.7;
+}
+
+.message-row-unread-indicator {
+}
+
+.message-row-attachment-icon {
+}
+
+.message-row-flag-icon {
+}
+
+.thread-row {
+}
+
+
+
+
+
+
+
+
+
+.thread-row-expanded {
+}
+
+.thread-expand-button {
+}
+
+
+
+.thread-row-sender {
+}
+
+.thread-row-subject {
+}
+
+.thread-subtitle {
+}
+
+.thread-unread-badge {
+}
+
+.thread-attachment-icon {
+
+    opacity: 0.8;
+}
+
+.thread-flag-icon {
+}
+
+.thread-date-label {
+}
+
+.thread-row-read-indicator {
+
+    opacity: 0.7;
+}
+
+.thread-row-unread-indicator {
+}
+
+.thread-message-list {
+}
+
+.thread-message-rows {
+}
+
+.thread-message-row {
+}
+
+
+
+
+
+.thread-message-row-unread {
+}
+
+.thread-message-sender {
+}
+
+.thread-message-date {
+}
+
+.thread-message-read-indicator {
+
+    opacity: 0.6;
+}
+
+.thread-message-unread-indicator {
+}
+
+.thread-message-attachment-icon {
+
+    opacity: 0.7;
+}
+
+.message-subject {
+}
+
+.sender-info-row,
+.date-info-row {
+}
+
+.sender-value,
+.date-value {
 }

@@ -29,3 +29,12 @@ class ContentHeader:
         self.widget.set_centering_policy(Adw.CenteringPolicy.STRICT)
         self.widget.set_hexpand(True)
         self.widget.add_css_class("content-header")
+
+
+class MessageListHeader:
+    def __init__(self, title="Messages", width=400):
+        self.widget = Adw.HeaderBar()
+        self.widget.set_title_widget(Gtk.Label(label=title))
+        self.widget.set_show_end_title_buttons(False)
+        self.widget.set_size_request(width, -1)
+        self.widget.add_css_class("message-list-header")
