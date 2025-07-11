@@ -4,7 +4,7 @@ from components.button import AppButton
 
 from utils.thread_grouping import group_messages_into_threads
 from .message_row import MessageRow
-from .thread_row import ThreadRow
+
 import threading
 import logging
 from utils.mail import fetch_messages_from_folder
@@ -19,9 +19,8 @@ class MessageList:
         self.messages = []
         self.threads = []
         self.message_selected_callback = None
-        self.threading_enabled = False
+        self.threading_enabled = True
         self.message_row_instances = {}
-        self.thread_row_instances = {}
 
         self.widget = Adw.PreferencesGroup()
         self.widget.set_vexpand(True)
@@ -226,10 +225,9 @@ class MessageList:
 
         for i, thread in enumerate(self.threads):
             logging.debug(f"MessageList: Creating thread row {i+1}/{len(self.threads)}")
-            thread_row = ThreadRow(thread)
-            thread_row.connect_message_selected(self.on_thread_message_selected)
-            thread_row.connect_expanded_changed(self.on_thread_expanded_changed)
-            self.thread_row_instances[thread_row.widget] = thread_row
+            thread_row = MessageRow(thread)
+            thread_row.connect_selected(self.on_message_row_selected)
+            self.message_row_instances[thread_row.widget] = thread_row
             self.list_box.append(thread_row.widget)
 
         logging.debug("MessageList: Threaded list population complete")
@@ -271,16 +269,10 @@ class MessageList:
         if self.message_selected_callback:
             self.message_selected_callback(message)
 
-    def on_thread_message_selected(self, message):
-        if self.message_selected_callback:
-            self.message_selected_callback(message)
 
-    def on_thread_expanded_changed(self, expanded):
-        pass
 
     def clear_list(self):
         self.message_row_instances.clear()
-        self.thread_row_instances.clear()
         while True:
             row = self.list_box.get_first_child()
             if row is None:
@@ -324,9 +316,12 @@ class MessageList:
         selected_row = self.list_box.get_selected_row()
         if selected_row:
             if selected_row in self.message_row_instances:
-                return self.message_row_instances[selected_row].get_message()
-            elif selected_row in self.thread_row_instances:
-                return self.thread_row_instances[selected_row].get_selected_message()
+                message_row = self.message_row_instances[selected_row]
+                if message_row.is_thread:
+                    # For threads, return the latest message
+                    return message_row.message_or_thread.messages[-1] if message_row.message_or_thread.messages else None
+                else:
+                    return message_row.message_or_thread
         return None
 
     def set_threading_enabled(self, enabled):

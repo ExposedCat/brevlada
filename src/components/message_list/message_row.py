@@ -3,10 +3,13 @@ from components.ui import AppIcon, AppText
 
 
 class MessageRow:
-    def __init__(self, message):
-        self.message = message
+    def __init__(self, message_or_thread):
+        self.message_or_thread = message_or_thread
         self.selected_callback = None
         self.read_changed_callback = None
+
+        # Determine if this is a thread or single message
+        self.is_thread = hasattr(message_or_thread, 'messages') and hasattr(message_or_thread, 'get_unread_count')
 
         self.widget = Gtk.ListBoxRow()
         self.widget.set_activatable(True)
@@ -35,12 +38,23 @@ class MessageRow:
         self.content_container.set_hexpand(True)
         self.content_container.set_valign(Gtk.Align.CENTER)
 
+        # Sender with optional thread count
+        sender_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        sender_container.set_spacing(8)
+        sender_container.set_halign(Gtk.Align.START)
+
         self.sender_label = AppText(
             self.get_display_sender(),
             class_names="heading"
         )
-        self.sender_label.widget.set_halign(Gtk.Align.START)
-        self.content_container.append(self.sender_label.widget)
+        sender_container.append(self.sender_label.widget)
+
+        # Add thread count badge if this is a thread
+        if self.is_thread and self.get_message_count() > 1:
+            self.thread_count_badge = self.create_thread_count_badge()
+            sender_container.append(self.thread_count_badge)
+
+        self.content_container.append(sender_container)
 
         self.subject_label = AppText(
             self.get_display_subject(),
@@ -103,23 +117,35 @@ class MessageRow:
 
     def on_activated(self, row):
         if self.selected_callback:
-            self.selected_callback(self.message)
+            if self.is_thread:
+                # For threads, pass the latest message
+                latest_message = self.message_or_thread.messages[-1] if self.message_or_thread.messages else None
+                if latest_message:
+                    self.selected_callback(latest_message)
+            else:
+                self.selected_callback(self.message_or_thread)
 
     def get_is_read(self):
-        if isinstance(self.message, dict):
-            return self.message.get('is_read', False)
+        if self.is_thread:
+            return self.message_or_thread.get_unread_count() == 0
+        elif isinstance(self.message_or_thread, dict):
+            return self.message_or_thread.get('is_read', False)
         else:
-            return self.message.is_read
+            return self.message_or_thread.is_read
 
     def get_is_flagged(self):
-        if isinstance(self.message, dict):
-            return self.message.get('is_flagged', False)
+        if self.is_thread:
+            return self.message_or_thread.is_flagged
+        elif isinstance(self.message_or_thread, dict):
+            return self.message_or_thread.get('is_flagged', False)
         else:
-            return self.message.is_flagged
+            return self.message_or_thread.is_flagged
 
     def get_display_sender(self):
-        if isinstance(self.message, dict):
-            sender = self.message.get('sender', {})
+        if self.is_thread:
+            return self.message_or_thread.get_display_sender()
+        elif isinstance(self.message_or_thread, dict):
+            sender = self.message_or_thread.get('sender', {})
             if sender.get('name'):
                 return sender['name']
             elif sender.get('email'):
@@ -127,18 +153,22 @@ class MessageRow:
             else:
                 return 'Unknown Sender'
         else:
-            return self.message.get_display_sender()
+            return self.message_or_thread.get_display_sender()
 
     def get_display_subject(self):
-        if isinstance(self.message, dict):
-            subject = self.message.get('subject', '')
+        if self.is_thread:
+            return self.message_or_thread.get_display_subject()
+        elif isinstance(self.message_or_thread, dict):
+            subject = self.message_or_thread.get('subject', '')
             return subject if subject else '(No Subject)'
         else:
-            return self.message.get_display_subject()
+            return self.message_or_thread.get_display_subject()
 
     def get_display_date(self):
-        if isinstance(self.message, dict):
-            date_str = self.message.get('date', '')
+        if self.is_thread:
+            return self.message_or_thread.get_display_date()
+        elif isinstance(self.message_or_thread, dict):
+            date_str = self.message_or_thread.get('date', '')
             if date_str:
                 from datetime import datetime
                 try:
@@ -167,20 +197,47 @@ class MessageRow:
                     pass
             return ''
         else:
-            return self.message.get_display_date()
+            return self.message_or_thread.get_display_date()
 
     def get_attachment_count(self):
-        if isinstance(self.message, dict):
-            attachments = self.message.get('attachments', [])
+        if self.is_thread:
+            return 1 if self.message_or_thread.has_attachments else 0
+        elif isinstance(self.message_or_thread, dict):
+            attachments = self.message_or_thread.get('attachments', [])
             return len(attachments)
         else:
-            return self.message.get_attachment_count()
+            return self.message_or_thread.get_attachment_count()
+
+    def get_message_count(self):
+        if self.is_thread:
+            return len(self.message_or_thread.messages)
+        else:
+            return 1
+
+    def create_thread_count_badge(self):
+        """Create a circular badge showing thread message count"""
+        count = self.get_message_count()
+
+        # Create a label with the count
+        badge_label = Gtk.Label(label=str(count))
+        badge_label.add_css_class("thread-count-badge")
+
+        # Wrap in a box for styling
+        badge_box = Gtk.Box()
+        badge_box.append(badge_label)
+        badge_box.add_css_class("thread-count-container")
+
+        return badge_box
 
     def mark_as_read(self):
         if self.get_is_read():
             return
 
-        self.message.is_read = True
+        if not self.is_thread:
+            if isinstance(self.message_or_thread, dict):
+                self.message_or_thread['is_read'] = True
+            else:
+                self.message_or_thread.is_read = True
 
         self.container.remove_css_class("message-row-unread")
         self.sender_label.widget.remove_css_class("message-row-sender-unread")

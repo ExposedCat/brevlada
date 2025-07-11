@@ -248,6 +248,20 @@ toolbarview > * {
 .message-row-flag-icon {
 }
 
+.thread-count-container {
+    min-width: 20px;
+    min-height: 20px;
+    border-radius: 10px;
+    background-color: @accent_bg_color;
+}
+
+.thread-count-badge {
+    color: @accent_fg_color;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 6px;
+}
+
 .thread-row {
 }
 
