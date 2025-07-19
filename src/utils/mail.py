@@ -3,6 +3,7 @@ import imaplib
 import ssl
 import threading
 import logging
+import time
 from utils.toolkit import GLib
 
 
@@ -103,6 +104,94 @@ def connect_to_imap_server(mail_settings):
     except Exception as e:
         logging.error(f"Failed to connect to IMAP server {server}:{port}: {e}")
         raise
+
+
+# Connection cache: account_email -> (connection, last_used_time)
+_connection_cache = {}
+_connection_cache_lock = threading.Lock()
+
+def logout_and_remove_from_cache(mail, account_data):
+    """Logout and remove connection from cache"""
+    email = str(account_data.get('email', 'unknown'))
+    
+    try:
+        mail.logout()
+    except Exception as e:
+        logging.warning(f"Error during logout for {email}: {e}")
+    
+    # Remove from cache
+    with _connection_cache_lock:
+        if email in _connection_cache:
+            del _connection_cache[email]
+            logging.debug(f"Removed connection from cache for {email}")
+
+def cleanup_all_connections():
+    """Close all cached connections - call this on app shutdown"""
+    with _connection_cache_lock:
+        connection_count = len(_connection_cache)
+        if connection_count > 0:
+            logging.debug(f"Cache contents before cleanup: {list(_connection_cache.keys())}")
+        
+        for email, (connection, _) in _connection_cache.items():
+            try:
+                logging.debug(f"Closing cached connection for {email}")
+                connection.logout()
+            except Exception as e:
+                logging.warning(f"Error closing cached connection for {email}: {e}")
+        
+        _connection_cache.clear()
+        logging.info(f"Cleaned up {connection_count} cached connections")
+
+
+
+def connect_and_authenticate(mail_settings, account_data):
+    """Connect to IMAP server and authenticate in one step, with connection caching"""
+    email = str(account_data.get('email', 'unknown'))
+    
+    with _connection_cache_lock:
+        # Check if we have a cached connection
+        if email in _connection_cache:
+            cached_connection, last_used = _connection_cache[email]
+            current_time = time.time()
+            
+            # Check if connection is still fresh (less than 5 minutes old)
+            if current_time - last_used < 300:  # 5 minutes
+                logging.debug(f"Reusing cached connection for {email}")
+                _connection_cache[email] = (cached_connection, current_time)
+                return cached_connection
+            else:
+                # Connection is too old, remove it
+                logging.debug(f"Removing stale cached connection for {email}")
+                try:
+                    cached_connection.logout()
+                except:
+                    pass
+                del _connection_cache[email]
+    
+    # No cached connection, create new one
+    try:
+        logging.debug(f"Creating new connection for {email}")
+        mail = connect_to_imap_server(mail_settings)
+        
+        # Authenticate
+        if not authenticate_imap(mail, account_data, mail_settings):
+            # If authentication fails, close connection and return None
+            try:
+                mail.logout()
+            except:
+                pass
+            return None
+        
+        # Cache the successful connection
+        with _connection_cache_lock:
+            _connection_cache[email] = (mail, time.time())
+            logging.debug(f"Cached new connection for {email}")
+            
+        return mail
+        
+    except Exception as e:
+        logging.error(f"Failed to connect and authenticate: {e}")
+        return None
 
 
 def authenticate_imap(mail, account_data, mail_settings):
@@ -233,29 +322,19 @@ def fetch_imap_folders(account_data, callback):
                 GLib.idle_add(callback, [error_msg])
                 return
 
-            logging.debug(f"Connecting to IMAP server for {email}")
-            mail = connect_to_imap_server(mail_settings)
-
-            logging.debug(f"Authenticating IMAP connection for {email}")
-            if not authenticate_imap(mail, account_data, mail_settings):
+            logging.debug(f"Connecting and authenticating to IMAP server for {email}")
+            mail = connect_and_authenticate(mail_settings, account_data)
+            
+            if not mail:
                 error_msg = "Error: Authentication failed - OAuth2 required"
                 logging.error(f"Authentication failed for {email}")
-                try:
-                    mail.logout()
-                except:
-                    pass
                 GLib.idle_add(callback, [error_msg])
                 return
 
             logging.debug(f"Getting folders from IMAP for {email}")
             folders = get_folders_from_imap(mail, email)
 
-            logging.debug(f"Logging out from IMAP for {email}")
-            try:
-                mail.logout()
-                logging.debug(f"Successfully logged out from IMAP for {email}")
-            except Exception as e:
-                logging.warning(f"Error during IMAP logout for {email}: {e}")
+            logging.debug(f"Operation completed for {email}, connection remains in cache")
 
             logging.info(f"Successfully fetched {len(folders)} folders for {email}")
             GLib.idle_add(callback, folders)
@@ -288,17 +367,12 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
                 GLib.idle_add(callback, error_msg, None)
                 return
 
-            logging.debug(f"Connecting to IMAP server for message fetch: {email}")
-            mail = connect_to_imap_server(mail_settings)
-
-            logging.debug(f"Authenticating IMAP connection for message fetch: {email}")
-            if not authenticate_imap(mail, account_data, mail_settings):
+            logging.debug(f"Connecting and authenticating to IMAP server for message fetch: {email}")
+            mail = connect_and_authenticate(mail_settings, account_data)
+            
+            if not mail:
                 error_msg = "Error: Authentication failed - OAuth2 required"
                 logging.error(f"Authentication failed for message fetch: {email}")
-                try:
-                    mail.logout()
-                except:
-                    pass
                 GLib.idle_add(callback, error_msg, None)
                 return
 
@@ -320,7 +394,7 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
                 if status != 'OK':
                     error_msg = f"Error: Could not select folder '{folder_name}'"
                     logging.error(f"Could not select folder '{folder_name}': status={status}, data={data}")
-                    mail.logout()
+                    logout_and_remove_from_cache(mail, account_data)
                     GLib.idle_add(callback, error_msg, None)
                     return
 
@@ -330,7 +404,7 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
                 if total_messages == 0:
                     logging.debug(f"No messages in folder '{folder_name}'")
                     GLib.idle_add(callback, None, [])
-                    mail.logout()
+                    logout_and_remove_from_cache(mail, account_data)
                     return
 
                 # Fetch recent messages
@@ -343,7 +417,7 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
                 if status != 'OK':
                     error_msg = "Error: Could not fetch message headers"
                     logging.error(f"Could not fetch message headers: {data}")
-                    mail.logout()
+                    logout_and_remove_from_cache(mail, account_data)
                     GLib.idle_add(callback, error_msg, None)
                     return
 
@@ -359,11 +433,7 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
                 error_msg = f"Error: Could not access folder '{folder_name}'"
                 GLib.idle_add(callback, error_msg, None)
             finally:
-                try:
-                    mail.logout()
-                    logging.debug(f"Logged out from IMAP after message fetch: {email}")
-                except Exception as e:
-                    logging.warning(f"Error during IMAP logout after message fetch: {e}")
+                logging.debug(f"Operation completed for {email}, connection remains in cache")
 
         except Exception as e:
             logging.error(f"Failed to fetch messages for {account_data.get('email', 'unknown')}: {e}")

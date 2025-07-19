@@ -1,12 +1,14 @@
 from utils.toolkit import Gtk, Adw, Gio
 import os
 import logging
+import atexit
 from components.sidebar import AccountsSidebar
 from components.container import ScrollContainer, ContentContainer
 from components.ui import AppIcon, AppText
 from components.header import UnifiedHeader, SidebarHeader, ContentHeader, MessageListHeader
 from components.message_list import MessageList
 from utils.storage import EmailStorage
+from utils.mail import cleanup_all_connections
 
 from models import Message
 
@@ -504,5 +506,8 @@ class MyApp(Adw.Application):
         self.window.present()
 
 if __name__ == "__main__":
+    # Register cleanup function to run on exit
+    atexit.register(cleanup_all_connections)
+    
     app = MyApp()
     app.run(None)
