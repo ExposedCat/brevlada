@@ -9,7 +9,9 @@ class MessageRow:
         self.read_changed_callback = None
 
         # Determine if this is a thread or single message
-        self.is_thread = hasattr(message_or_thread, 'messages') and hasattr(message_or_thread, 'get_unread_count')
+        self.is_thread = hasattr(message_or_thread, "messages") and hasattr(
+            message_or_thread, "get_unread_count"
+        )
 
         self.widget = Gtk.ListBoxRow()
         self.widget.set_activatable(True)
@@ -43,10 +45,7 @@ class MessageRow:
         sender_container.set_spacing(8)
         sender_container.set_halign(Gtk.Align.START)
 
-        self.sender_label = AppText(
-            self.get_display_sender(),
-            class_names="heading"
-        )
+        self.sender_label = AppText(self.get_display_sender(), class_names="heading")
         sender_container.append(self.sender_label.widget)
 
         # Add thread count badge if this is a thread
@@ -57,8 +56,7 @@ class MessageRow:
         self.content_container.append(sender_container)
 
         self.subject_label = AppText(
-            self.get_display_subject(),
-            class_names="dim-label"
+            self.get_display_subject(), class_names="dim-label"
         )
         self.subject_label.widget.set_halign(Gtk.Align.START)
         self.subject_label.widget.set_ellipsize(Pango.EllipsizeMode.END)
@@ -74,9 +72,7 @@ class MessageRow:
         self.right_container.set_halign(Gtk.Align.END)
 
         self.date_label = AppText(
-            self.get_display_date(),
-            halign=Gtk.Align.END,
-            class_names="dim-label"
+            self.get_display_date(), halign=Gtk.Align.END, class_names="dim-label"
         )
         self.date_label.widget.set_halign(Gtk.Align.END)
         self.right_container.append(self.date_label.widget)
@@ -119,7 +115,11 @@ class MessageRow:
         if self.selected_callback:
             if self.is_thread:
                 # For threads, pass the latest message
-                latest_message = self.message_or_thread.messages[-1] if self.message_or_thread.messages else None
+                latest_message = (
+                    self.message_or_thread.messages[-1]
+                    if self.message_or_thread.messages
+                    else None
+                )
                 if latest_message:
                     self.selected_callback(latest_message)
             else:
@@ -129,7 +129,7 @@ class MessageRow:
         if self.is_thread:
             return self.message_or_thread.get_unread_count() == 0
         elif isinstance(self.message_or_thread, dict):
-            return self.message_or_thread.get('is_read', False)
+            return self.message_or_thread.get("is_read", False)
         else:
             return self.message_or_thread.is_read
 
@@ -137,7 +137,7 @@ class MessageRow:
         if self.is_thread:
             return self.message_or_thread.is_flagged
         elif isinstance(self.message_or_thread, dict):
-            return self.message_or_thread.get('is_flagged', False)
+            return self.message_or_thread.get("is_flagged", False)
         else:
             return self.message_or_thread.is_flagged
 
@@ -145,13 +145,13 @@ class MessageRow:
         if self.is_thread:
             return self.message_or_thread.get_display_sender()
         elif isinstance(self.message_or_thread, dict):
-            sender = self.message_or_thread.get('sender', {})
-            if sender.get('name'):
-                return sender['name']
-            elif sender.get('email'):
-                return sender['email']
+            sender = self.message_or_thread.get("sender", {})
+            if sender.get("name"):
+                return sender["name"]
+            elif sender.get("email"):
+                return sender["email"]
             else:
-                return 'Unknown Sender'
+                return "Unknown Sender"
         else:
             return self.message_or_thread.get_display_sender()
 
@@ -159,8 +159,8 @@ class MessageRow:
         if self.is_thread:
             return self.message_or_thread.get_display_subject()
         elif isinstance(self.message_or_thread, dict):
-            subject = self.message_or_thread.get('subject', '')
-            return subject if subject else '(No Subject)'
+            subject = self.message_or_thread.get("subject", "")
+            return subject if subject else "(No Subject)"
         else:
             return self.message_or_thread.get_display_subject()
 
@@ -168,13 +168,15 @@ class MessageRow:
         if self.is_thread:
             return self.message_or_thread.get_display_date()
         elif isinstance(self.message_or_thread, dict):
-            date_str = self.message_or_thread.get('date', '')
+            date_str = self.message_or_thread.get("date", "")
             if date_str:
                 from datetime import datetime
+
                 try:
                     if isinstance(date_str, str):
                         # Try to parse the date string
                         import email.utils
+
                         parsed_date = email.utils.parsedate_tz(date_str)
                         if parsed_date:
                             timestamp = email.utils.mktime_tz(parsed_date)
@@ -184,18 +186,18 @@ class MessageRow:
                             diff = now - date_obj
 
                             if diff.days == 0:
-                                return date_obj.strftime('%H:%M')
+                                return date_obj.strftime("%H:%M")
                             elif diff.days == 1:
-                                return 'Yesterday'
+                                return "Yesterday"
                             elif diff.days < 7:
-                                return date_obj.strftime('%A')
+                                return date_obj.strftime("%A")
                             elif diff.days < 365:
-                                return date_obj.strftime('%b %d')
+                                return date_obj.strftime("%b %d")
                             else:
-                                return date_obj.strftime('%b %d, %Y')
+                                return date_obj.strftime("%b %d, %Y")
                 except:
                     pass
-            return ''
+            return ""
         else:
             return self.message_or_thread.get_display_date()
 
@@ -203,7 +205,7 @@ class MessageRow:
         if self.is_thread:
             return 1 if self.message_or_thread.has_attachments else 0
         elif isinstance(self.message_or_thread, dict):
-            attachments = self.message_or_thread.get('attachments', [])
+            attachments = self.message_or_thread.get("attachments", [])
             return len(attachments)
         else:
             return self.message_or_thread.get_attachment_count()
@@ -235,7 +237,7 @@ class MessageRow:
 
         if not self.is_thread:
             if isinstance(self.message_or_thread, dict):
-                self.message_or_thread['is_read'] = True
+                self.message_or_thread["is_read"] = True
             else:
                 self.message_or_thread.is_read = True
 
@@ -271,13 +273,13 @@ class MessageRow:
         self.message.is_flagged = not self.message.is_flagged
 
         if self.message.is_flagged:
-            if not hasattr(self, 'flag_indicator'):
+            if not hasattr(self, "flag_indicator"):
                 self.flag_indicator = self.create_flag_indicator()
                 self.container.append(self.flag_indicator)
         else:
-            if hasattr(self, 'flag_indicator'):
+            if hasattr(self, "flag_indicator"):
                 self.container.remove(self.flag_indicator)
-                delattr(self, 'flag_indicator')
+                delattr(self, "flag_indicator")
 
     def update_display(self):
         self.sender_label.set_text_content(self.message.get_display_sender())
@@ -298,13 +300,13 @@ class MessageRow:
         self.container.prepend(self.read_indicator)
 
         if self.message.get_attachment_count() > 0:
-            if not hasattr(self, 'attachment_indicator'):
+            if not hasattr(self, "attachment_indicator"):
                 self.attachment_indicator = self.create_attachment_indicator()
                 self.container.append(self.attachment_indicator)
         else:
-            if hasattr(self, 'attachment_indicator'):
+            if hasattr(self, "attachment_indicator"):
                 self.container.remove(self.attachment_indicator)
-                delattr(self, 'attachment_indicator')
+                delattr(self, "attachment_indicator")
 
     def get_message(self):
         return self.message

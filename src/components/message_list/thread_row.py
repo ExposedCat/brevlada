@@ -28,9 +28,7 @@ class ThreadRow:
         if self.thread.get_unread_count() > 0:
             self.header_container.add_css_class("thread-row-unread")
 
-        self.expand_button = AppButton(
-            class_names="thread-expand-button"
-        )
+        self.expand_button = AppButton(class_names="thread-expand-button")
         self.expand_button.widget.set_icon_name("pan-end-symbolic")
         self.expand_button.widget.set_size_request(24, 24)
         self.expand_button.connect("clicked", self.on_expand_clicked)
@@ -38,14 +36,12 @@ class ThreadRow:
         self.read_indicator = self.create_read_indicator()
 
         self.sender_label = AppText(
-            self.thread.get_display_sender(),
-            class_names="thread-row-sender"
+            self.thread.get_display_sender(), class_names="thread-row-sender"
         )
         self.sender_label.widget.set_size_request(150, -1)
 
         self.subject_label = AppText(
-            self.thread.get_display_subject(),
-            class_names="thread-row-subject"
+            self.thread.get_display_subject(), class_names="thread-row-subject"
         )
 
         self.thread_subtitle = self.create_thread_subtitle()
@@ -57,7 +53,7 @@ class ThreadRow:
         self.date_label = AppText(
             self.thread.get_display_date(),
             halign=Gtk.Align.END,
-            class_names="thread-date-label"
+            class_names="thread-date-label",
         )
         self.date_label.widget.set_size_request(80, -1)
 
@@ -93,10 +89,7 @@ class ThreadRow:
         else:
             subtitle_text = participants if participants else ""
 
-        subtitle = AppText(
-            subtitle_text,
-            class_names="thread-subtitle"
-        )
+        subtitle = AppText(subtitle_text, class_names="thread-subtitle")
         subtitle.widget.set_size_request(200, -1)
         subtitle.set_opacity(0.7)
 
@@ -108,25 +101,23 @@ class ThreadRow:
             unread_badge = AppText(
                 str(unread_count),
                 halign=Gtk.Align.CENTER,
-                class_names="thread-unread-badge"
+                class_names="thread-unread-badge",
             )
             unread_badge.widget.set_size_request(20, 20)
             self.indicators_container.append(unread_badge.widget)
 
-        has_attachments = any(msg.get_attachment_count() > 0 for msg in self.thread.messages)
+        has_attachments = any(
+            msg.get_attachment_count() > 0 for msg in self.thread.messages
+        )
         if has_attachments:
             attachment_icon = AppIcon(
-                "mail-attachment-symbolic",
-                class_names="thread-attachment-icon"
+                "mail-attachment-symbolic", class_names="thread-attachment-icon"
             )
             attachment_icon.set_pixel_size(16)
             self.indicators_container.append(attachment_icon.widget)
 
         if self.thread.is_flagged:
-            flag_icon = AppIcon(
-                "starred-symbolic",
-                class_names="thread-flag-icon"
-            )
+            flag_icon = AppIcon("starred-symbolic", class_names="thread-flag-icon")
             flag_icon.set_pixel_size(16)
             self.indicators_container.append(flag_icon.widget)
 
@@ -160,23 +151,20 @@ class ThreadRow:
         container.append(read_indicator)
 
         sender_label = AppText(
-            message.get_display_sender(),
-            class_names="thread-message-sender"
+            message.get_display_sender(), class_names="thread-message-sender"
         )
         sender_label.widget.set_size_request(120, -1)
         container.append(sender_label.widget)
 
         date_label = AppText(
-            message.get_display_date(),
-            class_names="thread-message-date"
+            message.get_display_date(), class_names="thread-message-date"
         )
         date_label.widget.set_size_request(80, -1)
         container.append(date_label.widget)
 
         if message.get_attachment_count() > 0:
             attachment_icon = AppIcon(
-                "mail-attachment-symbolic",
-                class_names="thread-message-attachment-icon"
+                "mail-attachment-symbolic", class_names="thread-message-attachment-icon"
             )
             attachment_icon.set_pixel_size(12)
             container.append(attachment_icon.widget)
@@ -189,13 +177,11 @@ class ThreadRow:
         latest_message = self.thread.latest_message
         if latest_message.is_read:
             indicator = AppIcon(
-                "mail-read-symbolic",
-                class_names="thread-row-read-indicator"
+                "mail-read-symbolic", class_names="thread-row-read-indicator"
             )
         else:
             indicator = AppIcon(
-                "mail-unread-symbolic",
-                class_names="thread-row-unread-indicator"
+                "mail-unread-symbolic", class_names="thread-row-unread-indicator"
             )
         indicator.set_pixel_size(16)
         return indicator.widget
@@ -203,13 +189,11 @@ class ThreadRow:
     def create_message_read_indicator(self, message):
         if message.is_read:
             indicator = AppIcon(
-                "mail-read-symbolic",
-                class_names="thread-message-read-indicator"
+                "mail-read-symbolic", class_names="thread-message-read-indicator"
             )
         else:
             indicator = AppIcon(
-                "mail-unread-symbolic",
-                class_names="thread-message-unread-indicator"
+                "mail-unread-symbolic", class_names="thread-message-unread-indicator"
             )
         indicator.set_pixel_size(12)
         return indicator.widget
@@ -268,7 +252,9 @@ class ThreadRow:
     def update_indicators(self):
         self.header_container.remove(self.read_indicator)
         self.read_indicator = self.create_read_indicator()
-        self.header_container.insert_child_after(self.read_indicator, self.expand_button.widget)
+        self.header_container.insert_child_after(
+            self.read_indicator, self.expand_button.widget
+        )
 
         if self.thread.get_unread_count() == 0:
             self.header_container.remove_css_class("thread-row-unread")

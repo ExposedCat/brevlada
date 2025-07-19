@@ -8,7 +8,7 @@ from components.container import (
     ButtonContainer,
     ContentContainer,
 )
-from components.ui import AppIcon, AppText
+from components.ui import AppIcon, AppText, LoadingIcon
 from utils.mail import fetch_imap_folders
 
 
@@ -36,6 +36,7 @@ class AccountsSidebar:
         self.selected_account_button = None
         self.selected_folder_button = None
         self.selection_callback = None
+        self.loading_accounts = set()
 
         self.load_accounts()
 
@@ -121,62 +122,49 @@ class AccountsSidebar:
         account_row.expand_button.set_icon_name("pan-down-symbolic")
 
         account_path = account_row.account_data["path"]
+        account_email = account_row.account_data["email"]
+
         if account_path in self.account_folders:
             self.add_folder_rows(account_row, self.account_folders[account_path])
         else:
-            self.add_loading_row(account_row)
+            self.loading_accounts.add(account_email)
+            from utils.toolkit import GLib
+
+            GLib.idle_add(self.update_account_icon, account_row, True)
 
             def on_folders_fetched(folders):
-                self.remove_loading_row(account_row)
                 self.account_folders[account_path] = folders
                 self.add_folder_rows(account_row, folders)
 
+                self.loading_accounts.discard(account_email)
+                from utils.toolkit import GLib
+
+                GLib.idle_add(self.update_account_icon, account_row, False)
+
             fetch_imap_folders(account_row.account_data, on_folders_fetched)
 
-    def add_loading_row(self, account_row):
-        loading_spinner = Gtk.Spinner()
-        loading_spinner.start()
-
-        loading_container = ButtonContainer(
-            spacing=10,
-            class_names="loading-container",
-            children=[
-                loading_spinner,
-                AppText(
-                    text="Loading folders...", class_names=["loading-text", "dim-label"]
-                ).widget,
-            ],
-            margin_top=8,
-            margin_bottom=8,
-            margin_start=32,
-            margin_end=12,
-        )
-
-        loading_row = ContentItem(
-            class_names="loading-row", children=loading_container.widget
-        )
-        setattr(loading_row, "is_loading", True)
-        setattr(loading_row, "parent_account", account_row.account_data)
-        setattr(loading_row.widget, "is_loading", True)
-        setattr(loading_row.widget, "parent_account", account_row.account_data)
-
-        account_index = 0
-        for i, row in enumerate(self.get_sidebar_rows()):
-            if row == account_row.widget:
-                account_index = i
-                break
-
-        self.sidebar_list.widget.insert(loading_row.widget, account_index + 1)
-
-    def remove_loading_row(self, account_row):
-        for row in self.get_sidebar_rows():
-            if (
-                hasattr(row, "is_loading")
-                and hasattr(row, "parent_account")
-                and getattr(row, "parent_account") == account_row.account_data
-            ):
-                self.sidebar_list.widget.remove(row)
-                break
+    def update_account_icon(self, account_row, loading=False):
+        if hasattr(account_row, "account_icon_widget") and hasattr(
+            account_row, "account_icon_container"
+        ):
+            if loading:
+                loading_icon = LoadingIcon(size=16)
+                loading_icon.start()
+                account_row.account_icon_container.remove(
+                    account_row.account_icon_widget
+                )
+                account_row.account_icon_container.prepend(loading_icon.widget)
+                setattr(account_row, "loading_icon", loading_icon)
+            else:
+                if hasattr(account_row, "loading_icon"):
+                    account_row.loading_icon.stop()
+                    account_row.account_icon_container.remove(
+                        account_row.loading_icon.widget
+                    )
+                    account_row.account_icon_container.prepend(
+                        account_row.account_icon_widget
+                    )
+                    delattr(account_row, "loading_icon")
 
     def organize_folders_hierarchy(self, folders):
         root_folders = {}
@@ -529,13 +517,14 @@ class AccountsSidebar:
                         )
                         expand_button.set_icon_name("pan-end-symbolic")
 
+                        account_icon = AppIcon(
+                            "mail-unread-symbolic", class_names="account-icon"
+                        )
                         account_box = ContentContainer(
                             spacing=6,
                             class_names="account-content",
                             children=[
-                                AppIcon(
-                                    "mail-unread-symbolic", class_names="account-icon"
-                                ).widget,
+                                account_icon.widget,
                                 AppText(
                                     text=account_data["account_name"],
                                     class_names=["account-text"],
@@ -571,6 +560,10 @@ class AccountsSidebar:
                         setattr(account_row, "main_box", account_container)
                         setattr(account_row, "expand_button", expand_button)
                         setattr(account_row, "account_button", account_button)
+                        setattr(account_row, "account_icon_widget", account_icon.widget)
+                        setattr(
+                            account_row, "account_icon_container", account_box.widget
+                        )
                         setattr(account_row.widget, "main_box", account_container)
                         setattr(account_row.widget, "expand_button", expand_button)
                         setattr(account_row.widget, "account_button", account_button)

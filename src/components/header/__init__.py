@@ -1,5 +1,6 @@
 from utils.toolkit import Gtk, Adw
 from components.button import AppButton
+from components.ui import LoadingIcon
 
 
 class UnifiedHeader:
@@ -39,35 +40,34 @@ class MessageListHeader:
         self.widget.set_show_end_title_buttons(False)
         self.widget.set_size_request(width, -1)
         self.widget.add_css_class("message-list-header")
-        
+
         # Add refresh button
-        self.refresh_button = AppButton(
-            class_names="message-list-refresh-button"
-        )
+        self.refresh_button = AppButton()
         self.refresh_button.set_icon_name("view-refresh-symbolic")
         self.refresh_button.widget.set_tooltip_text("Refresh messages")
         self.refresh_button.connect("clicked", self.on_refresh_clicked)
         self.widget.pack_end(self.refresh_button.widget)
-        
+
         self.refresh_callback = None
 
     def on_refresh_clicked(self, button):
-        """Handle refresh button click"""
         if self.refresh_callback:
             self.refresh_callback()
 
     def connect_refresh(self, callback):
-        """Connect refresh callback"""
         self.refresh_callback = callback
 
     def set_refreshing(self, refreshing):
-        """Set refresh button state"""
-        self.refresh_button.widget.set_sensitive(not refreshing)
         if refreshing:
-            # Add spinner to refresh button
-            spinner = Gtk.Spinner()
-            spinner.start()
-            self.refresh_button.widget.set_child(spinner)
+            loading_icon = LoadingIcon(size=16)
+            loading_icon.start()
+            self.refresh_button.widget.set_child(loading_icon.widget)
         else:
-            self.refresh_button.set_icon_name("view-refresh-symbolic")
             self.refresh_button.widget.set_child(None)
+            self.refresh_button.set_icon_name("view-refresh-symbolic")
+
+    def set_loading(self, loading, text="Loading..."):
+        self.set_refreshing(loading)
+
+    def set_enabled(self, enabled):
+        self.refresh_button.widget.set_sensitive(enabled)

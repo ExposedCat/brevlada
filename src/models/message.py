@@ -8,31 +8,31 @@ from typing import List, Dict, Optional, Any
 
 class Message:
     def __init__(self, message_data: Dict[str, Any]):
-        self.uid = message_data.get('uid')
-        self.flags = message_data.get('flags', [])
-        self.envelope = message_data.get('envelope', {})
-        self.body_structure = message_data.get('bodystructure')
-        self.raw_headers = message_data.get('headers', '')
-        self.body = message_data.get('body', '')
+        self.uid = message_data.get("uid")
+        self.flags = message_data.get("flags", [])
+        self.envelope = message_data.get("envelope", {})
+        self.body_structure = message_data.get("bodystructure")
+        self.raw_headers = message_data.get("headers", "")
+        self.body = message_data.get("body", "")
 
         # Parse envelope data
-        self.subject = self._decode_header(self.envelope.get('subject', ''))
-        self.sender = self._parse_address(self.envelope.get('from', []))
-        self.recipients = self._parse_address_list(self.envelope.get('to', []))
-        self.cc = self._parse_address_list(self.envelope.get('cc', []))
-        self.bcc = self._parse_address_list(self.envelope.get('bcc', []))
-        self.reply_to = self._parse_address_list(self.envelope.get('reply_to', []))
-        self.date = self._parse_date(self.envelope.get('date'))
-        self.message_id = self.envelope.get('message_id', '')
-        self.in_reply_to = self.envelope.get('in_reply_to', '')
-        self.references = self.envelope.get('references', '')
+        self.subject = self._decode_header(self.envelope.get("subject", ""))
+        self.sender = self._parse_address(self.envelope.get("from", []))
+        self.recipients = self._parse_address_list(self.envelope.get("to", []))
+        self.cc = self._parse_address_list(self.envelope.get("cc", []))
+        self.bcc = self._parse_address_list(self.envelope.get("bcc", []))
+        self.reply_to = self._parse_address_list(self.envelope.get("reply_to", []))
+        self.date = self._parse_date(self.envelope.get("date"))
+        self.message_id = self.envelope.get("message_id", "")
+        self.in_reply_to = self.envelope.get("in_reply_to", "")
+        self.references = self.envelope.get("references", "")
 
         # Message state
-        self.is_read = '\\Seen' in self.flags
-        self.is_flagged = '\\Flagged' in self.flags
-        self.is_deleted = '\\Deleted' in self.flags
-        self.is_draft = '\\Draft' in self.flags
-        self.is_answered = '\\Answered' in self.flags
+        self.is_read = "\\Seen" in self.flags
+        self.is_flagged = "\\Flagged" in self.flags
+        self.is_deleted = "\\Deleted" in self.flags
+        self.is_draft = "\\Draft" in self.flags
+        self.is_answered = "\\Answered" in self.flags
 
         # Threading support
         self.thread_subject = self.get_thread_subject()
@@ -50,18 +50,18 @@ class Message:
     def _decode_header(self, header_value: str) -> str:
         """Decode email header value handling MIME encoding"""
         if not header_value:
-            return ''
+            return ""
 
         try:
             decoded_parts = email.header.decode_header(header_value)
-            decoded_string = ''
+            decoded_string = ""
 
             for part, encoding in decoded_parts:
                 if isinstance(part, bytes):
                     if encoding:
                         decoded_string += part.decode(encoding)
                     else:
-                        decoded_string += part.decode('utf-8', errors='ignore')
+                        decoded_string += part.decode("utf-8", errors="ignore")
                 else:
                     decoded_string += str(part)
 
@@ -72,18 +72,18 @@ class Message:
     def _parse_address(self, address_data: List) -> Dict[str, str]:
         """Parse a single address from envelope data"""
         if not address_data or not isinstance(address_data, list):
-            return {'name': '', 'email': ''}
+            return {"name": "", "email": ""}
 
         try:
             addr = address_data[0] if address_data else {}
-            name = self._decode_header(addr.get('name', ''))
-            mailbox = addr.get('mailbox', '')
-            host = addr.get('host', '')
-            email_addr = f"{mailbox}@{host}" if mailbox and host else ''
+            name = self._decode_header(addr.get("name", ""))
+            mailbox = addr.get("mailbox", "")
+            host = addr.get("host", "")
+            email_addr = f"{mailbox}@{host}" if mailbox and host else ""
 
-            return {'name': name, 'email': email_addr}
+            return {"name": name, "email": email_addr}
         except Exception:
-            return {'name': '', 'email': ''}
+            return {"name": "", "email": ""}
 
     def _parse_address_list(self, address_list: List) -> List[Dict[str, str]]:
         """Parse a list of addresses from envelope data"""
@@ -94,7 +94,7 @@ class Message:
         for addr_data in address_list:
             if isinstance(addr_data, dict):
                 addr = self._parse_address([addr_data])
-                if addr['email']:
+                if addr["email"]:
                     addresses.append(addr)
 
         return addresses
@@ -118,51 +118,53 @@ class Message:
     def _format_date_for_display(self) -> str:
         """Format date for display in message list"""
         if not self.date:
-            return ''
+            return ""
 
         now = datetime.now()
         diff = now - self.date
 
         if diff.days == 0:
             # Today - show time
-            return self.date.strftime('%H:%M')
+            return self.date.strftime("%H:%M")
         elif diff.days == 1:
             # Yesterday
-            return 'Yesterday'
+            return "Yesterday"
         elif diff.days < 7:
             # This week - show day name
-            return self.date.strftime('%A')
+            return self.date.strftime("%A")
         elif diff.days < 365:
             # This year - show month and day
-            return self.date.strftime('%b %d')
+            return self.date.strftime("%b %d")
         else:
             # Older - show year
-            return self.date.strftime('%b %d, %Y')
+            return self.date.strftime("%b %d, %Y")
 
     def _format_sender_for_display(self) -> str:
         """Format sender for display in message list"""
-        if self.sender['name']:
-            return self.sender['name']
-        elif self.sender['email']:
-            return self.sender['email']
+        if self.sender["name"]:
+            return self.sender["name"]
+        elif self.sender["email"]:
+            return self.sender["email"]
         else:
-            return 'Unknown Sender'
+            return "Unknown Sender"
 
     def _format_subject_for_display(self) -> str:
         """Format subject for display in message list"""
         if self.subject:
             return self.subject
         else:
-            return '(No Subject)'
+            return "(No Subject)"
 
     def get_thread_subject(self) -> str:
         """Get normalized subject for threading"""
         if not self.subject:
-            return ''
+            return ""
 
         # Remove common reply/forward prefixes
-        normalized = re.sub(r'^(Re|Fwd?|AW|Antw|回复|转发):\s*', '', self.subject, flags=re.IGNORECASE)
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        normalized = re.sub(
+            r"^(Re|Fwd?|AW|Antw|回复|转发):\s*", "", self.subject, flags=re.IGNORECASE
+        )
+        normalized = re.sub(r"\s+", " ", normalized).strip()
 
         return normalized
 
@@ -172,11 +174,11 @@ class Message:
 
         if self.references:
             # Split by whitespace and angle brackets
-            ref_ids = re.findall(r'<([^>]+)>', self.references)
+            ref_ids = re.findall(r"<([^>]+)>", self.references)
             refs.extend(ref_ids)
 
         if self.in_reply_to:
-            ref_ids = re.findall(r'<([^>]+)>', self.in_reply_to)
+            ref_ids = re.findall(r"<([^>]+)>", self.in_reply_to)
             refs.extend(ref_ids)
 
         return refs
@@ -205,11 +207,11 @@ class Message:
         """Get summary of attachments for display"""
         count = self.get_attachment_count()
         if count == 0:
-            return ''
+            return ""
         elif count == 1:
-            return '1 attachment'
+            return "1 attachment"
         else:
-            return f'{count} attachments'
+            return f"{count} attachments"
 
     def get_display_sender(self) -> str:
         """Get formatted sender for display"""
@@ -228,8 +230,15 @@ class Message:
 
 
 class Attachment:
-    def __init__(self, filename: str, content_type: Optional[str] = None, size: Optional[int] = None,
-                 part_id: Optional[str] = None, is_inline: bool = False, content_id: Optional[str] = None):
+    def __init__(
+        self,
+        filename: str,
+        content_type: Optional[str] = None,
+        size: Optional[int] = None,
+        part_id: Optional[str] = None,
+        is_inline: bool = False,
+        content_id: Optional[str] = None,
+    ):
         self.filename = filename
         self.content_type = content_type
         self.size = size
@@ -241,45 +250,45 @@ class Attachment:
 
     def get_display_name(self) -> str:
         """Get filename for display"""
-        return self.filename or 'Unknown'
+        return self.filename or "Unknown"
 
     def get_file_extension(self) -> str:
         """Get file extension"""
-        if self.filename and '.' in self.filename:
-            return self.filename.rsplit('.', 1)[1].lower()
-        return ''
+        if self.filename and "." in self.filename:
+            return self.filename.rsplit(".", 1)[1].lower()
+        return ""
 
     def get_icon_name(self) -> str:
         """Get appropriate icon name based on file type"""
         ext = self.get_file_extension()
 
-        if ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg']:
-            return 'image-x-generic'
-        elif ext in ['pdf']:
-            return 'application-pdf'
-        elif ext in ['doc', 'docx']:
-            return 'application-msword'
-        elif ext in ['xls', 'xlsx']:
-            return 'application-vnd.ms-excel'
-        elif ext in ['ppt', 'pptx']:
-            return 'application-vnd.ms-powerpoint'
-        elif ext in ['txt', 'md']:
-            return 'text-x-generic'
-        elif ext in ['zip', 'rar', '7z', 'tar', 'gz']:
-            return 'application-x-archive'
+        if ext in ["jpg", "jpeg", "png", "gif", "bmp", "svg"]:
+            return "image-x-generic"
+        elif ext in ["pdf"]:
+            return "application-pdf"
+        elif ext in ["doc", "docx"]:
+            return "application-msword"
+        elif ext in ["xls", "xlsx"]:
+            return "application-vnd.ms-excel"
+        elif ext in ["ppt", "pptx"]:
+            return "application-vnd.ms-powerpoint"
+        elif ext in ["txt", "md"]:
+            return "text-x-generic"
+        elif ext in ["zip", "rar", "7z", "tar", "gz"]:
+            return "application-x-archive"
         else:
-            return 'text-x-generic'
+            return "text-x-generic"
 
     def get_size_string(self) -> str:
         """Get human-readable file size"""
         if not self.size:
-            return 'Unknown size'
+            return "Unknown size"
 
         if self.size < 1024:
-            return f'{self.size} B'
+            return f"{self.size} B"
         elif self.size < 1024 * 1024:
-            return f'{self.size / 1024:.1f} KB'
+            return f"{self.size / 1024:.1f} KB"
         elif self.size < 1024 * 1024 * 1024:
-            return f'{self.size / (1024 * 1024):.1f} MB'
+            return f"{self.size / (1024 * 1024):.1f} MB"
         else:
-            return f'{self.size / (1024 * 1024 * 1024):.1f} GB'
+            return f"{self.size / (1024 * 1024 * 1024):.1f} GB"

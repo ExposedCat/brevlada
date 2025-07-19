@@ -1,4 +1,4 @@
-from utils.toolkit import Gtk, Pango
+from utils.toolkit import Gtk, Pango, Adw
 
 
 class AppIcon:
@@ -139,3 +139,21 @@ class AppText:
 
     def set_opacity(self, opacity):
         self.widget.set_opacity(opacity)
+
+
+class LoadingIcon:
+    def __init__(self, size=16, class_names=None):
+        self.widget = Gtk.Spinner()
+        self.widget.set_size_request(size, size)
+
+    def start(self):
+        """Start the loading animation"""
+        self.widget.start()
+
+    def stop(self):
+        """Stop the loading animation"""
+        self.widget.stop()
+
+    def is_spinning(self):
+        """Check if the spinner is currently spinning"""
+        return self.widget.get_spinning()

@@ -21,20 +21,22 @@ class MessageThread:
         self.messages.append(message)
 
         # Get message attributes regardless of format
-        sender = self._get_attr(message, 'sender', {})
-        recipients = self._get_attr(message, 'recipients', [])
-        msg_date = self._get_attr(message, 'date', None)
-        is_read = self._get_attr(message, 'is_read', True)
-        has_attachments = self._get_attr(message, 'has_attachments', False)
-        is_flagged = self._get_attr(message, 'is_flagged', False)
+        sender = self._get_attr(message, "sender", {})
+        recipients = self._get_attr(message, "recipients", [])
+        msg_date = self._get_attr(message, "date", None)
+        is_read = self._get_attr(message, "is_read", True)
+        has_attachments = self._get_attr(message, "has_attachments", False)
+        is_flagged = self._get_attr(message, "is_flagged", False)
 
         # Update participants
-        if isinstance(sender, dict) and sender.get('email'):
-            self.participants[sender['email']] = sender.get('name') or sender['email']
+        if isinstance(sender, dict) and sender.get("email"):
+            self.participants[sender["email"]] = sender.get("name") or sender["email"]
 
         for recipient in recipients:
-            if isinstance(recipient, dict) and recipient.get('email'):
-                self.participants[recipient['email']] = recipient.get('name') or recipient['email']
+            if isinstance(recipient, dict) and recipient.get("email"):
+                self.participants[recipient["email"]] = (
+                    recipient.get("name") or recipient["email"]
+                )
 
         # Parse date if it's a string
         if isinstance(msg_date, str) and msg_date:
@@ -68,45 +70,45 @@ class MessageThread:
 
     def get_display_subject(self) -> str:
         """Get subject for display in thread list"""
-        return self.subject or '(No Subject)'
+        return self.subject or "(No Subject)"
 
     def get_display_sender(self) -> str:
         """Get sender info for display in thread list"""
         if not self.messages:
-            return 'Unknown'
+            return "Unknown"
 
         # Use the latest message's sender
         latest_message = self.messages[-1]
         if isinstance(latest_message, dict):
-            sender = latest_message.get('sender', {})
-            if sender.get('name'):
-                return sender['name']
-            elif sender.get('email'):
-                return sender['email']
+            sender = latest_message.get("sender", {})
+            if sender.get("name"):
+                return sender["name"]
+            elif sender.get("email"):
+                return sender["email"]
             else:
-                return 'Unknown Sender'
+                return "Unknown Sender"
         else:
             return latest_message.display_sender
 
     def get_display_date(self) -> str:
         """Get date for display in thread list"""
         if not self.latest_date:
-            return ''
+            return ""
 
         # Format date for display
         now = datetime.now()
         diff = now - self.latest_date
 
         if diff.days == 0:
-            return self.latest_date.strftime('%H:%M')
+            return self.latest_date.strftime("%H:%M")
         elif diff.days == 1:
-            return 'Yesterday'
+            return "Yesterday"
         elif diff.days < 7:
-            return self.latest_date.strftime('%A')
+            return self.latest_date.strftime("%A")
         elif diff.days < 365:
-            return self.latest_date.strftime('%b %d')
+            return self.latest_date.strftime("%b %d")
         else:
-            return self.latest_date.strftime('%b %d, %Y')
+            return self.latest_date.strftime("%b %d, %Y")
 
     def get_participant_summary(self) -> str:
         """Get summary of thread participants"""
@@ -114,7 +116,7 @@ class MessageThread:
             return self.get_display_sender()
         elif len(self.participants) == 2:
             names = [name for name in self.participants.values() if name]
-            return ' and '.join(names[:2])
+            return " and ".join(names[:2])
         else:
             names = [name for name in self.participants.values() if name]
             return f"{names[0]} and {len(self.participants) - 1} others"
@@ -123,7 +125,9 @@ class MessageThread:
         """Get number of unread messages in thread"""
         return self.unread_count
 
-    def _get_attr(self, message: Union[Message, Dict[str, Any]], attr: str, default=None):
+    def _get_attr(
+        self, message: Union[Message, Dict[str, Any]], attr: str, default=None
+    ):
         """Get attribute from message (works with both Message objects and dicts)"""
         if isinstance(message, dict):
             return message.get(attr, default)
@@ -132,7 +136,7 @@ class MessageThread:
 
     def _get_date_for_sort(self, message: Union[Message, Dict[str, Any]]) -> datetime:
         """Get date for sorting messages"""
-        msg_date = self._get_attr(message, 'date', None)
+        msg_date = self._get_attr(message, "date", None)
 
         if isinstance(msg_date, str) and msg_date:
             try:

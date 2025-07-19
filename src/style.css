@@ -1,9 +1,7 @@
-/* Button component styles */
 button.flat {
     padding: 8px;
 }
 
-/* Container component styles */
 .sidebar-wrapper {
     background-color: @sidebar_bg_color;
 }
@@ -29,43 +27,15 @@ button.flat {
     background: transparent;
 }
 
-/* Content component styles */
-.content-box {
-    /* Add any content-box specific styles here */
-}
-
-.content-icon {
-    /* Add any content-icon specific styles here */
-}
-
-.content-text {
-    /* Add any content-text specific styles here */
-}
-
-.button-container {
-    /* Add any button-container specific styles here */
-}
-
-.content-list-item {
-    /* Add any content-list-item specific styles here */
-}
-
-.content-list-item-base {
-    /* Add any base content-list-item specific styles here */
-}
-
 .content-item-indented {
     margin-left: 45px;
 }
 
-/* UI component styles */
 .error-icon {
-
     opacity: 0.8;
 }
 
 .error-text {
-
     font-size: 0.9em;
     opacity: 0.9;
 }
@@ -75,11 +45,9 @@ button.flat {
 }
 
 .error {
-
     font-weight: bold;
 }
 
-/* Main layout styles */
 paned > separator {
     min-width: 0;
     background-color: transparent;
@@ -100,7 +68,6 @@ paned {
     height: 100%;
 }
 
-/* Header styles */
 .sidebar-header {
     background-color: transparent;
     border: none;
@@ -125,10 +92,6 @@ paned {
     min-width: 0;
 }
 
-.message-list-refresh-button {
-    margin-right: 6px;
-}
-
 .unified-header {
     border: none;
     box-shadow: none;
@@ -144,7 +107,6 @@ toolbarview > * {
     box-shadow: none;
 }
 
-/* Message List Component Styles */
 .message-list {
     background-color: transparent;
     min-height: 100%;
@@ -168,12 +130,10 @@ toolbarview > * {
 }
 
 .message-list-empty-icon {
-
     margin-bottom: 12px;
 }
 
 .message-list-empty-text {
-
     font-size: 14px;
 }
 
@@ -189,7 +149,6 @@ toolbarview > * {
 }
 
 .message-list-loading-text {
-
     font-size: 14px;
 }
 
@@ -294,98 +253,22 @@ toolbarview > * {
     padding: 2px 6px;
 }
 
-.thread-row {
-}
-
-
-
-
-
-
-
-
-
-.thread-row-expanded {
-}
-
-.thread-expand-button {
-}
-
-
-
-.thread-row-sender {
-}
-
-.thread-row-subject {
-}
-
-.thread-subtitle {
-}
-
-.thread-unread-badge {
-}
-
 .thread-attachment-icon {
-
     opacity: 0.8;
 }
 
-.thread-flag-icon {
-}
-
-.thread-date-label {
-}
-
 .thread-row-read-indicator {
-
     opacity: 0.7;
-}
-
-.thread-row-unread-indicator {
-}
-
-.thread-message-list {
-}
-
-.thread-message-rows {
-}
-
-.thread-message-row {
-}
-
-
-
-
-
-.thread-message-row-unread {
-}
-
-.thread-message-sender {
-}
-
-.thread-message-date {
 }
 
 .thread-message-read-indicator {
-
     opacity: 0.6;
 }
 
-.thread-message-unread-indicator {
-}
-
 .thread-message-attachment-icon {
-
     opacity: 0.7;
 }
 
-.message-subject {
-}
-
-.sender-info-row,
-.date-info-row {
-}
-
-.sender-value,
-.date-value {
+spinner {
+    color: @window_fg_color;
 }
