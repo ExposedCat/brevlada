@@ -125,6 +125,10 @@ paned {
     min-width: 0;
 }
 
+.message-list-refresh-button {
+    margin-right: 6px;
+}
+
 .unified-header {
     border: none;
     box-shadow: none;
@@ -199,53 +203,81 @@ toolbarview > * {
 }
 
 .message-list-error-text {
+    color: @error_color;
+    font-size: 14px;
 }
 
 .message-list-retry-button {
+    margin-top: 12px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
+    border: none;
 }
 
 .message-list-retry-button:hover {
-
+    background-color: alpha(@accent_bg_color, 0.8);
 }
 
 .message-row {
+    padding: 8px 12px;
+    border-bottom: 1px solid @borders;
+    background: transparent;
 }
 
+.message-row:hover {
+    background-color: alpha(@accent_color, 0.05);
+}
 
-
-
-
-
-
-
+.message-row:selected {
+    background-color: alpha(@accent_color, 0.1);
+}
 
 .message-row-sender {
+    font-weight: 500;
+    color: @window_fg_color;
 }
 
 .message-row-sender-unread {
+    font-weight: 600;
+    color: @window_fg_color;
 }
 
 .message-row-subject {
+    color: @window_fg_color;
+    opacity: 0.8;
 }
 
 .message-row-subject-unread {
+    color: @window_fg_color;
+    font-weight: 500;
+    opacity: 1;
 }
 
 .message-row-date {
+    color: @window_fg_color;
+    opacity: 0.6;
+    font-size: 12px;
 }
 
 .message-row-read-indicator {
-
     opacity: 0.7;
+    color: @window_fg_color;
 }
 
 .message-row-unread-indicator {
+    color: @accent_color;
+    font-weight: bold;
 }
 
 .message-row-attachment-icon {
+    color: @window_fg_color;
+    opacity: 0.6;
 }
 
 .message-row-flag-icon {
+    color: @accent_color;
 }
 
 .thread-count-container {

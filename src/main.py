@@ -9,6 +9,7 @@ from components.header import UnifiedHeader, SidebarHeader, ContentHeader, Messa
 from components.message_list import MessageList
 from utils.storage import EmailStorage
 from utils.mail import cleanup_all_connections
+import atexit
 
 from models import Message
 
@@ -131,6 +132,9 @@ class MyWindow(Adw.ApplicationWindow):
 
         self.message_list = MessageList(self.storage, None)
         self.message_list.connect_message_selected(self.on_message_selected)
+        
+        # Connect refresh button
+        self.message_list_header.connect_refresh(self.on_refresh_requested)
 
         sidebar = AccountsSidebar(class_names="main-sidebar")
         sidebar.connect_row_selected(self.on_account_selected)
@@ -388,6 +392,12 @@ class MyWindow(Adw.ApplicationWindow):
             self.empty_state.widget.set_visible(True)
             self.account_details.widget.set_visible(False)
 
+    def on_refresh_requested(self):
+        """Handle refresh request"""
+        if self.current_account and self.current_folder:
+            logging.info(f"Refreshing messages for {self.current_account['email']} - {self.current_folder}")
+            self.message_list.refresh_messages()
+
     def create_sample_messages(self):
         sample_messages = [
             {
@@ -510,4 +520,10 @@ if __name__ == "__main__":
     atexit.register(cleanup_all_connections)
     
     app = MyApp()
+    
+    def cleanup_on_exit():
+        if hasattr(app, 'window') and hasattr(app.window, 'message_list'):
+            app.window.message_list.cleanup()
+    
+    atexit.register(cleanup_on_exit)
     app.run(None)

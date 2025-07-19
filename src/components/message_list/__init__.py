@@ -8,6 +8,7 @@ from .message_row import MessageRow
 import threading
 import logging
 from utils.mail import fetch_messages_from_folder
+from utils.sync_service import SyncService
 
 
 class MessageList:
@@ -21,6 +22,11 @@ class MessageList:
         self.message_selected_callback = None
         self.threading_enabled = True
         self.message_row_instances = {}
+        
+        # Initialize sync service
+        self.sync_service = SyncService(storage, sync_interval=300)  # 5 minutes
+        self.sync_service.add_sync_callback(self.on_sync_event)
+        self.sync_service.start()
 
         self.widget = Adw.PreferencesGroup()
         self.widget.set_vexpand(True)
@@ -127,6 +133,11 @@ class MessageList:
     def set_folder(self, folder):
         logging.debug(f"MessageList: Setting folder to {folder}")
         self.current_folder = folder
+        
+        # Update sync service with current folder
+        if self.sync_service:
+            self.sync_service.set_current_folder(folder)
+        
         if folder:
             logging.debug(f"MessageList: Loading messages for folder {folder}")
             self.load_messages()
@@ -136,9 +147,18 @@ class MessageList:
 
     def set_account_data(self, account_data):
         logging.debug(f"MessageList: Setting account_data to {account_data}")
+        
+        # Unregister previous account if any
+        if self.current_account_data:
+            self.sync_service.unregister_account(self.current_account_data['email'])
+        
         self.current_account_data = account_data
+        
+        # Register new account with sync service if we have account data
+        if account_data:
+            self.sync_service.register_account(account_data)
 
-    def load_messages(self):
+    def load_messages(self, force_refresh=False):
         if not self.current_folder:
             logging.debug("MessageList: No current folder, cannot load messages")
             return
@@ -148,21 +168,25 @@ class MessageList:
             return
 
         account_id = self.current_account_data['email']
-        logging.info(f"MessageList: Loading messages for folder {self.current_folder}, account_id {account_id}")
+        logging.info(f"MessageList: Loading messages for folder {self.current_folder}, account_id {account_id}, force_refresh={force_refresh}")
         self.show_loading_state()
 
         def fetch_messages():
             try:
-                logging.debug(f"MessageList: Fetching messages from storage for folder {self.current_folder}, account_id {account_id}")
-                messages = self.storage.get_messages(self.current_folder, account_id)
-                logging.debug(f"MessageList: Retrieved {len(messages)} messages from storage")
+                if not force_refresh:
+                    logging.debug(f"MessageList: Fetching messages from storage for folder {self.current_folder}, account_id {account_id}")
+                    messages = self.storage.get_messages(self.current_folder, account_id)
+                    logging.debug(f"MessageList: Retrieved {len(messages)} messages from storage")
 
-                if not messages:
-                    logging.debug("MessageList: No messages in storage, fetching from IMAP")
+                    if not messages:
+                        logging.debug("MessageList: No messages in storage, fetching from IMAP")
+                        self.fetch_from_imap()
+                        return
+
+                    GLib.idle_add(self.on_messages_loaded, messages)
+                else:
+                    logging.debug("MessageList: Force refresh requested, fetching from IMAP")
                     self.fetch_from_imap()
-                    return
-
-                GLib.idle_add(self.on_messages_loaded, messages)
             except Exception as e:
                 logging.error(f"MessageList: Error fetching messages for folder {self.current_folder}: {e}")
                 logging.debug(f"MessageList: Exception details: {type(e).__name__}: {str(e)}")
@@ -332,3 +356,46 @@ class MessageList:
                 self.populate_threaded_list()
             else:
                 self.populate_message_list()
+                
+    def cleanup(self):
+        """Clean up resources when component is destroyed"""
+        if self.sync_service:
+            self.sync_service.stop()
+            logging.info("MessageList: Sync service stopped")
+
+    def refresh_messages(self):
+        """Force refresh messages from IMAP server"""
+        logging.info("MessageList: Force refreshing messages from IMAP")
+        self.load_messages(force_refresh=True)
+        
+    def sync_folder_manually(self, folder_name: str):
+        """Manually sync a specific folder"""
+        if not self.current_account_data:
+            logging.warning("MessageList: No account data available for manual sync")
+            return
+            
+        logging.info(f"MessageList: Manual sync requested for folder {folder_name}")
+        self.sync_service.sync_folder(self.current_account_data, folder_name, force=True)
+        
+    def on_sync_event(self, event_type: str, account_id: str, folder_name: str, data):
+        """Handle sync service events"""
+        if event_type == "folder_discovery_complete":
+            logging.info(f"MessageList: Folder discovery completed for {account_id}, found {len(data)} folders")
+            # Could update UI to show available folders
+        elif event_type == "folder_discovery_error":
+            logging.error(f"MessageList: Folder discovery failed for {account_id}: {data}")
+        elif event_type == "sync_complete":
+            # Only handle sync events for current folder
+            if account_id == self.current_account_data.get('email') and folder_name == self.current_folder:
+                logging.info(f"MessageList: Sync completed for {folder_name}, {data} messages")
+                # Reload messages from storage to show updated data
+                try:
+                    messages = self.storage.get_messages(folder_name, account_id)
+                    GLib.idle_add(self.on_messages_loaded, messages)
+                except Exception as e:
+                    logging.error(f"MessageList: Error reloading messages after sync: {e}")
+        elif event_type == "sync_error":
+            # Only handle sync errors for current folder
+            if account_id == self.current_account_data.get('email') and folder_name == self.current_folder:
+                logging.error(f"MessageList: Sync error for {folder_name}: {data}")
+                # Could show a notification here
