@@ -1,5 +1,6 @@
 from utils.toolkit import Gtk
 import dbus
+import logging
 from components.button import AppButton
 from components.container import (
     NavigationList,
@@ -43,6 +44,8 @@ class AccountsSidebar:
     def connect_row_selected(self, callback):
         self.sidebar_list.widget.connect("row-selected", callback)
         self.selection_callback = callback
+        
+
 
     def get_folder_icon(self, folder_name):
         folder_upper = folder_name.upper()
@@ -166,6 +169,8 @@ class AccountsSidebar:
                     )
                     delattr(account_row, "loading_icon")
 
+
+
     def organize_folders_hierarchy(self, folders):
         root_folders = {}
 
@@ -233,11 +238,7 @@ class AccountsSidebar:
             if level == 0 and folder_data["full_path"].upper() == "INBOX":
                 continue
             if folder_data["is_error"]:
-                error_row = ContentItem(class_names="error-folder-item")
-                setattr(error_row, "is_folder", True)
-                setattr(error_row, "folder_name", folder_data["name"])
-                setattr(error_row, "parent_account", account_row.account_data)
-
+                logging.debug(f"Creating error folder: {folder_data['name']}")
                 error_icon = AppIcon("dialog-error-symbolic", class_names="error-icon")
                 error_text = AppText(folder_data["name"], class_names="error-text")
 
@@ -258,8 +259,11 @@ class AccountsSidebar:
                 )
 
                 error_row = ContentItem(
-                    class_names="error-row", children=error_container.widget
+                    class_names="error-folder-item", children=error_container.widget
                 )
+                setattr(error_row, "is_folder", True)
+                setattr(error_row, "folder_name", folder_data["name"])
+                setattr(error_row, "parent_account", account_row.account_data)
                 setattr(error_row, "main_box", error_container)
                 setattr(error_row, "folder_button", error_button)
                 setattr(error_row.widget, "main_box", error_container)

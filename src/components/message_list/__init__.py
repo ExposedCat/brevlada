@@ -23,6 +23,7 @@ class MessageList:
         self.threading_enabled = True
         self.message_row_instances = {}
         self.header = None
+        self.current_fetch_id = 0
 
         # Initialize sync service
         self.sync_service = SyncService(storage, sync_interval=300)
@@ -106,25 +107,29 @@ class MessageList:
         icon.set_pixel_size(48)
         icon.set_opacity(0.5)
 
-        text = AppText(
+        self.error_text = AppText(
             "Failed to load messages",
             halign=Gtk.Align.CENTER,
             class_names="message-list-error-text",
         )
-        text.set_opacity(0.7)
-
-        retry_button = AppButton(class_names="message-list-retry-button")
-        retry_button.widget.set_label("Retry")
-        retry_button.connect("clicked", self.on_retry_clicked)
+        self.error_text.set_opacity(0.7)
 
         container.append(icon.widget)
-        container.append(text.widget)
-        container.append(retry_button.widget)
+        container.append(self.error_text.widget)
 
         return container
 
     def set_folder(self, folder):
         logging.debug(f"MessageList: Setting folder to {folder}")
+        
+        # Cancel any ongoing fetch operations
+        self.current_fetch_id += 1
+        
+        # Clear current message list immediately when switching folders
+        self.clear_list()
+        self.messages = []
+        self.threads = []
+        
         self.current_folder = folder
 
         # Update sync service with current folder
@@ -160,9 +165,13 @@ class MessageList:
             logging.debug("MessageList: No current account_data, cannot load messages")
             return
 
+        # Increment fetch ID to cancel any ongoing operations
+        self.current_fetch_id += 1
+        fetch_id = self.current_fetch_id
+
         account_id = self.current_account_data["email"]
         logging.info(
-            f"MessageList: Loading messages for folder {self.current_folder}, account_id {account_id}, force_refresh={force_refresh}"
+            f"MessageList: Loading messages for folder {self.current_folder}, account_id {account_id}, force_refresh={force_refresh}, fetch_id={fetch_id}"
         )
 
         def fetch_messages():
@@ -185,7 +194,7 @@ class MessageList:
                         # Show loading state in header
                         if self.header:
                             GLib.idle_add(self.header.set_loading, True)
-                        self.fetch_from_imap()
+                        self.fetch_from_imap(fetch_id)
                         return
 
                     # Show cached messages immediately
@@ -196,7 +205,7 @@ class MessageList:
                         GLib.idle_add(self.header.set_loading, True)
 
                     # Trigger background refresh
-                    self.fetch_from_imap()
+                    self.fetch_from_imap(fetch_id)
                 else:
                     logging.debug(
                         "MessageList: Force refresh requested, fetching from IMAP"
@@ -204,7 +213,7 @@ class MessageList:
                     # Show loading state in header
                     if self.header:
                         GLib.idle_add(self.header.set_loading, True)
-                    self.fetch_from_imap()
+                    self.fetch_from_imap(fetch_id)
             except Exception as e:
                 logging.error(
                     f"MessageList: Error fetching messages for folder {self.current_folder}: {e}"
@@ -231,6 +240,8 @@ class MessageList:
         # Hide loading state in header
         if self.header:
             GLib.idle_add(self.header.set_loading, False)
+            
+
 
         if self.threading_enabled:
             logging.debug("MessageList: Grouping messages into threads")
@@ -246,7 +257,14 @@ class MessageList:
         # Hide loading state in header
         if self.header:
             GLib.idle_add(self.header.set_loading, False)
+        # Show error at top of list, but keep any existing messages visible
         self.show_error_state()
+        
+        # Update error text with actual error message
+        if hasattr(self, 'error_text'):
+            self.error_text.set_text_content(f"Failed to load messages: {error_message}")
+        
+
 
     def populate_message_list(self):
         logging.debug("MessageList: Populating message list")
@@ -292,7 +310,7 @@ class MessageList:
 
         logging.debug("MessageList: Threaded list population complete")
 
-    def fetch_from_imap(self):
+    def fetch_from_imap(self, fetch_id):
         if not self.current_account_data:
             logging.error("MessageList: No account_data available for IMAP fetch")
             GLib.idle_add(self.on_messages_error, "No account selected")
@@ -301,10 +319,14 @@ class MessageList:
         account_data = self.current_account_data
 
         logging.debug(
-            f"MessageList: Fetching messages from IMAP for folder {self.current_folder}"
+            f"MessageList: Fetching messages from IMAP for folder {self.current_folder}, fetch_id={fetch_id}"
         )
 
         def on_imap_response(error, messages):
+            # Check if this fetch operation has been cancelled
+            if fetch_id != self.current_fetch_id:
+                logging.debug(f"MessageList: Fetch operation {fetch_id} was cancelled, ignoring response")
+                return
             if error:
                 logging.error(f"MessageList: IMAP fetch error: {error}")
                 GLib.idle_add(self.on_messages_error, error)
@@ -328,6 +350,10 @@ class MessageList:
             else:
                 logging.debug("MessageList: No messages received from IMAP")
                 GLib.idle_add(self.on_messages_loaded, [])
+            
+            # Stop loading indicator
+            if self.header:
+                GLib.idle_add(self.header.set_loading, False)
 
         fetch_messages_from_folder(account_data, self.current_folder, on_imap_response)
 
@@ -346,9 +372,7 @@ class MessageList:
     def on_message_selected(self, list_box, row):
         pass
 
-    def on_retry_clicked(self, button):
-        logging.debug("MessageList: Retry button clicked, reloading messages")
-        self.load_messages()
+
 
     def show_empty_state(self):
         self.hide_all_states()
@@ -408,9 +432,13 @@ class MessageList:
 
     def set_header(self, header):
         self.header = header
+        
+
 
     def refresh_messages(self):
         logging.info("MessageList: Force refreshing messages from IMAP")
+        # Cancel any ongoing operations before refreshing
+        self.current_fetch_id += 1
         self.load_messages(force_refresh=True)
 
     def sync_folder_manually(self, folder_name: str):

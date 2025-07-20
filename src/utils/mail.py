@@ -139,6 +139,42 @@ def logout_and_remove_from_cache(mail, account_data):
             logging.debug(f"Removed connection from cache for {email}")
 
 
+def handle_imap_operation_with_retry(account_data, mail_settings, operation_func, *args, **kwargs):
+    """Handle IMAP operations with automatic retry on LOGOUT state errors"""
+    email = account_data.get("email", "unknown")
+    
+    try:
+        # Try with cached connection first
+        mail = connect_and_authenticate(mail_settings, account_data)
+        if not mail:
+            return False, "Authentication failed"
+            
+        return operation_func(mail, *args, **kwargs)
+        
+    except Exception as e:
+        error_str = str(e)
+        # Check for various connection state errors that require retry
+        if ("LOGOUT" in error_str and "illegal" in error_str.lower()) or \
+           "unexpected response" in error_str.lower() or \
+           "command" in error_str.lower() and "=>" in error_str:
+            logging.warning(f"Connection state error for {email}: {error_str}, recreating connection")
+            
+            # Force recreate connection and retry once
+            try:
+                mail = connect_and_authenticate(mail_settings, account_data, force=True)
+                if not mail:
+                    return False, "Authentication failed after connection retry"
+                    
+                return operation_func(mail, *args, **kwargs)
+                
+            except Exception as retry_e:
+                logging.error(f"Retry failed for {email}: {retry_e}")
+                return False, f"Operation failed after retry: {retry_e}"
+        else:
+            # Re-raise non-connection-state errors
+            raise
+
+
 def cleanup_all_connections():
     """Close all cached connections - call this on app shutdown"""
     with _connection_cache_lock:
@@ -159,29 +195,39 @@ def cleanup_all_connections():
         logging.info(f"Cleaned up {connection_count} cached connections")
 
 
-def connect_and_authenticate(mail_settings, account_data):
+def connect_and_authenticate(mail_settings, account_data, force=False):
     """Connect to IMAP server and authenticate in one step, with connection caching"""
     email = str(account_data.get("email", "unknown"))
 
     with _connection_cache_lock:
         # Check if we have a cached connection
         if email in _connection_cache:
-            cached_connection, last_used = _connection_cache[email]
-            current_time = time.time()
-
-            # Check if connection is still fresh (less than 5 minutes old)
-            if current_time - last_used < 300:  # 5 minutes
-                logging.debug(f"Reusing cached connection for {email}")
-                _connection_cache[email] = (cached_connection, current_time)
-                return cached_connection
-            else:
-                # Connection is too old, remove it
-                logging.debug(f"Removing stale cached connection for {email}")
+            if force:
+                # Force recreation of connection
+                logging.debug(f"Force recreating connection for {email}")
+                cached_connection, _ = _connection_cache[email]
                 try:
                     cached_connection.logout()
                 except:
                     pass
                 del _connection_cache[email]
+            else:
+                cached_connection, last_used = _connection_cache[email]
+                current_time = time.time()
+
+                # Check if connection is still fresh (less than 5 minutes old)
+                if current_time - last_used < 300:  # 5 minutes
+                    logging.debug(f"Reusing cached connection for {email}")
+                    _connection_cache[email] = (cached_connection, current_time)
+                    return cached_connection
+                else:
+                    # Connection is too old, remove it
+                    logging.debug(f"Removing stale cached connection for {email}")
+                    try:
+                        cached_connection.logout()
+                    except:
+                        pass
+                    del _connection_cache[email]
 
     # No cached connection, create new one
     try:
@@ -273,42 +319,59 @@ def parse_folder_line(folder_line):
     return None
 
 
-def get_folders_from_imap(mail, email):
+def _get_folders_operation(mail, email):
+    """Internal operation function for fetching folders"""
+    logging.debug(f"Listing folders for {email}")
+    
     try:
-        logging.debug(f"Listing folders for {email}")
         status, folder_list = mail.list()
         logging.debug(
             f"IMAP LIST command returned: status={status}, count={len(folder_list) if folder_list else 0}"
         )
 
         if status != "OK":
-            logging.error(f"IMAP LIST command failed with status: {status}")
-            return ["Error: Failed to list folders"]
-
-        logging.debug(f"Raw folder list: {folder_list}")
-        logging.debug(f"Raw folder list repr: {[repr(f) for f in folder_list]}")
-        folders = []
-        for i, folder_line in enumerate(folder_list):
-            logging.debug(f"Processing folder line {i}: {folder_line}")
-            logging.debug(f"Folder line {i} repr: {repr(folder_line)}")
-            if folder_line:
-                folder_name = parse_folder_line(folder_line)
-                if folder_name:
-                    folders.append(folder_name)
-                    logging.debug(f"Added folder: {repr(folder_name)}")
-                else:
-                    logging.debug(
-                        f"Skipped unparseable folder line: {repr(folder_line)}"
-                    )
-
-        if folders:
-            folders.sort()
-            logging.info(f"Found {len(folders)} folders for {email}: {folders}")
+            return False, "Failed to list folders"
+            
+    except Exception as e:
+        error_str = str(e)
+        if "unexpected response" in error_str.lower() or "command" in error_str.lower():
+            # Re-raise to trigger retry mechanism
+            raise
         else:
-            folders = ["Error: No folders found"]
-            logging.warning(f"No folders found for {email}")
+            return False, f"Error listing folders: {error_str}"
 
-        return folders
+    logging.debug(f"Raw folder list: {folder_list}")
+    logging.debug(f"Raw folder list repr: {[repr(f) for f in folder_list]}")
+    folders = []
+    for i, folder_line in enumerate(folder_list):
+        logging.debug(f"Processing folder line {i}: {folder_line}")
+        logging.debug(f"Folder line {i} repr: {repr(folder_line)}")
+        if folder_line:
+            folder_name = parse_folder_line(folder_line)
+            if folder_name:
+                folders.append(folder_name)
+                logging.debug(f"Added folder: {repr(folder_name)}")
+            else:
+                logging.debug(
+                    f"Skipped unparseable folder line: {repr(folder_line)}"
+                )
+
+    if folders:
+        folders.sort()
+        logging.info(f"Found {len(folders)} folders for {email}: {folders}")
+        return True, folders
+    else:
+        logging.warning(f"No folders found for {email}")
+        return False, "No folders found"
+
+
+def get_folders_from_imap(mail, email):
+    try:
+        success, result = _get_folders_operation(mail, email)
+        if success:
+            return result
+        else:
+            return [f"Error: {result}"]
 
     except Exception as e:
         logging.error(f"Error fetching folders for {email}: {e}")
@@ -341,24 +404,20 @@ def fetch_imap_folders(account_data, callback):
                 GLib.idle_add(callback, [error_msg])
                 return
 
-            logging.debug(f"Connecting and authenticating to IMAP server for {email}")
-            mail = connect_and_authenticate(mail_settings, account_data)
-
-            if not mail:
-                error_msg = "Error: Authentication failed - OAuth2 required"
-                logging.error(f"Authentication failed for {email}")
-                GLib.idle_add(callback, [error_msg])
-                return
-
-            logging.debug(f"Getting folders from IMAP for {email}")
-            folders = get_folders_from_imap(mail, email)
-
-            logging.debug(
-                f"Operation completed for {email}, connection remains in cache"
+            # Use retry mechanism for IMAP operations
+            success, result = handle_imap_operation_with_retry(
+                account_data, 
+                mail_settings, 
+                _get_folders_operation, 
+                email
             )
-
-            logging.info(f"Successfully fetched {len(folders)} folders for {email}")
-            GLib.idle_add(callback, folders)
+            
+            if success:
+                logging.info(f"Successfully fetched {len(result)} folders for {email}")
+                GLib.idle_add(callback, result)
+            else:
+                error_msg = f"Error: {result}"
+                GLib.idle_add(callback, [error_msg])
 
         except Exception as e:
             logging.error(
@@ -374,6 +433,70 @@ def fetch_imap_folders(account_data, callback):
     thread = threading.Thread(target=fetch_folders)
     thread.daemon = True
     thread.start()
+
+
+def _fetch_messages_operation(mail, folder_name, email, limit):
+    """Internal operation function for fetching messages"""
+    # Select folder
+    logging.debug(f"Selecting folder '{folder_name}' for {email}")
+    logging.debug(f"Folder name bytes: {folder_name.encode('utf-8')}")
+    logging.debug(f"Folder name repr: {repr(folder_name)}")
+    
+    try:
+        # Properly quote folder names for IMAP, especially Gmail folders
+        if (
+            " " in folder_name
+            or "[" in folder_name
+            or "]" in folder_name
+            or "/" in folder_name
+        ):
+            # Quote folder names with special characters
+            quoted_folder = f'"{folder_name}"'
+            logging.debug(
+                f"Calling mail.select() with quoted folder: {quoted_folder}"
+            )
+            status, data = mail.select(quoted_folder)
+        else:
+            logging.debug(f"Calling mail.select() with folder: {folder_name}")
+            status, data = mail.select(folder_name)
+        logging.debug(f"SELECT response: status={status}, data={data}")
+        
+        if status != "OK":
+            return False, f"Could not select folder '{folder_name}': status={status}"
+            
+    except Exception as e:
+        error_str = str(e)
+        if "unexpected response" in error_str.lower() or "command" in error_str.lower():
+            # Re-raise to trigger retry mechanism
+            raise
+        else:
+            return False, f"Error selecting folder '{folder_name}': {error_str}"
+
+    total_messages = int(data[0]) if data and data[0] else 0
+    logging.debug(f"Folder '{folder_name}' contains {total_messages} messages")
+
+    if total_messages == 0:
+        return True, []
+
+    # Fetch recent messages
+    start_msg = max(1, total_messages - limit + 1)
+    msg_range = f"{start_msg}:{total_messages}"
+    logging.debug(f"Fetching messages {msg_range} from folder '{folder_name}'")
+
+    # Fetch basic headers for display
+    status, data = mail.fetch(
+        msg_range,
+        "(ENVELOPE FLAGS UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES)])",
+    )
+    if status != "OK":
+        return False, f"Could not fetch message headers: {data}"
+
+    logging.debug(f"Parsing {len(data)} message responses")
+    messages = parse_fetched_messages(data, email, folder_name)
+    messages.reverse()  # Show newest first
+
+    logging.info(f"Successfully fetched {len(messages)} messages from folder '{folder_name}'")
+    return True, messages
 
 
 def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
@@ -396,97 +519,21 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
                 GLib.idle_add(callback, error_msg, None)
                 return
 
-            logging.debug(
-                f"Connecting and authenticating to IMAP server for message fetch: {email}"
+            # Use retry mechanism for IMAP operations
+            success, result = handle_imap_operation_with_retry(
+                account_data, 
+                mail_settings, 
+                _fetch_messages_operation, 
+                folder_name, 
+                email, 
+                limit
             )
-            mail = connect_and_authenticate(mail_settings, account_data)
-
-            if not mail:
-                error_msg = "Error: Authentication failed - OAuth2 required"
-                logging.error(f"Authentication failed for message fetch: {email}")
+            
+            if success:
+                GLib.idle_add(callback, None, result)
+            else:
+                error_msg = f"Error: {result}"
                 GLib.idle_add(callback, error_msg, None)
-                return
-
-            # Select folder
-            logging.debug(f"Selecting folder '{folder_name}' for {email}")
-            logging.debug(f"Folder name bytes: {folder_name.encode('utf-8')}")
-            logging.debug(f"Folder name repr: {repr(folder_name)}")
-            try:
-                # Properly quote folder names for IMAP, especially Gmail folders
-                if (
-                    " " in folder_name
-                    or "[" in folder_name
-                    or "]" in folder_name
-                    or "/" in folder_name
-                ):
-                    # Quote folder names with special characters
-                    quoted_folder = f'"{folder_name}"'
-                    logging.debug(
-                        f"Calling mail.select() with quoted folder: {quoted_folder}"
-                    )
-                    status, data = mail.select(quoted_folder)
-                else:
-                    logging.debug(f"Calling mail.select() with folder: {folder_name}")
-                    status, data = mail.select(folder_name)
-                logging.debug(f"SELECT response: status={status}, data={data}")
-                if status != "OK":
-                    error_msg = f"Error: Could not select folder '{folder_name}'"
-                    logging.error(
-                        f"Could not select folder '{folder_name}': status={status}, data={data}"
-                    )
-                    logout_and_remove_from_cache(mail, account_data)
-                    GLib.idle_add(callback, error_msg, None)
-                    return
-
-                total_messages = int(data[0]) if data and data[0] else 0
-                logging.debug(
-                    f"Folder '{folder_name}' contains {total_messages} messages"
-                )
-
-                if total_messages == 0:
-                    logging.debug(f"No messages in folder '{folder_name}'")
-                    GLib.idle_add(callback, None, [])
-                    logout_and_remove_from_cache(mail, account_data)
-                    return
-
-                # Fetch recent messages
-                start_msg = max(1, total_messages - limit + 1)
-                msg_range = f"{start_msg}:{total_messages}"
-                logging.debug(
-                    f"Fetching messages {msg_range} from folder '{folder_name}'"
-                )
-
-                # Fetch basic headers for display
-                status, data = mail.fetch(
-                    msg_range,
-                    "(ENVELOPE FLAGS UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES)])",
-                )
-                if status != "OK":
-                    error_msg = "Error: Could not fetch message headers"
-                    logging.error(f"Could not fetch message headers: {data}")
-                    logout_and_remove_from_cache(mail, account_data)
-                    GLib.idle_add(callback, error_msg, None)
-                    return
-
-                logging.debug(f"Parsing {len(data)} message responses")
-                messages = parse_fetched_messages(data, email, folder_name)
-                messages.reverse()  # Show newest first
-
-                logging.info(
-                    f"Successfully fetched {len(messages)} messages from folder '{folder_name}'"
-                )
-                GLib.idle_add(callback, None, messages)
-
-            except Exception as e:
-                logging.error(
-                    f"Error fetching messages from folder '{folder_name}': {e}"
-                )
-                error_msg = f"Error: Could not access folder '{folder_name}'"
-                GLib.idle_add(callback, error_msg, None)
-            finally:
-                logging.debug(
-                    f"Operation completed for {email}, connection remains in cache"
-                )
 
         except Exception as e:
             logging.error(

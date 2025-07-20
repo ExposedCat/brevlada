@@ -146,12 +146,12 @@ class MyWindow(Adw.ApplicationWindow):
         # Initially disable refresh button (no folder selected)
         self.message_list_header.set_enabled(False)
 
-        sidebar = AccountsSidebar(class_names="main-sidebar")
-        sidebar.connect_row_selected(self.on_account_selected)
+        self.sidebar = AccountsSidebar(class_names="main-sidebar")
+        self.sidebar.connect_row_selected(self.on_account_selected)
 
         # Add headers and content to their respective wrappers
         self.sidebar_wrapper.append(self.sidebar_header.widget)
-        self.sidebar_wrapper.append(sidebar.widget)
+        self.sidebar_wrapper.append(self.sidebar.widget)
 
         # Wrap message list in scrolled window for proper scrolling
         message_list_scroll = Gtk.ScrolledWindow()
@@ -416,6 +416,8 @@ class MyWindow(Adw.ApplicationWindow):
                 f"Refreshing messages for {self.current_account['email']} - {self.current_folder}"
             )
             self.message_list.refresh_messages()
+            
+
 
     def create_sample_messages(self):
         sample_messages = [

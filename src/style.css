@@ -163,21 +163,9 @@ toolbarview > * {
 
 .message-list-error-text {
     color: @error_color;
-    font-size: 14px;
+    font-size: 16px;
 }
 
-.message-list-retry-button {
-    margin-top: 12px;
-    padding: 8px 16px;
-    border-radius: 6px;
-    background-color: @accent_bg_color;
-    color: @accent_fg_color;
-    border: none;
-}
-
-.message-list-retry-button:hover {
-    background-color: alpha(@accent_bg_color, 0.8);
-}
 
 .message-row {
     padding: 8px 12px;
