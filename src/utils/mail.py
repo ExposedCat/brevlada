@@ -5,6 +5,7 @@ import threading
 import logging
 import time
 from utils.toolkit import GLib
+from utils.message_parser import extract_best_text_from_message
 
 
 def get_oauth2_token(account_data):
@@ -681,3 +682,95 @@ def decode_header_value(header_value):
     except Exception as e:
         logging.debug(f"Error decoding header '{header_value}': {e}")
         return header_value
+
+
+def _fetch_message_body_operation(mail, folder_name, uid, email):
+    """Internal operation function for fetching message body"""
+    logging.debug(f"Fetching message body for UID {uid} from folder '{folder_name}'")
+    
+    try:
+        # Select folder
+        if (
+            " " in folder_name
+            or "[" in folder_name
+            or "]" in folder_name
+            or "/" in folder_name
+        ):
+            quoted_folder = f'"{folder_name}"'
+            status, data = mail.select(quoted_folder)
+        else:
+            status, data = mail.select(folder_name)
+        
+        if status != "OK":
+            return False, f"Could not select folder '{folder_name}': status={status}"
+        
+        # Fetch full raw message
+        status, data = mail.uid("FETCH", str(uid), "BODY.PEEK[]")
+        if status != "OK":
+            return False, f"Could not fetch message body: {data}"
+        
+        if not data or len(data) < 1:
+            return False, "No message body data received"
+        
+        # Parse the response
+        message_data = data[0]
+        if isinstance(message_data, tuple) and len(message_data) >= 2:
+            raw_bytes = message_data[1]
+            if isinstance(raw_bytes, bytes):
+                return True, raw_bytes
+            else:
+                return True, raw_bytes.encode("utf-8", errors="replace")
+        else:
+            return False, "Invalid message body data format"
+            
+    except Exception as e:
+        error_str = str(e)
+        if "unexpected response" in error_str.lower() or "command" in error_str.lower():
+            raise
+        else:
+            return False, f"Error fetching message body: {error_str}"
+
+
+def fetch_message_body_from_imap(account_data, folder_name, uid, callback):
+    """Fetch message body from IMAP for a specific message"""
+    logging.debug(f"Starting to fetch message body for UID {uid} from folder {folder_name}")
+    
+    def fetch_body():
+        try:
+            email = account_data["email"]
+            logging.info(f"Fetching message body for UID {uid} from folder '{folder_name}'")
+            
+            mail_settings = get_mail_settings(account_data)
+            if not mail_settings:
+                error_msg = "Error: Could not get mail settings"
+                logging.error(f"No mail settings for account: {email}")
+                GLib.idle_add(callback, error_msg, None)
+                return
+            
+            # Use retry mechanism for IMAP operations
+            success, result = handle_imap_operation_with_retry(
+                account_data,
+                mail_settings,
+                _fetch_message_body_operation,
+                folder_name,
+                uid,
+                email
+            )
+            
+            if success:
+                # Parse and decode the best text part
+                decoded_text = extract_best_text_from_message(result)
+                GLib.idle_add(callback, None, decoded_text)
+            else:
+                error_msg = f"Error: {result}"
+                GLib.idle_add(callback, error_msg, None)
+                
+        except Exception as e:
+            logging.error(f"Failed to fetch message body for UID {uid}: {e}")
+            error_msg = "Error: Failed to connect to mail server"
+            GLib.idle_add(callback, error_msg, None)
+    
+    logging.debug(f"Starting thread to fetch message body for UID {uid}")
+    thread = threading.Thread(target=fetch_body)
+    thread.daemon = True
+    thread.start()

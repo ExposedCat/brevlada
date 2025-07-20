@@ -394,3 +394,35 @@ def extract_body_from_email(email_msg) -> str:
                 return payload.decode("utf-8", errors="ignore")
 
     return ""
+
+
+def extract_best_text_from_message(raw_bytes):
+    """
+    Given a raw RFC822 message (bytes), extract and decode the best displayable part:
+    - Prefer text/plain
+    - Fallback to text/html (decoded, as text)
+    Returns a unicode string (decoded text) or None if not found.
+    """
+    import email
+    from email import policy
+
+    if not raw_bytes:
+        return None
+
+    if isinstance(raw_bytes, str):
+        raw_bytes = raw_bytes.encode("utf-8", errors="replace")
+
+    msg = email.message_from_bytes(raw_bytes, policy=policy.default)
+    # Try text/plain first
+    body = msg.get_body(preferencelist=("plain",))
+    if body:
+        text = body.get_content().strip()
+        if text:
+            return text
+    # Fallback to text/html (decoded, as text)
+    body = msg.get_body(preferencelist=("html",))
+    if body:
+        html = body.get_content().strip()
+        if html:
+            return html
+    return None

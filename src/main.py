@@ -12,6 +12,7 @@ from components.header import (
     MessageListHeader,
 )
 from components.message_list import MessageList
+from components.message_viewer import MessageViewer
 from utils.storage import EmailStorage
 from utils.mail import cleanup_all_connections
 import atexit
@@ -102,28 +103,14 @@ class MyWindow(Adw.ApplicationWindow):
         )
         empty_label.set_opacity(0.7)
 
-        self.empty_state = ContentContainer(
-            spacing=15,
-            orientation=Gtk.Orientation.VERTICAL,
-            halign=Gtk.Align.CENTER,
-            valign=Gtk.Align.CENTER,
-            class_names="empty-state",
-            children=[empty_icon.widget, empty_label.widget],
-        )
-
-        self.account_details = ContentContainer(
-            spacing=15,
-            orientation=Gtk.Orientation.VERTICAL,
-            class_names="account-details",
-        )
-        self.account_details.widget.set_visible(False)
-
+        self.message_viewer = MessageViewer(self.storage, None)
+        
         self.content_area = ContentContainer(
             spacing=20,
             orientation=Gtk.Orientation.VERTICAL,
             class_names="main-content",
-            children=[self.empty_state.widget, self.account_details.widget],
-            margin=30,
+            children=[self.message_viewer.widget],
+            margin=5,
             h_fill=True,
             w_fill=True,
         )
@@ -199,14 +186,15 @@ class MyWindow(Adw.ApplicationWindow):
 
     def on_account_selected(self, listbox, row):
         if row is None:
-            self.empty_state.widget.set_visible(True)
-            self.account_details.widget.set_visible(False)
+            self.message_viewer.show_select_message_state()
+            self.message_viewer.widget.set_visible(True)
             self.content_header.window_title.set_subtitle("Select an account")
             self.message_list_header.widget.set_title_widget(
                 Gtk.Label(label="Messages")
             )
             self.message_list.set_account_data(None)
             self.message_list.set_folder(None)
+            self.message_viewer.set_account_data(None)
             self.message_list_header.set_enabled(False)
             return
 
@@ -228,64 +216,11 @@ class MyWindow(Adw.ApplicationWindow):
             )
             self.message_list.set_account_data(account_data)
             self.message_list.set_folder(folder_full_path)
+            self.message_viewer.set_account_data(account_data)
             self.message_list_header.set_enabled(True)
 
-            child = self.account_details.widget.get_first_child()
-            while child:
-                self.account_details.widget.remove(child)
-                child = self.account_details.widget.get_first_child()
-
-            name_label = AppText(
-                text=folder_full_path,
-                class_names="folder-title",
-                margin_bottom=15,
-                halign=Gtk.Align.START,
-            )
-            name_label.set_markup(
-                f"<span size='xx-large' weight='bold'>{folder_full_path}</span>"
-            )
-            self.account_details.widget.append(name_label.widget)
-
-            account_container = ContentContainer(
-                spacing=10,
-                orientation=Gtk.Orientation.HORIZONTAL,
-                class_names="account-info-row",
-                children=[
-                    AppText(
-                        text="Account:",
-                        class_names=["dim-label"],
-                        halign=Gtk.Align.START,
-                    ).widget,
-                    AppText(
-                        text=account_data["account_name"],
-                        class_names="account-value",
-                        halign=Gtk.Align.START,
-                    ).widget,
-                ],
-            )
-            self.account_details.widget.append(account_container.widget)
-
-            folder_info_container = ContentContainer(
-                spacing=10,
-                orientation=Gtk.Orientation.HORIZONTAL,
-                class_names="folder-info-row",
-                children=[
-                    AppText(
-                        text="Folder:",
-                        class_names=["dim-label"],
-                        halign=Gtk.Align.START,
-                    ).widget,
-                    AppText(
-                        text=folder_full_path,
-                        class_names="folder-value",
-                        halign=Gtk.Align.START,
-                    ).widget,
-                ],
-            )
-            self.account_details.widget.append(folder_info_container.widget)
-
-            self.empty_state.widget.set_visible(False)
-            self.account_details.widget.set_visible(True)
+            self.message_viewer.show_select_message_state()
+            self.message_viewer.widget.set_visible(True)
             return
 
         if not hasattr(row, "account_data"):
@@ -302,122 +237,19 @@ class MyWindow(Adw.ApplicationWindow):
         self.message_list_header.widget.set_title_widget(Gtk.Label(label="INBOX"))
         self.message_list.set_account_data(account_data)
         self.message_list.set_folder("INBOX")
+        self.message_viewer.set_account_data(account_data)
         self.message_list_header.set_enabled(True)
 
-        child = self.account_details.widget.get_first_child()
-        while child:
-            self.account_details.widget.remove(child)
-            child = self.account_details.widget.get_first_child()
-
-        name_label = AppText(
-            text=account_data["account_name"],
-            class_names="account-title",
-            margin_bottom=15,
-            halign=Gtk.Align.START,
-        )
-        name_label.set_markup(
-            f"<span size='xx-large' weight='bold'>{account_data['account_name']}</span>"
-        )
-        self.account_details.widget.append(name_label.widget)
-
-        provider_container = ContentContainer(
-            spacing=10,
-            orientation=Gtk.Orientation.HORIZONTAL,
-            class_names="provider-info-row",
-            children=[
-                AppText(
-                    text="Provider:", class_names=["dim-label"], halign=Gtk.Align.START
-                ).widget,
-                AppText(
-                    text=account_data["provider"],
-                    class_names="provider-value",
-                    halign=Gtk.Align.START,
-                ).widget,
-            ],
-        )
-        self.account_details.widget.append(provider_container.widget)
-
-        email_container = ContentContainer(
-            spacing=10,
-            orientation=Gtk.Orientation.HORIZONTAL,
-            class_names="email-info-row",
-            children=[
-                AppText(
-                    text="Email:", class_names=["dim-label"], halign=Gtk.Align.START
-                ).widget,
-                AppText(
-                    text=account_data["email"],
-                    class_names="email-value",
-                    halign=Gtk.Align.START,
-                ).widget,
-            ],
-        )
-        self.account_details.widget.append(email_container.widget)
-
-        self.empty_state.widget.set_visible(False)
-        self.account_details.widget.set_visible(True)
+        self.message_viewer.show_select_message_state()
+        self.message_viewer.widget.set_visible(True)
 
     def on_message_selected(self, message):
         if message:
-            child = self.account_details.widget.get_first_child()
-            while child:
-                self.account_details.widget.remove(child)
-                child = self.account_details.widget.get_first_child()
-
-            subject_label = AppText(
-                text=message.get_display_subject(),
-                class_names="message-subject",
-                margin_bottom=15,
-                halign=Gtk.Align.START,
-            )
-            subject_label.set_markup(
-                f"<span size='xx-large' weight='bold'>{message.get_display_subject()}</span>"
-            )
-            self.account_details.widget.append(subject_label.widget)
-
-            sender_container = ContentContainer(
-                spacing=10,
-                orientation=Gtk.Orientation.HORIZONTAL,
-                class_names="sender-info-row",
-                children=[
-                    AppText(
-                        text="From:",
-                        class_names=["dim-label"],
-                        halign=Gtk.Align.START,
-                    ).widget,
-                    AppText(
-                        text=message.get_display_sender(),
-                        class_names="sender-value",
-                        halign=Gtk.Align.START,
-                    ).widget,
-                ],
-            )
-            self.account_details.widget.append(sender_container.widget)
-
-            date_container = ContentContainer(
-                spacing=10,
-                orientation=Gtk.Orientation.HORIZONTAL,
-                class_names="date-info-row",
-                children=[
-                    AppText(
-                        text="Date:",
-                        class_names=["dim-label"],
-                        halign=Gtk.Align.START,
-                    ).widget,
-                    AppText(
-                        text=message.get_display_date(),
-                        class_names="date-value",
-                        halign=Gtk.Align.START,
-                    ).widget,
-                ],
-            )
-            self.account_details.widget.append(date_container.widget)
-
-            self.empty_state.widget.set_visible(False)
-            self.account_details.widget.set_visible(True)
+            self.message_viewer.show_message(message)
+            self.message_viewer.widget.set_visible(True)
         else:
-            self.empty_state.widget.set_visible(True)
-            self.account_details.widget.set_visible(False)
+            self.message_viewer.show_select_message_state()
+            self.message_viewer.widget.set_visible(True)
 
     def on_refresh_requested(self):
         """Handle refresh request"""

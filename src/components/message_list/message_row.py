@@ -112,6 +112,7 @@ class MessageRow:
         return AppIcon("starred-symbolic").widget
 
     def on_activated(self, row):
+        print(f"MessageRow.on_activated called for: {self.message_or_thread}")
         if self.selected_callback:
             if self.is_thread:
                 # For threads, pass the latest message
@@ -121,8 +122,10 @@ class MessageRow:
                     else None
                 )
                 if latest_message:
+                    print(f"Calling callback with latest message: {latest_message}")
                     self.selected_callback(latest_message)
             else:
+                print(f"Calling callback with message: {self.message_or_thread}")
                 self.selected_callback(self.message_or_thread)
 
     def get_is_read(self):

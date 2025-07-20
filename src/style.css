@@ -76,6 +76,7 @@ paned {
 }
 
 .content-header {
+    background-color: transparent;
     border: none;
     box-shadow: none;
     min-width: 0;
@@ -134,7 +135,6 @@ toolbarview > * {
 }
 
 .message-list-empty-text {
-    font-size: 14px;
 }
 
 .message-list-loading-state {
@@ -149,7 +149,6 @@ toolbarview > * {
 }
 
 .message-list-loading-text {
-    font-size: 14px;
 }
 
 .message-list-error-state {
@@ -267,4 +266,70 @@ spinner {
 
 .message-list-search-box {
     border-left: 1px solid @borders;
+}
+
+.message-viewer-content {
+    background-color: transparent;
+}
+
+.message-viewer-scroll {
+    background-color: transparent;
+}
+
+.message-viewer-empty-state {
+    padding: 48px 24px;
+    min-height: 200px;
+}
+
+.message-viewer-empty-text {
+}
+
+.message-viewer-loading-state {
+    padding: 48px 24px;
+    min-height: 200px;
+}
+
+.message-viewer-loading-text {
+}
+
+.message-viewer-error-state {
+    padding: 48px 24px;
+    min-height: 200px;
+}
+
+.message-viewer-error-text {
+    color: @error_color;
+    font-size: 16px;
+}
+
+.message-subject {
+    font-size: 18px;
+    font-weight: bold;
+    color: @window_fg_color;
+}
+
+.message-body {
+    /* font-size: 14px; */
+    line-height: 1.6;
+    color: @window_fg_color;
+}
+
+.message-no-body {
+    /* font-size: 14px; */
+    color: @window_fg_color;
+    font-style: italic;
+}
+
+.message-viewer-empty-icon {
+    margin-bottom: 12px;
+}
+
+.message-viewer-loading-spinner {
+    width: 32px;
+    height: 32px;
+    margin-bottom: 12px;
+}
+
+.message-viewer-error-icon {
+    margin-bottom: 12px;
 }

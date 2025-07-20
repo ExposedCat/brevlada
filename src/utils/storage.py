@@ -597,3 +597,21 @@ class EmailStorage:
 
             # Vacuum database
             conn.execute("VACUUM")
+
+    def update_message_body(self, uid: int, folder: str, account_id: str, body_text: str):
+        """Update message body in database"""
+        logging.debug(f"EmailStorage: Updating message body for uid={uid}")
+        try:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE messages
+                    SET body_text = ?
+                    WHERE uid = ? AND folder = ? AND account_id = ?
+                """,
+                    (body_text, uid, folder, account_id),
+                )
+                logging.debug(f"EmailStorage: Successfully updated message body for uid={uid}")
+        except Exception as e:
+            logging.error(f"EmailStorage: Error updating message body for uid={uid}: {e}")
+            raise

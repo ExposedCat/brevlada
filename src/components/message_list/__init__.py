@@ -42,7 +42,7 @@ class MessageList:
 
         self.list_box = Gtk.ListBox()
         self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.list_box.connect("row-activated", self.on_message_selected)
+        self.list_box.connect("row-selected", self.on_message_selected)
         self.list_box.add_css_class("boxed-list")
 
         self.widget.add(self.list_box)
@@ -59,6 +59,8 @@ class MessageList:
         container.set_halign(Gtk.Align.CENTER)
         container.set_valign(Gtk.Align.CENTER)
         container.set_spacing(12)
+        container.set_vexpand(True)  # Ensure vertical centering
+        container.set_hexpand(True)
 
         icon = AppIcon("mail-unread-symbolic", class_names="message-list-empty-icon")
         icon.set_pixel_size(48)
@@ -232,6 +234,50 @@ class MessageList:
         thread.daemon = True
         thread.start()
 
+    def render_message_list(self, messages, grouped=True):
+        """
+        Modular function to render message list with consistent grouping logic.
+        
+        Args:
+            messages: List of messages to display
+            grouped: Whether to group messages into threads (default: True)
+        """
+        logging.debug(f"MessageList: Rendering {len(messages)} messages, grouped={grouped}")
+        self.clear_list()
+
+        if not messages:
+            logging.debug("MessageList: No messages to display, showing empty state")
+            self.show_empty_state()
+            return
+
+        logging.debug(f"MessageList: Displaying {len(messages)} messages")
+        self.show_message_list()
+
+        if grouped and self.threading_enabled:
+            # Group messages into threads
+            logging.debug("MessageList: Grouping messages into threads")
+            threads = group_messages_into_threads(messages)
+            logging.debug(f"MessageList: Created {len(threads)} threads")
+            
+            # Render threads
+            for i, thread in enumerate(threads):
+                logging.debug(f"MessageList: Creating thread row {i+1}/{len(threads)}")
+                thread_row = MessageRow(thread)
+                thread_row.connect_selected(self.on_message_row_selected)
+                self.message_row_instances[thread_row.widget] = thread_row
+                self.list_box.append(thread_row.widget)
+        else:
+            # Render messages flat (no grouping)
+            logging.debug("MessageList: Rendering messages without grouping")
+            for i, message in enumerate(messages):
+                logging.debug(f"MessageList: Creating message row {i+1}/{len(messages)}")
+                message_row = MessageRow(message)
+                message_row.connect_selected(self.on_message_row_selected)
+                self.message_row_instances[message_row.widget] = message_row
+                self.list_box.append(message_row.widget)
+
+        logging.debug("MessageList: Message list rendering complete")
+
     def on_messages_loaded(self, messages):
         logging.info(
             f"MessageList: Messages loaded successfully, count: {len(messages)}"
@@ -239,21 +285,12 @@ class MessageList:
         logging.debug(f"MessageList: Threading enabled: {self.threading_enabled}")
         self.messages = messages
 
-                # Hide loading state in header
+        # Hide loading state in header
         if self.header:
             GLib.idle_add(self.header.set_loading, False)
 
         # Apply search filter to new messages
         self.apply_search_filter()
-
-        if self.threading_enabled:
-            logging.debug("MessageList: Grouping messages into threads")
-            self.threads = group_messages_into_threads(messages)
-            logging.debug(f"MessageList: Created {len(self.threads)} threads")
-            self.populate_threaded_list()
-        else:
-            logging.debug("MessageList: Populating message list (no threading)")
-            self.populate_message_list()
 
     def on_messages_error(self, error_message):
         logging.error(f"MessageList: Error loading messages: {error_message}")
@@ -268,57 +305,6 @@ class MessageList:
             self.error_text.set_text_content(f"Failed to load messages: {error_message}")
         
 
-
-    def populate_message_list(self):
-        logging.debug("MessageList: Populating message list")
-        self.clear_list()
-
-        # Use filtered messages if search is active, otherwise use all messages
-        messages_to_display = self.filtered_messages if self.search_text else self.messages
-
-        if not messages_to_display:
-            if self.search_text and self.messages:
-                logging.debug("MessageList: No search results, showing empty state")
-                self.show_empty_state()
-            else:
-                logging.debug("MessageList: No messages to display, showing empty state")
-                self.show_empty_state()
-            return
-
-        logging.debug(f"MessageList: Displaying {len(messages_to_display)} messages")
-        self.show_message_list()
-
-        for i, message in enumerate(messages_to_display):
-            logging.debug(
-                f"MessageList: Creating message row {i+1}/{len(messages_to_display)}"
-            )
-            message_row = MessageRow(message)
-            message_row.connect_selected(self.on_message_row_selected)
-            self.message_row_instances[message_row.widget] = message_row
-            self.list_box.append(message_row.widget)
-
-        logging.debug("MessageList: Message list population complete")
-
-    def populate_threaded_list(self):
-        logging.debug("MessageList: Populating threaded list")
-        self.clear_list()
-
-        if not self.threads:
-            logging.debug("MessageList: No threads to display, showing empty state")
-            self.show_empty_state()
-            return
-
-        logging.debug(f"MessageList: Displaying {len(self.threads)} threads")
-        self.show_message_list()
-
-        for i, thread in enumerate(self.threads):
-            logging.debug(f"MessageList: Creating thread row {i+1}/{len(self.threads)}")
-            thread_row = MessageRow(thread)
-            thread_row.connect_selected(self.on_message_row_selected)
-            self.message_row_instances[thread_row.widget] = thread_row
-            self.list_box.append(thread_row.widget)
-
-        logging.debug("MessageList: Threaded list population complete")
 
     def fetch_from_imap(self, fetch_id):
         if not self.current_account_data:
@@ -380,7 +366,18 @@ class MessageList:
             self.list_box.remove(row)
 
     def on_message_selected(self, list_box, row):
-        pass
+        if row is not None and row in self.message_row_instances:
+            message_row = self.message_row_instances[row]
+            if message_row.is_thread:
+                message = (
+                    message_row.message_or_thread.messages[-1]
+                    if message_row.message_or_thread.messages
+                    else None
+                )
+            else:
+                message = message_row.message_or_thread
+            if self.message_selected_callback:
+                self.message_selected_callback(message)
 
 
 
@@ -429,11 +426,9 @@ class MessageList:
     def set_threading_enabled(self, enabled):
         self.threading_enabled = enabled
         if self.messages:
-            if enabled:
-                self.threads = group_messages_into_threads(self.messages)
-                self.populate_threaded_list()
-            else:
-                self.populate_message_list()
+            # Re-render the current list with new grouping setting
+            current_messages = self.filtered_messages if self.search_text else self.messages
+            self.render_message_list(current_messages, grouped=not self.search_text)
 
     def cleanup(self):
         if self.sync_service:
@@ -462,17 +457,19 @@ class MessageList:
     def apply_search_filter(self):
         """Apply search filter to current messages"""
         if not self.search_text:
-            # No search text, show all messages
+            # No search text, show all messages with grouping
             self.filtered_messages = self.messages.copy()
+            self.render_message_list(self.filtered_messages, grouped=True)
         else:
             # Filter messages based on search text
             self.filtered_messages = []
             for message in self.messages:
                 if self._message_matches_search(message, self.search_text):
                     self.filtered_messages.append(message)
-        
-        logging.debug(f"MessageList: Filtered {len(self.messages)} messages to {len(self.filtered_messages)} results")
-        self.populate_message_list()
+            
+            logging.debug(f"MessageList: Filtered {len(self.messages)} messages to {len(self.filtered_messages)} results")
+            # For search results, don't group (show individual messages)
+            self.render_message_list(self.filtered_messages, grouped=False)
         
     def _message_matches_search(self, message, search_text):
         """Check if a message matches the search text"""
