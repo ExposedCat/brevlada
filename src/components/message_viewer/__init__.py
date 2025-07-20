@@ -2,6 +2,7 @@ from utils.toolkit import Gtk, Adw, GLib
 from components.ui import AppIcon, AppText
 from components.button import AppButton
 from components.container import ContentContainer, ScrollContainer
+from components.html_viewer import HtmlViewer
 
 import logging
 import threading
@@ -132,7 +133,7 @@ class MessageViewer:
         
         logging.info(f"MessageViewer: Fetching body for message UID {message.get('uid')}")
         
-        def on_body_fetched(error, message_body):
+        def on_body_fetched(error, message_body_data):
             # Check if this fetch operation has been cancelled
             if fetch_id != self.body_fetch_id:
                 logging.debug(f"MessageViewer: Body fetch operation {fetch_id} was cancelled, ignoring response")
@@ -143,9 +144,15 @@ class MessageViewer:
                 self.show_error_state(str(error))
                 return
             
-            if message_body:
+            if message_body_data:
                 # Update message with body content
-                message["body"] = message_body
+                if isinstance(message_body_data, dict):
+                    message["body"] = message_body_data.get("text", "")
+                    message["body_html"] = message_body_data.get("html", "")
+                else:
+                    # Fallback for old format
+                    message["body"] = message_body_data
+                    message["body_html"] = ""
                 
                 # Store updated message in database
                 try:
@@ -153,7 +160,8 @@ class MessageViewer:
                         message["uid"], 
                         message["folder"], 
                         message["account_id"], 
-                        message_body
+                        message["body"],
+                        message.get("body_html", "")
                     )
                     logging.debug(f"MessageViewer: Stored message body in database")
                 except Exception as e:
@@ -244,19 +252,28 @@ class MessageViewer:
         
         # Message body
         body_text = message.get("body", "")
-        if body_text:
-            body_label = AppText(
-                text=body_text,
+        body_html = message.get("body_html", "")
+        
+        if body_html:
+            # Use HTML viewer for HTML content
+            html_viewer = HtmlViewer(
                 class_names="message-body",
                 margin_top=20,
-                halign=Gtk.Align.START,
-                valign=Gtk.Align.START,
+                h_fill=True,
+                w_fill=True,
             )
-            body_label.widget.set_wrap(True)
-            body_label.widget.set_selectable(True)
-            # Remove small font size by removing the class or override in style.css
-            body_label.widget.remove_css_class("message-body")
-            self.content_container.widget.append(body_label.widget)
+            html_viewer.load_html(body_html)
+            self.content_container.widget.append(html_viewer.widget)
+        elif body_text:
+            # Use HTML viewer for plain text with proper formatting
+            html_viewer = HtmlViewer(
+                class_names="message-body",
+                margin_top=20,
+                h_fill=True,
+                w_fill=True,
+            )
+            html_viewer.load_plain_text(body_text)
+            self.content_container.widget.append(html_viewer.widget)
         else:
             # Center the no-body message
             self.content_container.widget.set_valign(Gtk.Align.CENTER)
@@ -325,8 +342,7 @@ class MessageViewer:
         state_container.set_hexpand(True)
         
         # Spinner
-        from gi.repository import Gtk as giGtk
-        spinner = giGtk.Spinner()
+        spinner = Gtk.Spinner()
         spinner.add_css_class("message-viewer-loading-spinner")
         spinner.set_size_request(32, 32)
         spinner.start()

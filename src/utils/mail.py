@@ -758,9 +758,17 @@ def fetch_message_body_from_imap(account_data, folder_name, uid, callback):
             )
             
             if success:
-                # Parse and decode the best text part
-                decoded_text = extract_best_text_from_message(result)
-                GLib.idle_add(callback, None, decoded_text)
+                # Parse and decode both HTML and text parts
+                from utils.message_parser import extract_html_and_text_from_message
+                html_content, text_content = extract_html_and_text_from_message(result)
+                
+                # Use HTML if available, otherwise fall back to text
+                if html_content:
+                    GLib.idle_add(callback, None, {"html": html_content, "text": text_content})
+                elif text_content:
+                    GLib.idle_add(callback, None, {"html": None, "text": text_content})
+                else:
+                    GLib.idle_add(callback, None, {"html": None, "text": None})
             else:
                 error_msg = f"Error: {result}"
                 GLib.idle_add(callback, error_msg, None)

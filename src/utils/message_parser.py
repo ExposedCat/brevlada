@@ -426,3 +426,56 @@ def extract_best_text_from_message(raw_bytes):
         if html:
             return html
     return None
+
+
+def extract_html_and_text_from_message(raw_bytes):
+    """
+    Given a raw RFC822 message (bytes), extract both HTML and plain text content.
+    Returns a tuple of (html_content, text_content) where either can be None.
+    """
+    import email
+    from email import policy
+
+    if not raw_bytes:
+        return None, None
+
+    if isinstance(raw_bytes, str):
+        raw_bytes = raw_bytes.encode("utf-8", errors="replace")
+
+    msg = email.message_from_bytes(raw_bytes, policy=policy.default)
+    
+    html_content = None
+    text_content = None
+    
+    # Extract HTML content
+    html_body = msg.get_body(preferencelist=("html",))
+    if html_body:
+        html_content = html_body.get_content().strip()
+        if not html_content:
+            html_content = None
+    
+    # Extract plain text content
+    text_body = msg.get_body(preferencelist=("plain",))
+    if text_body:
+        text_content = text_body.get_content().strip()
+        if not text_content:
+            text_content = None
+    
+    return html_content, text_content
+
+
+def extract_html_from_email(email_msg) -> str:
+    """Extract HTML body from email.Message object"""
+    if email_msg.is_multipart():
+        for part in email_msg.walk():
+            if part.get_content_type() == "text/html":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    return payload.decode("utf-8", errors="ignore")
+    else:
+        if email_msg.get_content_type() == "text/html":
+            payload = email_msg.get_payload(decode=True)
+            if payload:
+                return payload.decode("utf-8", errors="ignore")
+
+    return ""

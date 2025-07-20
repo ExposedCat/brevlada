@@ -320,6 +320,16 @@ spinner {
     font-style: italic;
 }
 
+.message-body webview {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+
+.message-body webview:focus {
+    outline: none;
+}
+
 .message-viewer-empty-icon {
     margin-bottom: 12px;
 }
