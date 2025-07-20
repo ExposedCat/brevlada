@@ -157,3 +157,70 @@ class LoadingIcon:
     def is_spinning(self):
         """Check if the spinner is currently spinning"""
         return self.widget.get_spinning()
+
+
+class SearchBox:
+    def __init__(self, placeholder="Search messages...", class_names=None):
+        self.search_changed_callback = None
+        
+        # Create search bar container
+        self.search_bar = Gtk.SearchBar()
+        self.search_bar.set_search_mode(False)  # Hidden by default
+        
+        # Create search entry
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text(placeholder)
+        self.search_entry.set_width_chars(25)
+        self.search_entry.set_max_width_chars(40)
+        
+        # Add search entry directly to search bar
+        self.search_bar.set_child(self.search_entry)
+        
+        # Connect signals
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        
+        # Add CSS classes if provided
+        if class_names:
+            if isinstance(class_names, str):
+                self.search_bar.add_css_class(class_names)
+            elif isinstance(class_names, list):
+                for class_name in class_names:
+                    self.search_bar.add_css_class(class_name)
+        
+        # Store the widget reference
+        self.widget = self.search_bar
+
+    def _on_search_changed(self, search_entry):
+        """Internal handler for search changed events"""
+        if self.search_changed_callback:
+            self.search_changed_callback(search_entry.get_text())
+
+
+
+    def connect_search_changed(self, callback):
+        """Connect a callback for when search text changes"""
+        self.search_changed_callback = callback
+
+    def get_search_text(self):
+        """Get the current search text"""
+        return self.search_entry.get_text()
+
+    def set_search_text(self, text):
+        """Set the search text"""
+        self.search_entry.set_text(text)
+
+    def clear_search(self):
+        """Clear the search text"""
+        self.search_entry.set_text("")
+
+    def set_placeholder(self, placeholder):
+        """Set the placeholder text"""
+        self.search_entry.set_placeholder_text(placeholder)
+
+    def set_search_mode(self, active):
+        """Show or hide the search bar"""
+        self.search_bar.set_search_mode(active)
+
+    def get_search_mode(self):
+        """Get current search mode"""
+        return self.search_bar.get_search_mode()

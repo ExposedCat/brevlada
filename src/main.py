@@ -140,8 +140,17 @@ class MyWindow(Adw.ApplicationWindow):
         self.message_list.connect_message_selected(self.on_message_selected)
         self.message_list.set_header(self.message_list_header)
 
+        # Create search box (hidden by default)
+        from components.ui import SearchBox
+        self.search_box = SearchBox(placeholder="Search messages", class_names="message-list-search-box")
+        self.search_box.connect_search_changed(self.message_list.on_search_changed)
+
         # Connect refresh button
         self.message_list_header.connect_refresh(self.on_refresh_requested)
+
+        # Connect search box to header
+        self.message_list_header.message_list = self.message_list
+        self.message_list_header.search_box = self.search_box
 
         # Initially disable refresh button (no folder selected)
         self.message_list_header.set_enabled(False)
@@ -161,6 +170,7 @@ class MyWindow(Adw.ApplicationWindow):
         message_list_scroll.set_child(self.message_list.widget)
 
         self.message_list_wrapper.append(self.message_list_header.widget)
+        self.message_list_wrapper.append(self.search_box.widget)
         self.message_list_wrapper.append(message_list_scroll)
 
         self.content_wrapper.append(self.content_header.widget)

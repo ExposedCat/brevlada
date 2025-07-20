@@ -24,6 +24,8 @@ class MessageList:
         self.message_row_instances = {}
         self.header = None
         self.current_fetch_id = 0
+        self.search_text = ""
+        self.filtered_messages = []
 
         # Initialize sync service
         self.sync_service = SyncService(storage, sync_interval=300)
@@ -237,11 +239,12 @@ class MessageList:
         logging.debug(f"MessageList: Threading enabled: {self.threading_enabled}")
         self.messages = messages
 
-        # Hide loading state in header
+                # Hide loading state in header
         if self.header:
             GLib.idle_add(self.header.set_loading, False)
-            
 
+        # Apply search filter to new messages
+        self.apply_search_filter()
 
         if self.threading_enabled:
             logging.debug("MessageList: Grouping messages into threads")
@@ -270,17 +273,24 @@ class MessageList:
         logging.debug("MessageList: Populating message list")
         self.clear_list()
 
-        if not self.messages:
-            logging.debug("MessageList: No messages to display, showing empty state")
-            self.show_empty_state()
+        # Use filtered messages if search is active, otherwise use all messages
+        messages_to_display = self.filtered_messages if self.search_text else self.messages
+
+        if not messages_to_display:
+            if self.search_text and self.messages:
+                logging.debug("MessageList: No search results, showing empty state")
+                self.show_empty_state()
+            else:
+                logging.debug("MessageList: No messages to display, showing empty state")
+                self.show_empty_state()
             return
 
-        logging.debug(f"MessageList: Displaying {len(self.messages)} messages")
+        logging.debug(f"MessageList: Displaying {len(messages_to_display)} messages")
         self.show_message_list()
 
-        for i, message in enumerate(self.messages):
+        for i, message in enumerate(messages_to_display):
             logging.debug(
-                f"MessageList: Creating message row {i+1}/{len(self.messages)}"
+                f"MessageList: Creating message row {i+1}/{len(messages_to_display)}"
             )
             message_row = MessageRow(message)
             message_row.connect_selected(self.on_message_row_selected)
@@ -432,6 +442,8 @@ class MessageList:
 
     def set_header(self, header):
         self.header = header
+        if header:
+            header.connect_search(self.on_search_changed)
         
 
 
@@ -440,6 +452,46 @@ class MessageList:
         # Cancel any ongoing operations before refreshing
         self.current_fetch_id += 1
         self.load_messages(force_refresh=True)
+        
+    def on_search_changed(self, search_text):
+        """Handle search text changes"""
+        logging.debug(f"MessageList: Search text changed to '{search_text}'")
+        self.search_text = search_text.lower().strip()
+        self.apply_search_filter()
+        
+    def apply_search_filter(self):
+        """Apply search filter to current messages"""
+        if not self.search_text:
+            # No search text, show all messages
+            self.filtered_messages = self.messages.copy()
+        else:
+            # Filter messages based on search text
+            self.filtered_messages = []
+            for message in self.messages:
+                if self._message_matches_search(message, self.search_text):
+                    self.filtered_messages.append(message)
+        
+        logging.debug(f"MessageList: Filtered {len(self.messages)} messages to {len(self.filtered_messages)} results")
+        self.populate_message_list()
+        
+    def _message_matches_search(self, message, search_text):
+        """Check if a message matches the search text"""
+        # Search in sender name
+        sender_name = message.get('sender', {}).get('name', '').lower()
+        if search_text in sender_name:
+            return True
+            
+        # Search in sender email
+        sender_email = message.get('sender', {}).get('email', '').lower()
+        if search_text in sender_email:
+            return True
+            
+        # Search in subject
+        subject = message.get('subject', '').lower()
+        if search_text in subject:
+            return True
+            
+        return False
 
     def sync_folder_manually(self, folder_name: str):
         if not self.current_account_data:

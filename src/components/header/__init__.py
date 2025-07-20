@@ -1,6 +1,6 @@
 from utils.toolkit import Gtk, Adw
 from components.button import AppButton
-from components.ui import LoadingIcon
+from components.ui import LoadingIcon, SearchBox
 
 
 class UnifiedHeader:
@@ -41,14 +41,26 @@ class MessageListHeader:
         self.widget.set_size_request(width, -1)
         self.widget.add_css_class("message-list-header")
 
-        # Add refresh button
+        # Add search toggle button to the right
+        self.search_button = Gtk.ToggleButton()
+        self.search_button.set_icon_name("system-search-symbolic")
+        self.search_button.add_css_class("flat")
+        self.search_button.set_tooltip_text("Search messages")
+        self.search_button.connect("toggled", self.on_search_toggled)
+        self.widget.pack_end(self.search_button)
+
+        # Add refresh button to the left
         self.refresh_button = AppButton()
         self.refresh_button.set_icon_name("view-refresh-symbolic")
         self.refresh_button.widget.set_tooltip_text("Refresh messages")
         self.refresh_button.connect("clicked", self.on_refresh_clicked)
-        self.widget.pack_end(self.refresh_button.widget)
+        self.widget.pack_start(self.refresh_button.widget)
 
         self.refresh_callback = None
+        self.search_callback = None
+        self.message_list = None  # Will be set by the message list
+        self.search_box = None  # Will be set by the main window
+
 
     def on_refresh_clicked(self, button):
         if self.refresh_callback:
@@ -71,3 +83,22 @@ class MessageListHeader:
 
     def set_enabled(self, enabled):
         self.refresh_button.widget.set_sensitive(enabled)
+        
+    def on_search_changed(self, search_text):
+        if self.search_callback:
+            self.search_callback(search_text)
+            
+    def connect_search(self, callback):
+        self.search_callback = callback
+        
+    def on_search_toggled(self, button):
+        """Handle search button toggle"""
+        active = button.get_active()
+        if self.search_box:
+            self.search_box.set_search_mode(active)
+            
+            # Focus search entry when activated
+            if active:
+                self.search_box.search_entry.grab_focus()
+        
+

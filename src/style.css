@@ -260,3 +260,11 @@ toolbarview > * {
 spinner {
     color: @window_fg_color;
 }
+
+.header-search-box {
+    margin-right: 8px;
+}
+
+.message-list-search-box {
+    border-left: 1px solid @borders;
+}
