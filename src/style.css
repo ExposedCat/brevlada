@@ -1,9 +1,11 @@
+@import url("./components/ui/theme.css");
+
 button.flat {
     padding: 8px;
 }
 
 .sidebar-wrapper {
-    background-color: @sidebar_bg_color;
+    background-color: var(--sidebar-bg);
 }
 
 .sidebar {
@@ -83,7 +85,7 @@ paned {
 }
 
 .message-list-wrapper {
-    border-right: 1px solid @borders;
+    border-right: 1px solid var(--border-color);
 }
 
 .message-list-header {
@@ -161,185 +163,175 @@ toolbarview > * {
 }
 
 .message-list-error-text {
-    color: @error_color;
+    color: var(--error-color);
     font-size: 16px;
 }
 
 
 .message-row {
     padding: 8px 12px;
-    border-bottom: 1px solid @borders;
+    border-bottom: 1px solid var(--border-color);
     background: transparent;
 }
 
 .message-row:hover {
-    background-color: alpha(@accent_color, 0.05);
+    background-color: rgba(79, 140, 255, 0.05); /* --info-color with 0.05 alpha */
 }
 
 .message-row:selected {
-    background-color: alpha(@accent_color, 0.1);
+    background-color: rgba(79, 140, 255, 0.1); /* --info-color with 0.1 alpha */
 }
 
 .message-row-sender {
     font-weight: 500;
-    color: @window_fg_color;
+    color: var(--color-text);
 }
 
 .message-row-sender-unread {
     font-weight: 600;
-    color: @window_fg_color;
+    color: var(--color-text);
 }
 
 .message-row-subject {
-    color: @window_fg_color;
+    color: var(--color-text);
     opacity: 0.8;
 }
 
 .message-row-subject-unread {
-    color: @window_fg_color;
+    color: var(--color-text);
     font-weight: 500;
     opacity: 1;
 }
 
 .message-row-date {
-    color: @window_fg_color;
+    color: var(--color-text);
     opacity: 0.6;
     font-size: 12px;
 }
 
 .message-row-read-indicator {
     opacity: 0.7;
-    color: @window_fg_color;
+    color: var(--color-text);
 }
 
 .message-row-unread-indicator {
-    color: @accent_color;
+    color: var(--info-color);
     font-weight: bold;
 }
 
 .message-row-attachment-icon {
-    color: @window_fg_color;
+    color: var(--color-text);
     opacity: 0.6;
 }
 
 .message-row-flag-icon {
-    color: @accent_color;
+    color: var(--info-color);
 }
 
 .thread-count-container {
     min-width: 20px;
     min-height: 20px;
     border-radius: 10px;
-    background-color: @accent_bg_color;
+    background-color: @theme_bg_color;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.thread-count-badge-has-star {
+    margin-right: 5px;
+}
+.message-row-date-label,
+.message-row-date-muted {
+    font-size: 10px;
+    align-self: flex-end;
+    color: @theme_fg_color;
+    opacity: 0.5;
+}
+.message-row-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    align-items: flex-start;
+    justify-content: space-between;
+    height: 100%;
+    row-gap: var(--row-gap, 5px);
+}
+.message-row-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: space-between;
+    height: 100%;
+    row-gap: var(--row-gap, 5px);
 }
 
-.thread-count-badge {
-    color: @accent_fg_color;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 2px 6px;
+.thread-header-container {
+    margin-top: var(--thread-header-margin-top);
+    margin-bottom: var(--thread-header-margin-bottom);
+    margin-left: var(--thread-header-margin-start);
+    margin-right: var(--thread-header-margin-end);
 }
 
-.thread-attachment-icon {
-    opacity: 0.8;
+.thread-message-row-container {
+    margin-top: var(--thread-message-row-margin-top);
+    margin-bottom: var(--thread-message-row-margin-bottom);
+    margin-left: var(--thread-message-row-margin-start);
+    margin-right: var(--thread-message-row-margin-end);
 }
 
-.thread-row-read-indicator {
-    opacity: 0.7;
+.message-viewer-root {
+    margin-top: var(--message-viewer-root-margin-top);
+    margin-bottom: var(--message-viewer-root-margin-bottom);
+    margin-left: var(--message-viewer-root-margin-start);
+    margin-right: var(--message-viewer-root-margin-end);
 }
 
-.thread-message-read-indicator {
-    opacity: 0.6;
+.message-list-root {
+    margin-top: var(--message-list-root-margin-top);
+    margin-bottom: var(--message-list-root-margin-bottom);
+    margin-left: var(--message-list-root-margin-start);
+    margin-right: var(--message-list-root-margin-end);
 }
 
-.thread-message-attachment-icon {
-    opacity: 0.7;
+.html-viewer-root {
+    margin-top: var(--html-viewer-root-margin-top);
+    margin-bottom: var(--html-viewer-root-margin-bottom);
+    margin-left: var(--html-viewer-root-margin-start);
+    margin-right: var(--html-viewer-root-margin-end);
 }
 
-spinner {
-    color: @window_fg_color;
+.app-icon-margin {
+    margin-top: var(--app-icon-margin-top);
+    margin-bottom: var(--app-icon-margin-bottom);
+    margin-left: var(--app-icon-margin-start);
+    margin-right: var(--app-icon-margin-end);
+}
+.app-text-margin {
+    margin-top: var(--app-text-margin-top);
+    margin-bottom: var(--app-text-margin-bottom);
+    margin-left: var(--app-text-margin-start);
+    margin-right: var(--app-text-margin-end);
 }
 
-.header-search-box {
-    margin-right: 8px;
+.container-margin {
+    margin-top: var(--container-margin-top);
+    margin-bottom: var(--container-margin-bottom);
+    margin-left: var(--container-margin-start);
+    margin-right: var(--container-margin-end);
 }
 
-.message-list-search-box {
-    border-left: 1px solid @borders;
+.button-margin {
+    margin-top: var(--button-margin-top);
+    margin-bottom: var(--button-margin-bottom);
+    margin-left: var(--button-margin-start);
+    margin-right: var(--button-margin-end);
 }
 
-.message-viewer-content {
-    background-color: transparent;
-}
-
-.message-viewer-scroll {
-    background-color: transparent;
-}
-
-.message-viewer-empty-state {
-    padding: 48px 24px;
-    min-height: 200px;
-}
-
-.message-viewer-empty-text {
-}
-
-.message-viewer-loading-state {
-    padding: 48px 24px;
-    min-height: 200px;
-}
-
-.message-viewer-loading-text {
-}
-
-.message-viewer-error-state {
-    padding: 48px 24px;
-    min-height: 200px;
-}
-
-.message-viewer-error-text {
-    color: @error_color;
-    font-size: 16px;
-}
-
-.message-subject {
-    font-size: 18px;
+.thread-count-badge-label {
+    color: @theme_fg_color;
+    font-size: 14px;
     font-weight: bold;
-    color: @window_fg_color;
-}
-
-.message-body {
-    /* font-size: 14px; */
-    line-height: 1.6;
-    color: @window_fg_color;
-}
-
-.message-no-body {
-    /* font-size: 14px; */
-    color: @window_fg_color;
-    font-style: italic;
-}
-
-.message-body webview {
-    background-color: transparent;
-    border: none;
-    outline: none;
-}
-
-.message-body webview:focus {
-    outline: none;
-}
-
-.message-viewer-empty-icon {
-    margin-bottom: 12px;
-}
-
-.message-viewer-loading-spinner {
-    width: 32px;
-    height: 32px;
-    margin-bottom: 12px;
-}
-
-.message-viewer-error-icon {
-    margin-bottom: 12px;
+    letter-spacing: 0.5px;
+    text-align: center;
+    padding: 2px 6px;
 }

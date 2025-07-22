@@ -12,14 +12,10 @@ class ButtonContainer:
         children=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
-        margin_top=None,
-        margin_bottom=None,
-        margin_start=None,
-        margin_end=None,
-        **kwargs
+        with_margin=False,
+        margin_start=None
     ):
-        self.widget = Gtk.Box(orientation=orientation, spacing=spacing, **kwargs)
+        self.widget = Gtk.Box(orientation=orientation, spacing=spacing)
 
         if halign is not None:
             self.widget.set_halign(halign)
@@ -31,26 +27,10 @@ class ButtonContainer:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
-        # Set margins with fallback to general margin
-        if margin_top is not None:
-            self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
-        if margin_bottom is not None:
-            self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
+        if with_margin:
+            self.widget.add_css_class("container-margin")
         if margin_start is not None:
             self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
-        if margin_end is not None:
-            self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
 
         if class_names:
             if isinstance(class_names, str):
@@ -78,14 +58,9 @@ class ContentContainer:
         children=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
-        margin_top=None,
-        margin_bottom=None,
-        margin_start=None,
-        margin_end=None,
-        **kwargs
+        with_margin=False
     ):
-        self.widget = Gtk.Box(orientation=orientation, spacing=spacing, **kwargs)
+        self.widget = Gtk.Box(orientation=orientation, spacing=spacing)
 
         if halign is not None:
             self.widget.set_halign(halign)
@@ -97,26 +72,8 @@ class ContentContainer:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
-        # Set margins with fallback to general margin
-        if margin_top is not None:
-            self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
-        if margin_bottom is not None:
-            self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
-        if margin_start is not None:
-            self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
-        if margin_end is not None:
-            self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
+        if with_margin:
+            self.widget.add_css_class("container-margin")
 
         if class_names:
             if isinstance(class_names, str):
@@ -143,14 +100,9 @@ class NavigationList:
         children=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
-        margin_top=None,
-        margin_bottom=None,
-        margin_start=None,
-        margin_end=None,
-        **kwargs
+        with_margin=False
     ):
-        self.widget = Gtk.ListBox(**kwargs)
+        self.widget = Gtk.ListBox()
         self.widget.set_selection_mode(selection_mode)
         self.widget.add_css_class("navigation-list")
 
@@ -164,26 +116,8 @@ class NavigationList:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
-        # Set margins with fallback to general margin
-        if margin_top is not None:
-            self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
-        if margin_bottom is not None:
-            self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
-        if margin_start is not None:
-            self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
-        if margin_end is not None:
-            self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
+        if with_margin:
+            self.widget.add_css_class("container-margin")
 
         if class_names:
             if isinstance(class_names, str):
@@ -210,14 +144,9 @@ class ContentItem:
         children=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
-        margin_top=None,
-        margin_bottom=None,
-        margin_start=None,
-        margin_end=None,
-        **kwargs
+        with_margin=False
     ):
-        self.widget = Gtk.ListBoxRow(**kwargs)
+        self.widget = Gtk.ListBoxRow()
 
         if indent:
             self.widget.add_css_class("content-item-indented")
@@ -232,26 +161,8 @@ class ContentItem:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
-        # Set margins with fallback to general margin
-        if margin_top is not None:
-            self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
-        if margin_bottom is not None:
-            self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
-        if margin_start is not None:
-            self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
-        if margin_end is not None:
-            self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
+        if with_margin:
+            self.widget.add_css_class("container-margin")
 
         if class_names:
             if isinstance(class_names, str):
@@ -279,14 +190,9 @@ class ScrollContainer:
         children=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
-        margin_top=None,
-        margin_bottom=None,
-        margin_start=None,
-        margin_end=None,
-        **kwargs
+        with_margin=False
     ):
-        self.widget = Gtk.ScrolledWindow(**kwargs)
+        self.widget = Gtk.ScrolledWindow()
         self.widget.set_vexpand(True)
         self.widget.set_policy(h_policy, v_policy)
 
@@ -300,26 +206,8 @@ class ScrollContainer:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
-        # Set margins with fallback to general margin
-        if margin_top is not None:
-            self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
-        if margin_bottom is not None:
-            self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
-        if margin_start is not None:
-            self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
-        if margin_end is not None:
-            self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
+        if with_margin:
+            self.widget.add_css_class("container-margin")
 
         if class_names:
             if isinstance(class_names, str):

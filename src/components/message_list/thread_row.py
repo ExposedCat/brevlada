@@ -20,10 +20,7 @@ class ThreadRow:
 
         self.header_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.header_container.set_spacing(12)
-        self.header_container.set_margin_top(6)
-        self.header_container.set_margin_bottom(6)
-        self.header_container.set_margin_start(12)
-        self.header_container.set_margin_end(12)
+        self.header_container.add_css_class("thread-header-container")
 
         if self.thread.get_unread_count() > 0:
             self.header_container.add_css_class("thread-row-unread")
@@ -139,10 +136,7 @@ class ThreadRow:
 
         container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         container.set_spacing(12)
-        container.set_margin_top(4)
-        container.set_margin_bottom(4)
-        container.set_margin_start(36)
-        container.set_margin_end(12)
+        container.add_css_class("thread-message-row-container")
 
         if not message.is_read:
             container.add_css_class("thread-message-row-unread")

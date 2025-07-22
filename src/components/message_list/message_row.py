@@ -1,5 +1,7 @@
 from utils.toolkit import Gtk, Pango
 from components.ui import AppIcon, AppText
+from theme import MESSAGE_ROW_ICON_GAP, THEME_ROW_GAP, THEME_ROW_VERTICAL_GAP
+from components.container import ContentContainer
 
 
 class MessageRow:
@@ -16,81 +18,71 @@ class MessageRow:
         self.widget = Gtk.ListBoxRow()
         self.widget.set_activatable(True)
         self.widget.set_selectable(True)
+        self.widget.add_css_class("message-row")
 
-        self.container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.container.set_spacing(12)
-        self.container.set_margin_top(10)
-        self.container.set_margin_bottom(10)
-        self.container.set_margin_start(16)
-        self.container.set_margin_end(16)
-        self.container.set_hexpand(True)
+        self.container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=THEME_ROW_GAP)
+        self.container.add_css_class("message-row-container")
 
         # Left side: read indicator and message content
         self.left_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.left_container.set_spacing(12)
-        self.left_container.set_hexpand(True)
-        self.left_container.set_valign(Gtk.Align.CENTER)
+        self.left_container.set_spacing(MESSAGE_ROW_ICON_GAP)
+        self.left_container.add_css_class("message-row-left")
 
         self.read_indicator = self.create_read_indicator()
         self.left_container.append(self.read_indicator)
 
         # Message content: sender and subject vertically stacked
-        self.content_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.content_container.set_spacing(4)
-        self.content_container.set_hexpand(True)
-        self.content_container.set_valign(Gtk.Align.CENTER)
+        self.content_container = ContentContainer(
+            spacing=THEME_ROW_VERTICAL_GAP,
+            orientation=Gtk.Orientation.VERTICAL,
+            class_names="message-row-content",
+            children=None
+        ).widget
 
         # Sender with optional thread count
-        sender_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        sender_container.set_spacing(8)
-        sender_container.set_halign(Gtk.Align.START)
-
-        self.sender_label = AppText(self.get_display_sender(), class_names="heading")
-        sender_container.append(self.sender_label.widget)
-
-        # Add thread count badge if this is a thread
+        sender_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=THEME_ROW_GAP)
+        sender_container.add_css_class("message-row-sender-container")
         if self.is_thread and self.get_message_count() > 1:
             self.thread_count_badge = self.create_thread_count_badge()
             sender_container.append(self.thread_count_badge)
+        self.sender_label = AppText(self.get_display_sender(), class_names="heading")
+        sender_container.append(self.sender_label.widget)
 
         self.content_container.append(sender_container)
 
         self.subject_label = AppText(
             self.get_display_subject(), class_names="dim-label"
         )
-        self.subject_label.widget.set_halign(Gtk.Align.START)
-        self.subject_label.widget.set_ellipsize(Pango.EllipsizeMode.END)
+        self.subject_label.widget.add_css_class("message-row-subject-label")
         self.content_container.append(self.subject_label.widget)
 
         self.left_container.append(self.content_container)
         self.container.append(self.left_container)
 
-        # Right side: time and icons
-        self.right_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.right_container.set_spacing(6)
-        self.right_container.set_valign(Gtk.Align.CENTER)
-        self.right_container.set_halign(Gtk.Align.END)
+        # Right side: top (icons) and bottom (date)
+        self.right_container = ContentContainer(
+            spacing=THEME_ROW_VERTICAL_GAP,
+            orientation=Gtk.Orientation.VERTICAL,
+            class_names="message-row-right",
+            children=None
+        ).widget
 
+        # Date label (top right, smaller, muted)
         self.date_label = AppText(
-            self.get_display_date(), halign=Gtk.Align.END, class_names="dim-label"
+            self.get_display_date(),
+            halign=Gtk.Align.END,
+            class_names="message-row-date-label message-row-date-muted",
         )
-        self.date_label.widget.set_halign(Gtk.Align.END)
         self.right_container.append(self.date_label.widget)
 
-        # Icons container
-        self.icons_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.icons_container.set_spacing(6)
+        # Icons container (bottom right)
+        self.icons_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=THEME_ROW_GAP)
         self.icons_container.set_halign(Gtk.Align.END)
-        self.icons_container.set_valign(Gtk.Align.CENTER)
-
-        if self.get_attachment_count() > 0:
-            self.attachment_indicator = self.create_attachment_indicator()
-            self.icons_container.append(self.attachment_indicator)
-
+        self.icons_container.add_css_class("message-row-icons")
         if self.get_is_flagged():
             self.flag_indicator = self.create_flag_indicator()
+            self.flag_indicator.add_css_class("message-row-flag-icon")
             self.icons_container.append(self.flag_indicator)
-
         self.right_container.append(self.icons_container)
         self.container.append(self.right_container)
 
@@ -225,7 +217,8 @@ class MessageRow:
 
         # Create a label with the count
         badge_label = Gtk.Label(label=str(count))
-        badge_label.add_css_class("thread-count-badge")
+        badge_label.add_css_class("thread-count-badge-label")
+        # Padding will be set via CSS, not set_padding
 
         # Wrap in a box for styling
         badge_box = Gtk.Box()

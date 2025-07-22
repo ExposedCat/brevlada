@@ -110,7 +110,7 @@ class MyWindow(Adw.ApplicationWindow):
             orientation=Gtk.Orientation.VERTICAL,
             class_names="main-content",
             children=[self.message_viewer.widget],
-            margin=5,
+            with_margin=True,
             h_fill=True,
             w_fill=True,
         )

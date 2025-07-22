@@ -12,14 +12,9 @@ class AppButton:
         children=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
-        margin_top=None,
-        margin_bottom=None,
-        margin_start=None,
-        margin_end=None,
-        **kwargs
+        with_margin=False
     ):
-        self.widget = Gtk.Button(**kwargs)
+        self.widget = Gtk.Button()
 
         self.widget.add_css_class("flat")
 
@@ -36,25 +31,8 @@ class AppButton:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
-        if margin_top is not None:
-            self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
-        if margin_bottom is not None:
-            self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
-        if margin_start is not None:
-            self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
-        if margin_end is not None:
-            self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
+        if with_margin:
+            self.widget.add_css_class("button-margin")
 
         if variant == "expand":
             pass

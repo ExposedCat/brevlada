@@ -11,8 +11,7 @@ class HtmlViewer:
         margin_top=None,
         margin_bottom=None,
         margin_start=None,
-        margin_end=None,
-        **kwargs
+        margin_end=None
     ):
         self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         
@@ -25,17 +24,14 @@ class HtmlViewer:
             self.widget.set_margin_top(margin_top)
         elif margin is not None:
             self.widget.set_margin_top(margin)
-
         if margin_bottom is not None:
             self.widget.set_margin_bottom(margin_bottom)
         elif margin is not None:
             self.widget.set_margin_bottom(margin)
-
         if margin_start is not None:
             self.widget.set_margin_start(margin_start)
         elif margin is not None:
             self.widget.set_margin_start(margin)
-
         if margin_end is not None:
             self.widget.set_margin_end(margin_end)
         elif margin is not None:
@@ -47,6 +43,8 @@ class HtmlViewer:
             elif isinstance(class_names, list):
                 for class_name in class_names:
                     self.widget.add_css_class(class_name)
+
+        self.widget.add_css_class("html-viewer-root")
 
         self.webview = WebKit.WebView()
         self.webview.set_vexpand(True)

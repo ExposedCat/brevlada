@@ -10,14 +10,9 @@ class AppIcon:
         class_names=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
-        margin_top=None,
-        margin_bottom=None,
-        margin_start=None,
-        margin_end=None,
-        **kwargs
+        with_margin=False
     ):
-        self.widget = Gtk.Image(**kwargs)
+        self.widget = Gtk.Image()
         self.widget.set_from_icon_name(icon_name)
 
         if halign is not None:
@@ -30,25 +25,8 @@ class AppIcon:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
-        if margin_top is not None:
-            self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
-        if margin_bottom is not None:
-            self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
-        if margin_start is not None:
-            self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
-        if margin_end is not None:
-            self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
+        if with_margin:
+            self.widget.add_css_class("app-icon-margin")
 
         if class_names:
             if isinstance(class_names, str):
@@ -77,14 +55,13 @@ class AppText:
         class_names=None,
         h_fill=None,
         w_fill=None,
-        margin=None,
+        with_margin=False,
         margin_top=None,
         margin_bottom=None,
         margin_start=None,
-        margin_end=None,
-        **kwargs
+        margin_end=None
     ):
-        self.widget = Gtk.Label(label=text, **kwargs)
+        self.widget = Gtk.Label(label=text)
 
         if halign is not None:
             self.widget.set_halign(halign)
@@ -101,32 +78,16 @@ class AppText:
         if w_fill is not None:
             self.widget.set_vexpand(w_fill)
 
+        if with_margin:
+            self.widget.add_css_class("app-text-margin")
         if margin_top is not None:
             self.widget.set_margin_top(margin_top)
-        elif margin is not None:
-            self.widget.set_margin_top(margin)
-
         if margin_bottom is not None:
             self.widget.set_margin_bottom(margin_bottom)
-        elif margin is not None:
-            self.widget.set_margin_bottom(margin)
-
         if margin_start is not None:
             self.widget.set_margin_start(margin_start)
-        elif margin is not None:
-            self.widget.set_margin_start(margin)
-
         if margin_end is not None:
             self.widget.set_margin_end(margin_end)
-        elif margin is not None:
-            self.widget.set_margin_end(margin)
-
-        if class_names:
-            if isinstance(class_names, str):
-                self.widget.add_css_class(class_names)
-            elif isinstance(class_names, list):
-                for class_name in class_names:
-                    self.widget.add_css_class(class_name)
 
     def set_text_content(self, text):
         self.widget.set_label(text)

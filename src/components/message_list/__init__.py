@@ -35,10 +35,7 @@ class MessageList:
         self.widget = Adw.PreferencesGroup()
         self.widget.set_vexpand(True)
         self.widget.set_hexpand(True)
-        self.widget.set_margin_top(6)
-        self.widget.set_margin_bottom(6)
-        self.widget.set_margin_start(6)
-        self.widget.set_margin_end(6)
+        self.widget.add_css_class("message-list-root")
 
         self.list_box = Gtk.ListBox()
         self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)

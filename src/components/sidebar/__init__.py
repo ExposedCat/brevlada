@@ -11,6 +11,7 @@ from components.container import (
 )
 from components.ui import AppIcon, AppText, LoadingIcon
 from utils.mail import fetch_imap_folders
+from theme import THEME_MARGIN_LARGE, THEME_INDENT_STEP
 
 
 class AccountsSidebar:
@@ -255,7 +256,8 @@ class AccountsSidebar:
                 error_container = ButtonContainer(
                     class_names="error-container",
                     children=[error_button.widget],
-                    margin_start=45 * (level + 1),
+                    with_margin=True,
+                    margin_start=THEME_INDENT_STEP * (level + 1),
                 )
 
                 error_row = ContentItem(
@@ -307,7 +309,8 @@ class AccountsSidebar:
                 folder_container = ButtonContainer(
                     class_names="folder-container",
                     children=[folder_button.widget],
-                    margin_start=45 * (level + 1),
+                    with_margin=True,
+                    margin_start=THEME_INDENT_STEP * (level + 1),
                 )
 
                 folder_row = ContentItem(
@@ -588,7 +591,7 @@ class AccountsSidebar:
                             class_names=["no-accounts-text", "dim-label"],
                         ).widget
                     ],
-                    margin_top=20,
+                    margin_top=THEME_MARGIN_LARGE,
                 )
 
                 no_accounts_row = ContentItem(
@@ -608,7 +611,7 @@ class AccountsSidebar:
                         class_names=["error-text", "dim-label"],
                     ).widget
                 ],
-                margin_top=20,
+                margin_top=THEME_MARGIN_LARGE,
             )
 
             error_row = ContentItem(

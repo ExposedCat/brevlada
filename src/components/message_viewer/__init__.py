@@ -7,6 +7,7 @@ from components.html_viewer import HtmlViewer
 import logging
 import threading
 from utils.mail import fetch_message_body_from_imap
+from theme import THEME_MARGIN_MEDIUM, THEME_MARGIN_LARGE
 
 
 class MessageViewer:
@@ -21,10 +22,7 @@ class MessageViewer:
         self.widget = Adw.PreferencesGroup()
         self.widget.set_vexpand(True)
         self.widget.set_hexpand(True)
-        self.widget.set_margin_top(6)
-        self.widget.set_margin_bottom(6)
-        self.widget.set_margin_start(6)
-        self.widget.set_margin_end(6)
+        self.widget.add_css_class("message-viewer-root")
         
         # Main container for all content
         self.main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -197,7 +195,7 @@ class MessageViewer:
         subject_label = AppText(
             text=message.get("subject", "(No Subject)"),
             class_names="message-subject",
-            margin_bottom=15,
+            margin_bottom=THEME_MARGIN_MEDIUM,
             halign=Gtk.Align.START,
         )
         subject_label.set_markup(
@@ -258,7 +256,7 @@ class MessageViewer:
             # Use HTML viewer for HTML content
             html_viewer = HtmlViewer(
                 class_names="message-body",
-                margin_top=20,
+                margin_top=THEME_MARGIN_MEDIUM,
                 h_fill=True,
                 w_fill=True,
             )
@@ -268,7 +266,7 @@ class MessageViewer:
             # Use HTML viewer for plain text with proper formatting
             html_viewer = HtmlViewer(
                 class_names="message-body",
-                margin_top=20,
+                margin_top=THEME_MARGIN_MEDIUM,
                 h_fill=True,
                 w_fill=True,
             )
@@ -279,9 +277,9 @@ class MessageViewer:
             self.content_container.widget.set_valign(Gtk.Align.CENTER)
             self.content_container.widget.set_halign(Gtk.Align.CENTER)
             no_body_label = AppText(
-                text="No message body.",
+                text="(No message body)",
                 class_names="message-no-body",
-                margin_top=20,
+                margin_top=THEME_MARGIN_LARGE,
                 halign=Gtk.Align.CENTER,
             )
             no_body_label.set_opacity(0.6)
@@ -349,8 +347,9 @@ class MessageViewer:
         
         # Text
         loading_label = AppText(
-            text="Loading message...",
+            text="Loading...",
             class_names="message-viewer-loading-text",
+            margin_top=THEME_MARGIN_LARGE,
             halign=Gtk.Align.CENTER,
         )
         loading_label.set_opacity(0.7)
