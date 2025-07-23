@@ -114,7 +114,6 @@ def connect_to_imap_server(mail_settings):
         logging.error(f"Failed to connect to IMAP server {server}:{port}: {e}")
         raise
 
-
 _connection_cache = {}
 _connection_cache_lock = threading.Lock()
 

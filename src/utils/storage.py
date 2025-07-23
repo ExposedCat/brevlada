@@ -456,6 +456,34 @@ class EmailStorage:
             "references": row["message_references"],
         }
 
+    def get_message_by_uid(self, uid: int, folder: str, account_id: str) -> Optional[Dict]:
+        """Get a single message by UID from storage"""
+        logging.debug(f"EmailStorage: Getting message by UID {uid} for folder='{folder}', account_id='{account_id}'")
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM messages
+                    WHERE uid = ? AND folder = ? AND account_id = ? AND is_deleted = 0
+                """,
+                    (uid, folder, account_id),
+                )
+                
+                row = cursor.fetchone()
+                if row:
+                    message_data = self._row_to_message(row)
+                    message_data["attachments"] = self.get_message_attachments(uid, folder, account_id)
+                    logging.debug(f"EmailStorage: Found message UID {uid}")
+                    return message_data
+                else:
+                    logging.debug(f"EmailStorage: Message UID {uid} not found")
+                    return None
+                    
+        except Exception as e:
+            logging.error(f"EmailStorage: Error getting message UID {uid}: {e}")
+            return None
+
     def get_message_attachments(
         self, message_uid: int, folder: str, account_id: str
     ) -> List[Dict]:

@@ -273,7 +273,6 @@ class IMAPConnectionManager:
         self.running = False
         self.close_all_connections()
 
-
 _connection_manager = None
 
 def get_connection_manager() -> IMAPConnectionManager:

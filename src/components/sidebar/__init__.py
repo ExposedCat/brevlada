@@ -168,7 +168,6 @@ class AccountsSidebar:
                     )
                     delattr(account_row, "loading_icon")
 
-
     def organize_folders_hierarchy(self, folders):
         root_folders = {}
 

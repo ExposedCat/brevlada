@@ -152,7 +152,6 @@ class SearchBox:
         if self.search_changed_callback:
             self.search_changed_callback(search_entry.get_text())
 
-
     def connect_search_changed(self, callback):
         """Connect a callback for when search text changes"""
         self.search_changed_callback = callback

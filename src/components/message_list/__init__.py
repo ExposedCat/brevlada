@@ -25,6 +25,7 @@ class MessageList:
         self.current_fetch_id = 0
         self.search_text = ""
         self.filtered_messages = []
+        self._restoring_selection = False  
 
         
         self.sync_service = SyncService(storage, sync_interval=300)
@@ -230,15 +231,31 @@ class MessageList:
         thread.daemon = True
         thread.start()
 
-    def render_message_list(self, messages, grouped=True):
+    def render_message_list(self, messages, grouped=True, preserve_selection=True):
         """
         Modular function to render message list with consistent grouping logic.
         
         Args:
             messages: List of messages to display
             grouped: Whether to group messages into threads (default: True)
+            preserve_selection: Whether to preserve current selection during re-render
         """
-        logging.debug(f"MessageList: Rendering {len(messages)} messages, grouped={grouped}")
+        logging.debug(f"MessageList: Rendering {len(messages)} messages, grouped={grouped}, preserve_selection={preserve_selection}")
+        
+        
+        currently_selected = None
+        if preserve_selection:
+            currently_selected = self.get_selected_message()
+            if currently_selected:
+                if hasattr(currently_selected, 'messages'):
+                    
+                    selected_id = f"thread_{currently_selected.subject}"
+                    logging.debug(f"MessageList: Preserving thread selection: {selected_id}")
+                else:
+                    
+                    selected_id = f"message_{currently_selected.get('uid')}"
+                    logging.debug(f"MessageList: Preserving message selection: {selected_id}")
+        
         self.clear_list()
 
         if not messages:
@@ -257,11 +274,19 @@ class MessageList:
             
             
             for i, thread in enumerate(threads):
-                logging.debug(f"MessageList: Creating thread row {i+1}/{len(threads)}")
+                logging.debug(f"MessageList: Creating thread row {i+1}/{len(threads)} with {len(thread.messages)} messages")
                 thread_row = MessageRow(thread)
                 thread_row.connect_selected(self.on_message_row_selected)
                 self.message_row_instances[thread_row.widget] = thread_row
                 self.list_box.append(thread_row.widget)
+                
+                
+                if preserve_selection and currently_selected and hasattr(currently_selected, 'messages'):
+                    if thread.subject == currently_selected.subject:
+                        logging.debug(f"MessageList: Restoring selection to thread: {thread.subject}")
+                        self._restoring_selection = True
+                        self.list_box.select_row(thread_row.widget)
+                        self._restoring_selection = False
         else:
             
             logging.debug("MessageList: Rendering messages without grouping")
@@ -271,6 +296,14 @@ class MessageList:
                 message_row.connect_selected(self.on_message_row_selected)
                 self.message_row_instances[message_row.widget] = message_row
                 self.list_box.append(message_row.widget)
+                
+                
+                if preserve_selection and currently_selected and not hasattr(currently_selected, 'messages'):
+                    if message.get('uid') == currently_selected.get('uid'):
+                        logging.debug(f"MessageList: Restoring selection to message UID: {message.get('uid')}")
+                        self._restoring_selection = True
+                        self.list_box.select_row(message_row.widget)
+                        self._restoring_selection = False
 
         logging.debug("MessageList: Message list rendering complete")
 
@@ -279,6 +312,19 @@ class MessageList:
             f"MessageList: Messages loaded successfully, count: {len(messages)}"
         )
         logging.debug(f"MessageList: Threading enabled: {self.threading_enabled}")
+        
+        
+        if self.messages and len(self.messages) == len(messages):
+            
+            old_uids = {msg.get('uid') for msg in self.messages}
+            new_uids = {msg.get('uid') for msg in messages}
+            if old_uids == new_uids:
+                logging.debug("MessageList: Message UIDs unchanged, skipping re-render")
+                self.messages = messages  
+                if self.header:
+                    GLib.idle_add(self.header.set_loading, False)
+                return
+        
         self.messages = messages
 
         
@@ -348,9 +394,9 @@ class MessageList:
 
         fetch_messages_from_folder(account_data, self.current_folder, on_imap_response)
 
-    def on_message_row_selected(self, message):
+    def on_message_row_selected(self, message_or_thread):
         if self.message_selected_callback:
-            self.message_selected_callback(message)
+            self.message_selected_callback(message_or_thread)
 
     def clear_list(self):
         self.message_row_instances.clear()
@@ -361,19 +407,20 @@ class MessageList:
             self.list_box.remove(row)
 
     def on_message_selected(self, list_box, row):
+        
+        if self._restoring_selection:
+            logging.debug("MessageList: Ignoring selection change during restoration")
+            return
+            
         if row is not None and row in self.message_row_instances:
             message_row = self.message_row_instances[row]
             if message_row.is_thread:
-                message = (
-                    message_row.message_or_thread.messages[-1]
-                    if message_row.message_or_thread.messages
-                    else None
-                )
+                
+                message_or_thread = message_row.message_or_thread
             else:
-                message = message_row.message_or_thread
+                message_or_thread = message_row.message_or_thread
             if self.message_selected_callback:
-                self.message_selected_callback(message)
-
+                self.message_selected_callback(message_or_thread)
 
     def show_empty_state(self):
         self.hide_all_states()
@@ -408,11 +455,7 @@ class MessageList:
                 message_row = self.message_row_instances[selected_row]
                 if message_row.is_thread:
                     
-                    return (
-                        message_row.message_or_thread.messages[-1]
-                        if message_row.message_or_thread.messages
-                        else None
-                    )
+                    return message_row.message_or_thread
                 else:
                     return message_row.message_or_thread
         return None
@@ -422,7 +465,8 @@ class MessageList:
         if self.messages:
             
             current_messages = self.filtered_messages if self.search_text else self.messages
-            self.render_message_list(current_messages, grouped=not self.search_text)
+            
+            self.render_message_list(current_messages, grouped=not self.search_text, preserve_selection=True)
 
     def cleanup(self):
         if self.sync_service:
@@ -452,7 +496,7 @@ class MessageList:
         if not self.search_text:
             
             self.filtered_messages = self.messages.copy()
-            self.render_message_list(self.filtered_messages, grouped=True)
+            self.render_message_list(self.filtered_messages, grouped=True, preserve_selection=True)
         else:
             
             self.filtered_messages = []
@@ -462,7 +506,8 @@ class MessageList:
             
             logging.debug(f"MessageList: Filtered {len(self.messages)} messages to {len(self.filtered_messages)} results")
             
-            self.render_message_list(self.filtered_messages, grouped=False)
+            
+            self.render_message_list(self.filtered_messages, grouped=False, preserve_selection=False)
         
     def _message_matches_search(self, message, search_text):
         """Check if a message matches the search text"""

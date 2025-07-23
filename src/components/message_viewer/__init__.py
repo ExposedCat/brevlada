@@ -99,40 +99,256 @@ class MessageViewer:
     def set_account_data(self, account_data):
         self.current_account_data = account_data
     
-    def show_message(self, message):
+    def show_message(self, message_or_thread):
         
         child = self.content_container.widget.get_first_child()
         while child:
             self.content_container.widget.remove(child)
             child = self.content_container.widget.get_first_child()
-        if not message:
+        if not message_or_thread:
             self.show_select_message_state()
             return
         
-        self.current_message = message
+        self.current_message = message_or_thread
         self.show_loading_state()
         
         
-        if message.get("body") and message["body"].strip():
-            self.display_message(message)
+        if hasattr(message_or_thread, 'messages') and hasattr(message_or_thread, 'get_unread_count'):
+            logging.info(f"MessageViewer: Received thread with {len(message_or_thread.messages)} messages")
+        else:
+            logging.info(f"MessageViewer: Received single message: {message_or_thread.get('subject', 'No subject')}")
+        
+        
+        if hasattr(message_or_thread, 'messages') and hasattr(message_or_thread, 'get_unread_count'):
+            
+            self.display_thread(message_or_thread)
         else:
             
-            self.fetch_message_body(message)
-    
+            if self.message_has_body(message_or_thread):
+                self.display_message(message_or_thread)
+            else:
+                self.fetch_message_body(message_or_thread)
+
+    def message_has_body(self, message):
+        """Check if message has a non-empty body"""
+        body_text = message.get("body", "")
+        body_html = message.get("body_html", "")
+        return (body_text and body_text.strip()) or (body_html and body_html.strip())
+
     def fetch_message_body(self, message):
         if not self.current_account_data:
-            logging.error("No account data set in MessageViewer")
+            logging.error("MessageViewer: No account data set in MessageViewer")
             self.show_error_state("No account data set")
             return
         
         
+        self.fetch_message_body_smart(message)
+    
+    def display_thread(self, thread):
+        """Display all messages in a thread"""
+        logging.info(f"MessageViewer: Displaying thread with {len(thread.messages)} messages")
+        
+        
+        self.hide_all_states()
+        
+        
+        child = self.content_container.widget.get_first_child()
+        while child:
+            self.content_container.widget.remove(child)
+            child = self.content_container.widget.get_first_child()
+        
+        self.current_state = "content"
+        
+        self.content_container.widget.set_valign(Gtk.Align.FILL)
+        self.content_container.widget.set_halign(Gtk.Align.FILL)
+        
+        
+        if self.content_header:
+            self.content_header.set_message_subject(thread.get_display_subject())
+        
+        
+        self.thread_message_cards = {}
+        
+        
+        for i, message in enumerate(thread.messages):
+            logging.debug(f"MessageViewer: Creating card for message {i+1}: UID={message.get('uid')}, has_body={self.message_has_body(message)}")
+            
+            message_card = self.create_message_card(message, is_in_thread=True, thread_position=i+1, thread_total=len(thread.messages))
+            self.content_container.widget.append(message_card)
+            
+            
+            message_uid = message.get("uid")
+            if message_uid:
+                self.thread_message_cards[message_uid] = message_card
+            
+            
+            if not self.message_has_body(message):
+                logging.debug(f"MessageViewer: Message UID {message_uid} needs body, trying database first")
+                self.fetch_message_body_smart(message, thread)
+            else:
+                logging.debug(f"MessageViewer: Message UID {message_uid} already has body")
+        
+        logging.info(f"MessageViewer: Thread display complete, {len(thread.messages)} cards created")
+
+    def create_message_card(self, message, is_in_thread=False, thread_position=None, thread_total=None):
+        """Create a message card for display"""
+        message_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        message_card.add_css_class("message-card")
+        if is_in_thread:
+            message_card.add_css_class("message-card-in-thread")
+        
+        
+        card_header = self.create_message_card_header(message)
+        message_card.append(card_header)
+        
+        
+        loading = not self.message_has_body(message)
+        card_body = self.create_message_card_body(message, loading=loading)
+        message_card.append(card_body)
+        
+        return message_card
+
+    def fetch_message_body_for_thread(self, message, thread):
+        """Fetch message body for a message in a thread"""
+        if not self.current_account_data:
+            logging.warning("MessageViewer: No account data available for body fetch")
+            return
+        
+        message_uid = message.get("uid")
+        if not message_uid:
+            logging.warning("MessageViewer: No UID found for message, skipping body fetch")
+            return
+            
+        
+        fetch_key = f"_fetching_body_{message_uid}"
+        if hasattr(self, fetch_key) and getattr(self, fetch_key):
+            logging.debug(f"MessageViewer: Already fetching body for UID {message_uid}, skipping")
+            return
+            
+        logging.info(f"MessageViewer: Starting body fetch for message UID {message_uid}")
+        setattr(self, fetch_key, True)
+        
+        
+        message_fetch_id = f"fetch_{message_uid}_{self.body_fetch_id}"
+        self.body_fetch_id += 1
+        
+        def on_body_fetched(error, message_body_data):
+            logging.debug(f"MessageViewer: Body fetch callback for UID {message_uid}")
+            
+            
+            setattr(self, fetch_key, False)
+            
+            if error:
+                logging.error(f"MessageViewer: Error fetching thread message body for UID {message_uid}: {error}")
+                return
+            
+            if message_body_data:
+                logging.info(f"MessageViewer: Successfully fetched body for UID {message_uid}")
+                
+                if isinstance(message_body_data, dict):
+                    message["body"] = message_body_data.get("text", "")
+                    message["body_html"] = message_body_data.get("html", "")
+                    body_text_len = len(message["body"]) if message["body"] else 0
+                    body_html_len = len(message["body_html"]) if message["body_html"] else 0
+                    logging.debug(f"MessageViewer: UID {message_uid} - text_length={body_text_len}, html_length={body_html_len}")
+                else:
+                    message["body"] = message_body_data
+                    message["body_html"] = ""
+                    body_text_len = len(message["body"]) if message["body"] else 0
+                    logging.debug(f"MessageViewer: UID {message_uid} - body_length={body_text_len}")
+                
+                try:
+                    self.storage.update_message_body(
+                        message["uid"], 
+                        message["folder"], 
+                        message["account_id"], 
+                        message["body"],
+                        message.get("body_html", "")
+                    )
+                    logging.debug(f"MessageViewer: Stored body for UID {message_uid} in database")
+                except Exception as e:
+                    logging.error(f"MessageViewer: Error storing thread message body for UID {message_uid}: {e}")
+                
+                self.update_message_card_body(message_uid, message)
+                logging.info(f"MessageViewer: Updated message card for UID {message_uid}")
+            else:
+                logging.warning(f"MessageViewer: No body data returned for UID {message_uid}")
+        
+        fetch_message_body_from_imap(
+            self.current_account_data, 
+            message["folder"], 
+            message["uid"], 
+            on_body_fetched
+        )
+
+    def fetch_message_body_smart(self, message, thread=None):
+        """Smart body fetching: try database first, then IMAP if needed"""
+        message_uid = message.get("uid")
+        if not message_uid:
+            logging.warning("MessageViewer: No UID found for message, skipping body fetch")
+            return
+        
+        self.fetch_message_body_from_database(message, thread)
+
+    def fetch_message_body_from_database(self, message, thread=None):
+        """Try to fetch message body from database"""
+        message_uid = message.get("uid")
+        folder = message.get("folder")
+        account_id = message.get("account_id")
+        
+        if not all([message_uid, folder, account_id]):
+            logging.warning(f"MessageViewer: Missing required fields for database fetch: UID={message_uid}, folder={folder}, account_id={account_id}")
+            
+            if thread:
+                self.fetch_message_body_for_thread(message, thread)
+            else:
+                self.fetch_message_body_from_imap_direct(message)
+            return
+        
+        try:
+            
+            db_message = self.storage.get_message_by_uid(message_uid, folder, account_id)
+            
+            if db_message and self.message_has_body(db_message):
+                logging.info(f"MessageViewer: Found body in database for UID {message_uid}")
+                
+                message["body"] = db_message.get("body", "")
+                message["body_html"] = db_message.get("body_html", "")
+                
+                
+                if thread and message_uid in getattr(self, 'thread_message_cards', {}):
+                    self.update_message_card_body(message_uid, message)
+                elif not thread:
+                    
+                    self.display_message(message)
+            else:
+                logging.debug(f"MessageViewer: No body found in database for UID {message_uid}, fetching from IMAP")
+                
+                if thread:
+                    self.fetch_message_body_for_thread(message, thread)
+                else:
+                    self.fetch_message_body_from_imap_direct(message)
+                    
+        except Exception as e:
+            logging.error(f"MessageViewer: Error fetching from database for UID {message_uid}: {e}")
+            
+            if thread:
+                self.fetch_message_body_for_thread(message, thread)
+            else:
+                self.fetch_message_body_from_imap_direct(message)
+
+    def fetch_message_body_from_imap_direct(self, message):
+        """Fetch message body directly from IMAP (for single messages)"""
+        if not self.current_account_data:
+            self.show_error_state("No account data set")
+            return
+        
         self.body_fetch_id += 1
         fetch_id = self.body_fetch_id
         
-        logging.info(f"MessageViewer: Fetching body for message UID {message.get('uid')}")
+        logging.info(f"MessageViewer: Fetching body from IMAP for message UID {message.get('uid')}")
         
         def on_body_fetched(error, message_body_data):
-            
             if fetch_id != self.body_fetch_id:
                 logging.debug(f"MessageViewer: Body fetch operation {fetch_id} was cancelled, ignoring response")
                 return
@@ -143,15 +359,12 @@ class MessageViewer:
                 return
             
             if message_body_data:
-                
                 if isinstance(message_body_data, dict):
                     message["body"] = message_body_data.get("text", "")
                     message["body_html"] = message_body_data.get("html", "")
                 else:
-                    
                     message["body"] = message_body_data
                     message["body_html"] = ""
-                
                 
                 try:
                     self.storage.update_message_body(
@@ -176,7 +389,7 @@ class MessageViewer:
             message["uid"], 
             on_body_fetched
         )
-    
+
     def display_message(self, message):
         
         child = self.content_container.widget.get_first_child()
@@ -196,17 +409,7 @@ class MessageViewer:
             self.content_header.set_message_subject(message.get("subject", "(No Subject)"))
         
         
-        message_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        message_card.add_css_class("message-card")
-        
-        
-        card_header = self.create_message_card_header(message)
-        message_card.append(card_header)
-        
-        
-        card_body = self.create_message_card_body(message)
-        message_card.append(card_body)
-        
+        message_card = self.create_message_card(message)
         self.content_container.widget.append(message_card)
     
     def create_message_card_header(self, message):
@@ -261,8 +464,8 @@ class MessageViewer:
         
         return header_container
        
-    def create_message_card_body(self, message):
-        """Create the card body with message content"""
+    def create_message_card_body(self, message, loading=False):
+        """Create the card body with message content or loading state"""
         body_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         body_container.add_css_class("message-card-body")
         
@@ -277,6 +480,10 @@ class MessageViewer:
             elif body_text:
                 html_viewer.load_plain_text(body_text)
             body_container.append(html_viewer.widget)
+        elif loading:
+            
+            loading_container = self.create_message_body_loading_state()
+            body_container.append(loading_container)
         else:
             
             no_body_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -296,6 +503,34 @@ class MessageViewer:
             body_container.append(no_body_container)
         
         return body_container
+
+    def create_message_body_loading_state(self):
+        """Create loading state for message body"""
+        loading_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        loading_container.set_margin_top(12)
+        loading_container.set_margin_bottom(12)
+        loading_container.set_margin_start(12)
+        loading_container.set_margin_end(12)
+        loading_container.set_spacing(8)
+        loading_container.set_halign(Gtk.Align.CENTER)
+        loading_container.add_css_class("message-body-loading")
+        
+        
+        spinner = Gtk.Spinner()
+        spinner.set_size_request(16, 16)
+        spinner.start()
+        loading_container.append(spinner)
+        
+        
+        loading_label = AppText(
+            text="Loading...",
+            class_names="message-body-loading-text",
+            halign=Gtk.Align.CENTER,
+        )
+        loading_label.set_opacity(0.7)
+        loading_container.append(loading_label.widget)
+        
+        return loading_container
     
     def get_initials(self, name, email):
         """Get initials for avatar (max 2 characters)"""
@@ -485,3 +720,50 @@ class MessageViewer:
     def set_content_header(self, content_header):
         """Set the content header reference for updating title"""
         self.content_header = content_header 
+
+    def update_message_card_body(self, message_uid, message):
+        """Update the body content of a specific message card"""
+        if not hasattr(self, 'thread_message_cards') or message_uid not in self.thread_message_cards:
+            logging.warning(f"MessageViewer: No message card found for UID {message_uid} to update")
+            return
+            
+        message_card = self.thread_message_cards[message_uid]
+        logging.debug(f"MessageViewer: Updating body for message card UID {message_uid}")
+        
+        
+        
+        
+        body_child = None
+        child = message_card.get_first_child()
+        while child:
+            if child.has_css_class("message-card-body"):
+                body_child = child
+                break
+            child = child.get_next_sibling()
+        
+        if body_child:
+            logging.debug(f"MessageViewer: Found existing body child for UID {message_uid}, replacing it")
+            
+            message_card.remove(body_child)
+            
+            
+            
+            new_body = self.create_message_card_body(message)
+            message_card.append(new_body)
+            logging.info(f"MessageViewer: Successfully updated message card body for UID {message_uid}")
+        else:
+            logging.warning(f"MessageViewer: Could not find body child in message card for UID {message_uid}")
+            
+            child = message_card.get_first_child()
+            child_count = 0
+            while child:
+                child_classes = []
+                
+                try:
+                    css_classes = child.get_css_classes()
+                    child_classes = list(css_classes)
+                except:
+                    child_classes = ["unknown"]
+                logging.debug(f"MessageViewer: Child {child_count} classes: {child_classes}")
+                child = child.get_next_sibling()
+                child_count += 1 

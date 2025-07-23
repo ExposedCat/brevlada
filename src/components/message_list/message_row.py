@@ -113,14 +113,8 @@ class MessageRow:
         if self.selected_callback:
             if self.is_thread:
                 
-                latest_message = (
-                    self.message_or_thread.messages[-1]
-                    if self.message_or_thread.messages
-                    else None
-                )
-                if latest_message:
-                    print(f"Calling callback with latest message: {latest_message}")
-                    self.selected_callback(latest_message)
+                print(f"Calling callback with thread: {self.message_or_thread}")
+                self.selected_callback(self.message_or_thread)
             else:
                 print(f"Calling callback with message: {self.message_or_thread}")
                 self.selected_callback(self.message_or_thread)

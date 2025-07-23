@@ -36,3 +36,11 @@
 .message-card-body {
     background: transparent;
 }
+
+.message-body-loading {
+    opacity: 0.7;
+}
+
+.message-body-loading-text {
+    font-size: 0.9em;
+}
