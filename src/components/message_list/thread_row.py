@@ -2,7 +2,6 @@ from utils.toolkit import Gtk
 from components.ui import AppIcon, AppText
 from components.button import AppButton
 
-
 class ThreadRow:
     def __init__(self, thread):
         self.thread = thread

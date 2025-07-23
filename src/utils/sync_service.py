@@ -4,20 +4,19 @@ import logging
 from typing import Dict, List, Optional, Callable
 from utils.mail import fetch_messages_from_folder, fetch_imap_folders
 
-
 class SyncService:
     """Background service for automatic message synchronization"""
 
-    def __init__(self, storage, sync_interval: int = 300):  # 5 minutes default
+    def __init__(self, storage, sync_interval: int = 300):  
         self.storage = storage
         self.sync_interval = sync_interval
         self.running = False
         self.sync_thread = None
         self.sync_callbacks: List[Callable] = []
-        self.accounts_to_sync: Dict[str, Dict] = {}  # account_id -> account_data
-        self.all_folders: Dict[str, List[str]] = {}  # account_id -> [all_folders]
-        self.current_folder: Optional[str] = None  # currently opened folder
-        self.folder_discovery_complete: Dict[str, bool] = {}  # account_id -> bool
+        self.accounts_to_sync: Dict[str, Dict] = {}  
+        self.all_folders: Dict[str, List[str]] = {}  
+        self.current_folder: Optional[str] = None  
+        self.folder_discovery_complete: Dict[str, bool] = {}  
 
     def start(self):
         """Start the background sync service"""
@@ -46,7 +45,7 @@ class SyncService:
         self.accounts_to_sync[account_id] = account_data
         self.folder_discovery_complete[account_id] = False
 
-        # Start folder discovery in background thread
+        
         logging.info(
             f"SyncService: Starting background folder discovery for {account_id}"
         )
@@ -85,7 +84,7 @@ class SyncService:
                 self._notify_callbacks("sync_error", account_id, folder_name, error)
             else:
                 if messages:
-                    # Update database with new messages and remove deleted ones
+                    
                     try:
                         self._update_messages_in_db(account_id, folder_name, messages)
                         logging.info(
@@ -140,24 +139,24 @@ class SyncService:
     ):
         """Update database: add new messages, keep existing, remove deleted ones"""
         try:
-            # Get existing message UIDs from database
+            
             existing_messages = self.storage.get_messages(folder_name, account_id)
             existing_uids = {msg["uid"] for msg in existing_messages}
 
-            # Get new message UIDs
+            
             new_uids = {msg["uid"] for msg in new_messages}
 
-            # Find messages to remove (in DB but not in IMAP)
+            
             uids_to_remove = existing_uids - new_uids
 
-            # Remove deleted messages from database
+            
             if uids_to_remove:
                 logging.info(
                     f"SyncService: Removing {len(uids_to_remove)} deleted messages from {folder_name}"
                 )
                 self._remove_messages_from_db(account_id, folder_name, uids_to_remove)
 
-            # Store new/updated messages
+            
             if new_messages:
                 self.storage.store_messages(new_messages, folder_name, account_id)
 
@@ -186,7 +185,7 @@ class SyncService:
                         (uid, folder_name, account_id),
                     )
 
-                    # Also remove associated attachments
+                    
                     conn.execute(
                         """
                         DELETE FROM attachments 
@@ -205,15 +204,15 @@ class SyncService:
 
         while self.running:
             try:
-                # Only sync accounts that have completed folder discovery
+                
                 for account_id, account_data in self.accounts_to_sync.items():
                     if not self.running:
                         break
 
                     if not self.folder_discovery_complete.get(account_id, False):
-                        continue  # Skip accounts still discovering folders
+                        continue  
 
-                    # Priority sync: INBOX and current folder
+                    
                     folders_to_sync = ["INBOX"]
                     if self.current_folder and self.current_folder != "INBOX":
                         folders_to_sync.append(self.current_folder)
@@ -222,7 +221,7 @@ class SyncService:
                         if not self.running:
                             break
 
-                        # Check if folder exists for this account
+                        
                         if (
                             account_id in self.all_folders
                             and folder_name in self.all_folders[account_id]
@@ -231,9 +230,9 @@ class SyncService:
                                 f"SyncService: Periodic sync for {account_id} - {folder_name}"
                             )
                             self.sync_folder(account_data, folder_name, force=False)
-                            time.sleep(2)  # Small delay between folder syncs
+                            time.sleep(2)  
 
-                # Wait for next sync cycle
+                
                 for _ in range(self.sync_interval):
                     if not self.running:
                         break
@@ -241,7 +240,7 @@ class SyncService:
 
             except Exception as e:
                 logging.error(f"SyncService: Error in sync loop: {e}")
-                time.sleep(60)  # Wait a minute before retrying
+                time.sleep(60)  
 
         logging.info("SyncService: Background sync loop stopped")
 

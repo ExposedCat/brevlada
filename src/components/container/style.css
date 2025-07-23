@@ -1,20 +1,30 @@
+paned > separator {
+    min-width: 0;
+    background-color: transparent;
+    border: none;
+    margin: 0;
+    opacity: 0;
+}
+
+paned {
+    height: 100%;
+}
+
+.container-margin {
+    margin: 0;
+}
+
 .sidebar {
-    background-color: @headerbar_bg_color;
-    padding: 6px;
+    background-color: var(--headerbar-bg-color);
+    padding: var(--spacing-sm);
 }
 
 .navigation-list {
-    background-color: @headerbar_bg_color;
+    background-color: var(--headerbar-bg-color);
 }
 
-.navigation-list row {
-    background: transparent;
-}
-
-.navigation-list row:hover {
-    background: transparent;
-}
-
+.navigation-list row,
+.navigation-list row:hover,
 .navigation-list row:selected {
     background: transparent;
 }

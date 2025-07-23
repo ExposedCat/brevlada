@@ -4,7 +4,6 @@ import email.header
 from typing import Dict, List, Optional, Any, Tuple
 from models.message import Message
 
-
 def parse_message_from_imap(uid: int, fetch_data: Tuple) -> Optional[Message]:
     """Parse IMAP fetch response into Message object"""
     if not fetch_data or len(fetch_data) < 2:
@@ -35,7 +34,6 @@ def parse_message_from_imap(uid: int, fetch_data: Tuple) -> Optional[Message]:
     except Exception:
         return None
 
-
 def parse_envelope(envelope_data) -> Dict[str, Any]:
     """Parse IMAP envelope data"""
     if not envelope_data:
@@ -65,7 +63,6 @@ def parse_envelope(envelope_data) -> Dict[str, Any]:
         return envelope
     except Exception:
         return {}
-
 
 def parse_envelope_parts(envelope_str: str) -> List[str]:
     """Parse envelope string into parts"""
@@ -111,7 +108,6 @@ def parse_envelope_parts(envelope_str: str) -> List[str]:
 
     return parts
 
-
 def decode_envelope_field(field: str) -> str:
     """Decode envelope field value"""
     if not field or field == "NIL":
@@ -134,7 +130,6 @@ def decode_envelope_field(field: str) -> str:
         return result.strip()
     except Exception:
         return field
-
 
 def parse_address_list(addr_str: str) -> List[Dict[str, str]]:
     """Parse address list from envelope"""
@@ -160,7 +155,6 @@ def parse_address_list(addr_str: str) -> List[Dict[str, str]]:
 
     return addresses
 
-
 def parse_address_parts(addr_str: str) -> List[str]:
     """Parse address string into individual address parts"""
     parts = []
@@ -185,7 +179,6 @@ def parse_address_parts(addr_str: str) -> List[str]:
 
     return parts
 
-
 def parse_bodystructure(bodystructure_data) -> Dict[str, Any]:
     """Parse IMAP bodystructure data"""
     if not bodystructure_data:
@@ -200,7 +193,6 @@ def parse_bodystructure(bodystructure_data) -> Dict[str, Any]:
         return parse_bodystructure_string(bs_str)
     except Exception:
         return {}
-
 
 def parse_bodystructure_string(bs_str: str) -> Dict[str, Any]:
     """Parse bodystructure string into structured data"""
@@ -226,7 +218,6 @@ def parse_bodystructure_string(bs_str: str) -> Dict[str, Any]:
 
     return structure
 
-
 def parse_bodystructure_parameters(param_str: str) -> Dict[str, str]:
     """Parse bodystructure parameters"""
     if not param_str or param_str == "NIL":
@@ -244,14 +235,12 @@ def parse_bodystructure_parameters(param_str: str) -> Dict[str, str]:
 
     return params
 
-
 def parse_bodystructure_size(size_str: str) -> int:
     """Parse bodystructure size field"""
     try:
         return int(size_str)
     except (ValueError, TypeError):
         return 0
-
 
 def parse_flags(flags_data) -> List[str]:
     """Parse IMAP flags"""
@@ -275,7 +264,6 @@ def parse_flags(flags_data) -> List[str]:
 
     return flags
 
-
 def create_message_from_raw_email(
     raw_email: str, uid: Optional[int] = None
 ) -> Optional[Message]:
@@ -295,7 +283,6 @@ def create_message_from_raw_email(
         return Message(message_data)
     except Exception:
         return None
-
 
 def extract_envelope_from_email(email_msg) -> Dict[str, Any]:
     """Extract envelope data from email.Message object"""
@@ -326,7 +313,6 @@ def extract_envelope_from_email(email_msg) -> Dict[str, Any]:
 
     return envelope
 
-
 def parse_email_address(addr_str: str) -> Dict[str, str]:
     """Parse single email address"""
     if not addr_str:
@@ -337,7 +323,6 @@ def parse_email_address(addr_str: str) -> Dict[str, str]:
         return {"name": name or "", "email": email_addr or ""}
     except Exception:
         return {"name": "", "email": addr_str}
-
 
 def parse_email_address_list(addr_str: str) -> List[Dict[str, str]]:
     """Parse email address list"""
@@ -354,7 +339,6 @@ def parse_email_address_list(addr_str: str) -> List[Dict[str, str]]:
         pass
 
     return addresses
-
 
 def extract_bodystructure_from_email(email_msg) -> Dict[str, Any]:
     """Extract bodystructure from email.Message object"""
@@ -378,7 +362,6 @@ def extract_bodystructure_from_email(email_msg) -> Dict[str, Any]:
 
     return structure
 
-
 def extract_body_from_email(email_msg) -> str:
     """Extract text body from email.Message object"""
     if email_msg.is_multipart():
@@ -394,7 +377,6 @@ def extract_body_from_email(email_msg) -> str:
                 return payload.decode("utf-8", errors="ignore")
 
     return ""
-
 
 def extract_best_text_from_message(raw_bytes):
     """
@@ -413,20 +395,19 @@ def extract_best_text_from_message(raw_bytes):
         raw_bytes = raw_bytes.encode("utf-8", errors="replace")
 
     msg = email.message_from_bytes(raw_bytes, policy=policy.default)
-    # Try text/plain first
+    
     body = msg.get_body(preferencelist=("plain",))
     if body:
         text = body.get_content().strip()
         if text:
             return text
-    # Fallback to text/html (decoded, as text)
+    
     body = msg.get_body(preferencelist=("html",))
     if body:
         html = body.get_content().strip()
         if html:
             return html
     return None
-
 
 def extract_html_and_text_from_message(raw_bytes):
     """
@@ -447,14 +428,14 @@ def extract_html_and_text_from_message(raw_bytes):
     html_content = None
     text_content = None
     
-    # Extract HTML content
+    
     html_body = msg.get_body(preferencelist=("html",))
     if html_body:
         html_content = html_body.get_content().strip()
         if not html_content:
             html_content = None
     
-    # Extract plain text content
+    
     text_body = msg.get_body(preferencelist=("plain",))
     if text_body:
         text_content = text_body.get_content().strip()
@@ -462,7 +443,6 @@ def extract_html_and_text_from_message(raw_bytes):
             text_content = None
     
     return html_content, text_content
-
 
 def extract_html_from_email(email_msg) -> str:
     """Extract HTML body from email.Message object"""

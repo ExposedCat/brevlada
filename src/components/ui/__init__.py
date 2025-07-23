@@ -1,6 +1,5 @@
 from utils.toolkit import Gtk, Pango, Adw
 
-
 class AppIcon:
     def __init__(
         self,
@@ -43,7 +42,6 @@ class AppIcon:
 
     def set_opacity(self, opacity):
         self.widget.set_opacity(opacity)
-
 
 class AppText:
     def __init__(
@@ -101,7 +99,6 @@ class AppText:
     def set_opacity(self, opacity):
         self.widget.set_opacity(opacity)
 
-
 class LoadingIcon:
     def __init__(self, size=16, class_names=None):
         self.widget = Gtk.Spinner()
@@ -119,28 +116,27 @@ class LoadingIcon:
         """Check if the spinner is currently spinning"""
         return self.widget.get_spinning()
 
-
 class SearchBox:
     def __init__(self, placeholder="Search messages...", class_names=None):
         self.search_changed_callback = None
         
-        # Create search bar container
-        self.search_bar = Gtk.SearchBar()
-        self.search_bar.set_search_mode(False)  # Hidden by default
         
-        # Create search entry
+        self.search_bar = Gtk.SearchBar()
+        self.search_bar.set_search_mode(False)  
+        
+        
         self.search_entry = Gtk.SearchEntry()
         self.search_entry.set_placeholder_text(placeholder)
         self.search_entry.set_width_chars(25)
         self.search_entry.set_max_width_chars(40)
         
-        # Add search entry directly to search bar
+        
         self.search_bar.set_child(self.search_entry)
         
-        # Connect signals
+        
         self.search_entry.connect("search-changed", self._on_search_changed)
         
-        # Add CSS classes if provided
+        
         if class_names:
             if isinstance(class_names, str):
                 self.search_bar.add_css_class(class_names)
@@ -148,14 +144,13 @@ class SearchBox:
                 for class_name in class_names:
                     self.search_bar.add_css_class(class_name)
         
-        # Store the widget reference
+        
         self.widget = self.search_bar
 
     def _on_search_changed(self, search_entry):
         """Internal handler for search changed events"""
         if self.search_changed_callback:
             self.search_changed_callback(search_entry.get_text())
-
 
 
     def connect_search_changed(self, callback):

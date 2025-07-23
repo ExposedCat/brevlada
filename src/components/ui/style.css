@@ -1,11 +1,18 @@
+.app-icon-margin {
+    margin: 0;
+}
+
+.app-text-margin {
+    margin: 0;
+}
+
 .error-icon {
-    color: @error_color;
+    color: var(--error-color);
     opacity: 0.8;
 }
 
 .error-text {
-    color: @error_color;
-    font-size: 0.9em;
+    color: var(--error-color);
     opacity: 0.9;
 }
 
@@ -14,6 +21,6 @@
 }
 
 .error {
-    color: @error_color;
+    color: var(--error-color);
     font-weight: bold;
 }

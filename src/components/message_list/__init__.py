@@ -10,7 +10,6 @@ import logging
 from utils.mail import fetch_messages_from_folder
 from utils.sync_service import SyncService
 
-
 class MessageList:
     def __init__(self, storage, imap_backend):
         self.storage = storage
@@ -27,7 +26,7 @@ class MessageList:
         self.search_text = ""
         self.filtered_messages = []
 
-        # Initialize sync service
+        
         self.sync_service = SyncService(storage, sync_interval=300)
         self.sync_service.add_sync_callback(self.on_sync_event)
         self.sync_service.start()
@@ -56,7 +55,7 @@ class MessageList:
         container.set_halign(Gtk.Align.CENTER)
         container.set_valign(Gtk.Align.CENTER)
         container.set_spacing(12)
-        container.set_vexpand(True)  # Ensure vertical centering
+        container.set_vexpand(True)  
         container.set_hexpand(True)
 
         icon = AppIcon("mail-unread-symbolic", class_names="message-list-empty-icon")
@@ -123,17 +122,17 @@ class MessageList:
     def set_folder(self, folder):
         logging.debug(f"MessageList: Setting folder to {folder}")
         
-        # Cancel any ongoing fetch operations
+        
         self.current_fetch_id += 1
         
-        # Clear current message list immediately when switching folders
+        
         self.clear_list()
         self.messages = []
         self.threads = []
         
         self.current_folder = folder
 
-        # Update sync service with current folder
+        
         if self.sync_service:
             self.sync_service.set_current_folder(folder)
 
@@ -147,13 +146,13 @@ class MessageList:
     def set_account_data(self, account_data):
         logging.debug(f"MessageList: Setting account_data to {account_data}")
 
-        # Unregister previous account if any
+        
         if self.current_account_data:
             self.sync_service.unregister_account(self.current_account_data["email"])
 
         self.current_account_data = account_data
 
-        # Register new account with sync service if we have account data
+        
         if account_data:
             self.sync_service.register_account(account_data)
 
@@ -166,7 +165,7 @@ class MessageList:
             logging.debug("MessageList: No current account_data, cannot load messages")
             return
 
-        # Increment fetch ID to cancel any ongoing operations
+        
         self.current_fetch_id += 1
         fetch_id = self.current_fetch_id
 
@@ -192,26 +191,26 @@ class MessageList:
                         logging.debug(
                             "MessageList: No messages in storage, fetching from IMAP"
                         )
-                        # Show loading state in header
+                        
                         if self.header:
                             GLib.idle_add(self.header.set_loading, True)
                         self.fetch_from_imap(fetch_id)
                         return
 
-                    # Show cached messages immediately
+                    
                     GLib.idle_add(self.on_messages_loaded, messages)
 
-                    # Show loading state in header for background refresh
+                    
                     if self.header:
                         GLib.idle_add(self.header.set_loading, True)
 
-                    # Trigger background refresh
+                    
                     self.fetch_from_imap(fetch_id)
                 else:
                     logging.debug(
                         "MessageList: Force refresh requested, fetching from IMAP"
                     )
-                    # Show loading state in header
+                    
                     if self.header:
                         GLib.idle_add(self.header.set_loading, True)
                     self.fetch_from_imap(fetch_id)
@@ -251,12 +250,12 @@ class MessageList:
         self.show_message_list()
 
         if grouped and self.threading_enabled:
-            # Group messages into threads
+            
             logging.debug("MessageList: Grouping messages into threads")
             threads = group_messages_into_threads(messages)
             logging.debug(f"MessageList: Created {len(threads)} threads")
             
-            # Render threads
+            
             for i, thread in enumerate(threads):
                 logging.debug(f"MessageList: Creating thread row {i+1}/{len(threads)}")
                 thread_row = MessageRow(thread)
@@ -264,7 +263,7 @@ class MessageList:
                 self.message_row_instances[thread_row.widget] = thread_row
                 self.list_box.append(thread_row.widget)
         else:
-            # Render messages flat (no grouping)
+            
             logging.debug("MessageList: Rendering messages without grouping")
             for i, message in enumerate(messages):
                 logging.debug(f"MessageList: Creating message row {i+1}/{len(messages)}")
@@ -282,26 +281,25 @@ class MessageList:
         logging.debug(f"MessageList: Threading enabled: {self.threading_enabled}")
         self.messages = messages
 
-        # Hide loading state in header
+        
         if self.header:
             GLib.idle_add(self.header.set_loading, False)
 
-        # Apply search filter to new messages
+        
         self.apply_search_filter()
 
     def on_messages_error(self, error_message):
         logging.error(f"MessageList: Error loading messages: {error_message}")
-        # Hide loading state in header
+        
         if self.header:
             GLib.idle_add(self.header.set_loading, False)
-        # Show error at top of list, but keep any existing messages visible
+        
         self.show_error_state()
         
-        # Update error text with actual error message
+        
         if hasattr(self, 'error_text'):
             self.error_text.set_text_content(f"Failed to load messages: {error_message}")
         
-
 
     def fetch_from_imap(self, fetch_id):
         if not self.current_account_data:
@@ -316,7 +314,7 @@ class MessageList:
         )
 
         def on_imap_response(error, messages):
-            # Check if this fetch operation has been cancelled
+            
             if fetch_id != self.current_fetch_id:
                 logging.debug(f"MessageList: Fetch operation {fetch_id} was cancelled, ignoring response")
                 return
@@ -344,7 +342,7 @@ class MessageList:
                 logging.debug("MessageList: No messages received from IMAP")
                 GLib.idle_add(self.on_messages_loaded, [])
             
-            # Stop loading indicator
+            
             if self.header:
                 GLib.idle_add(self.header.set_loading, False)
 
@@ -375,7 +373,6 @@ class MessageList:
                 message = message_row.message_or_thread
             if self.message_selected_callback:
                 self.message_selected_callback(message)
-
 
 
     def show_empty_state(self):
@@ -410,7 +407,7 @@ class MessageList:
             if selected_row in self.message_row_instances:
                 message_row = self.message_row_instances[selected_row]
                 if message_row.is_thread:
-                    # For threads, return the latest message
+                    
                     return (
                         message_row.message_or_thread.messages[-1]
                         if message_row.message_or_thread.messages
@@ -423,7 +420,7 @@ class MessageList:
     def set_threading_enabled(self, enabled):
         self.threading_enabled = enabled
         if self.messages:
-            # Re-render the current list with new grouping setting
+            
             current_messages = self.filtered_messages if self.search_text else self.messages
             self.render_message_list(current_messages, grouped=not self.search_text)
 
@@ -438,10 +435,9 @@ class MessageList:
             header.connect_search(self.on_search_changed)
         
 
-
     def refresh_messages(self):
         logging.info("MessageList: Force refreshing messages from IMAP")
-        # Cancel any ongoing operations before refreshing
+        
         self.current_fetch_id += 1
         self.load_messages(force_refresh=True)
         
@@ -454,33 +450,33 @@ class MessageList:
     def apply_search_filter(self):
         """Apply search filter to current messages"""
         if not self.search_text:
-            # No search text, show all messages with grouping
+            
             self.filtered_messages = self.messages.copy()
             self.render_message_list(self.filtered_messages, grouped=True)
         else:
-            # Filter messages based on search text
+            
             self.filtered_messages = []
             for message in self.messages:
                 if self._message_matches_search(message, self.search_text):
                     self.filtered_messages.append(message)
             
             logging.debug(f"MessageList: Filtered {len(self.messages)} messages to {len(self.filtered_messages)} results")
-            # For search results, don't group (show individual messages)
+            
             self.render_message_list(self.filtered_messages, grouped=False)
         
     def _message_matches_search(self, message, search_text):
         """Check if a message matches the search text"""
-        # Search in sender name
+        
         sender_name = message.get('sender', {}).get('name', '').lower()
         if search_text in sender_name:
             return True
             
-        # Search in sender email
+        
         sender_email = message.get('sender', {}).get('email', '').lower()
         if search_text in sender_email:
             return True
             
-        # Search in subject
+        
         subject = message.get('subject', '').lower()
         if search_text in subject:
             return True

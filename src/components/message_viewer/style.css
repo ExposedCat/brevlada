@@ -1,0 +1,38 @@
+.message-viewer-root {
+    margin: var(--spacing-sm);
+    padding: var(--spacing-sm);
+}
+
+.message-card {
+    border-radius: var(--spacing-md);
+    margin: 0;
+    background: var(--headerbar-bg-color);
+    border: 1px solid var(--borders);
+}
+
+.message-card-header {
+    padding: var(--spacing-md);
+    border-bottom: 1px solid var(--borders);
+    border-radius: var(--spacing-md) var(--spacing-md) 0 0;
+}
+
+.message-avatar {
+    margin-right: 8px;
+}
+
+.message-card-sender {
+    font-weight: 500;
+}
+
+.message-card-email {
+    opacity: 0.7;
+}
+
+.message-card-date {
+    opacity: 0.7;
+    color: var(--theme-fg-color);
+}
+
+.message-card-body {
+    background: transparent;
+}

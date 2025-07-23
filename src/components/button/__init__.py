@@ -1,6 +1,5 @@
 from utils.toolkit import Gtk
 
-
 class AppButton:
     def __init__(
         self,
@@ -10,8 +9,8 @@ class AppButton:
         valign=None,
         class_names=None,
         children=None,
-        h_fill=None,
-        w_fill=None,
+        h_fill=False,
+        w_fill=False,
         with_margin=False
     ):
         self.widget = Gtk.Button()
@@ -26,10 +25,8 @@ class AppButton:
         if expandable:
             self.widget.set_hexpand(True)
 
-        if h_fill is not None:
-            self.widget.set_hexpand(h_fill)
-        if w_fill is not None:
-            self.widget.set_vexpand(w_fill)
+        self.widget.set_hexpand(h_fill)
+        self.widget.set_vexpand(w_fill)
 
         if with_margin:
             self.widget.add_css_class("button-margin")

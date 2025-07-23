@@ -6,11 +6,10 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from pathlib import Path
 
-
 class EmailStorage:
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
-            # Default to user's cache directory
+            
             cache_dir = Path.home() / ".cache" / "brevlada"
             cache_dir.mkdir(parents=True, exist_ok=True)
             db_path = str(cache_dir / "emails.db")
@@ -31,7 +30,7 @@ class EmailStorage:
         """Initialize database schema"""
         logging.debug("EmailStorage: Initializing database schema")
         with self.get_connection() as conn:
-            # Messages table
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
@@ -71,7 +70,7 @@ class EmailStorage:
             """
             )
 
-            # Threads table
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS threads (
@@ -94,7 +93,7 @@ class EmailStorage:
             """
             )
 
-            # Attachments table
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS attachments (
@@ -116,7 +115,7 @@ class EmailStorage:
             """
             )
 
-            # Sync status table
+            
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sync_status (
@@ -133,7 +132,7 @@ class EmailStorage:
             """
             )
 
-            # Create indexes for performance
+            
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_folder_account ON messages(folder, account_id)"
             )
@@ -163,12 +162,12 @@ class EmailStorage:
 
     def store_account(self, account_id: str, account_data: Dict):
         """Store account information"""
-        # This could be expanded to store account metadata
+        
         pass
 
     def store_folder(self, account_id: str, folder: str, folder_data: Dict):
         """Store folder information"""
-        # This could be expanded to store folder metadata
+        
         pass
 
     def store_messages(self, messages: List, folder: str, account_id: str):
@@ -183,7 +182,7 @@ class EmailStorage:
 
     def store_message(self, message, folder: str, account_id: str):
         """Store a single message"""
-        # Handle both dictionary and object formats
+        
         if isinstance(message, dict):
             uid = message.get("uid")
             message_id = message.get("message_id", "")
@@ -216,7 +215,7 @@ class EmailStorage:
             references = message.get("references", "")
             attachments = message.get("attachments", [])
         else:
-            # Object format
+            
             uid = message.uid
             message_id = message.message_id
             subject = message.subject
@@ -301,7 +300,7 @@ class EmailStorage:
                     ),
                 )
 
-                # Store attachments
+                
                 if uid is not None:
                     for attachment in attachments:
                         if isinstance(attachment, dict):
@@ -378,7 +377,7 @@ class EmailStorage:
             f"EmailStorage: Getting messages for folder='{folder}', account_id='{account_id}', limit={limit}, offset={offset}"
         )
 
-        # If account_id is None, we need to handle this case
+        
         if account_id is None:
             logging.warning("EmailStorage: account_id is None, returning empty list")
             return []
@@ -405,7 +404,7 @@ class EmailStorage:
                 for i, row in enumerate(rows):
                     logging.debug(f"EmailStorage: Processing message {i+1}/{len(rows)}")
                     message_data = self._row_to_message(row)
-                    # Get attachments
+                    
                     message_data["attachments"] = self.get_message_attachments(
                         row["uid"], folder, account_id
                     )
@@ -578,7 +577,7 @@ class EmailStorage:
         cutoff_date = datetime.now() - timedelta(days=days_old)
 
         with self.get_connection() as conn:
-            # Delete old messages
+            
             conn.execute(
                 """
                 DELETE FROM messages
@@ -587,7 +586,7 @@ class EmailStorage:
                 (cutoff_date,),
             )
 
-            # Delete orphaned attachments
+            
             conn.execute(
                 """
                 DELETE FROM attachments
@@ -595,7 +594,7 @@ class EmailStorage:
             """
             )
 
-            # Vacuum database
+            
             conn.execute("VACUUM")
 
     def update_message_body(self, uid: int, folder: str, account_id: str, body_text: str, body_html: str = None):

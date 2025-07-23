@@ -9,7 +9,6 @@ import threading
 from utils.mail import fetch_message_body_from_imap
 from theme import THEME_MARGIN_MEDIUM, THEME_MARGIN_LARGE
 
-
 class MessageViewer:
     def __init__(self, storage, imap_backend):
         self.storage = storage
@@ -18,14 +17,14 @@ class MessageViewer:
         self.current_account_data = None
         self.body_fetch_id = 0
         self.current_state = None
-        self.content_header = None  # Will be set by main window
+        self.content_header = None  
         
         self.widget = Adw.PreferencesGroup()
         self.widget.set_vexpand(True)
         self.widget.set_hexpand(True)
         self.widget.add_css_class("message-viewer-root")
         
-        # Main container for all content
+        
         self.main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.main_container.set_vexpand(True)
         self.main_container.set_hexpand(True)
@@ -34,7 +33,7 @@ class MessageViewer:
             spacing=20,
             orientation=Gtk.Orientation.VERTICAL,
             class_names="message-viewer-content",
-            # margin=20,  # Remove outer margin
+            
             h_fill=True,
             w_fill=True,
         )
@@ -101,7 +100,7 @@ class MessageViewer:
         self.current_account_data = account_data
     
     def show_message(self, message):
-        # Always clear previous content
+        
         child = self.content_container.widget.get_first_child()
         while child:
             self.content_container.widget.remove(child)
@@ -113,11 +112,11 @@ class MessageViewer:
         self.current_message = message
         self.show_loading_state()
         
-        # Check if we have the message body in storage
+        
         if message.get("body") and message["body"].strip():
             self.display_message(message)
         else:
-            # Fetch message body from IMAP
+            
             self.fetch_message_body(message)
     
     def fetch_message_body(self, message):
@@ -126,14 +125,14 @@ class MessageViewer:
             self.show_error_state("No account data set")
             return
         
-        # Increment fetch ID to cancel any ongoing operations
+        
         self.body_fetch_id += 1
         fetch_id = self.body_fetch_id
         
         logging.info(f"MessageViewer: Fetching body for message UID {message.get('uid')}")
         
         def on_body_fetched(error, message_body_data):
-            # Check if this fetch operation has been cancelled
+            
             if fetch_id != self.body_fetch_id:
                 logging.debug(f"MessageViewer: Body fetch operation {fetch_id} was cancelled, ignoring response")
                 return
@@ -144,16 +143,16 @@ class MessageViewer:
                 return
             
             if message_body_data:
-                # Update message with body content
+                
                 if isinstance(message_body_data, dict):
                     message["body"] = message_body_data.get("text", "")
                     message["body_html"] = message_body_data.get("html", "")
                 else:
-                    # Fallback for old format
+                    
                     message["body"] = message_body_data
                     message["body_html"] = ""
                 
-                # Store updated message in database
+                
                 try:
                     self.storage.update_message_body(
                         message["uid"], 
@@ -179,121 +178,129 @@ class MessageViewer:
         )
     
     def display_message(self, message):
-        # Clear current content
+        
         child = self.content_container.widget.get_first_child()
         while child:
             self.content_container.widget.remove(child)
             child = self.content_container.widget.get_first_child()
         
-        # Show message content
+        
         self.hide_all_states()
         self.current_state = "content"
-        # Set alignment to fill for message content
+        
         self.content_container.widget.set_valign(Gtk.Align.FILL)
         self.content_container.widget.set_halign(Gtk.Align.FILL)
         
-        # Update content header with subject
+        
         if self.content_header:
             self.content_header.set_message_subject(message.get("subject", "(No Subject)"))
         
-        # Create message card
-        message_card = Adw.PreferencesGroup()
+        
+        message_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         message_card.add_css_class("message-card")
         
-        # Card header with avatar, sender, and date
-        card_header = self.create_message_card_header(message)
-        message_card.add(card_header)
         
-        # Card body with message content
+        card_header = self.create_message_card_header(message)
+        message_card.append(card_header)
+        
+        
         card_body = self.create_message_card_body(message)
-        message_card.add(card_body)
+        message_card.append(card_body)
         
         self.content_container.widget.append(message_card)
     
     def create_message_card_header(self, message):
         """Create the card header with avatar, sender email, and shortened date"""
-        header_row = Adw.ActionRow()
-        header_row.add_css_class("message-card-header")
+        header_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        header_container.add_css_class("message-card-header")
+        header_container.set_spacing(12)
         
-        # Get sender info
+        
         sender_info = message.get("sender", {})
         sender_name = sender_info.get("name", "")
         sender_email = sender_info.get("email", "")
         
-        # Create avatar with initials (max 2 characters)
+        
         initials = self.get_initials(sender_name, sender_email)
-        avatar = Adw.Avatar.new(40, initials, True)
+        avatar = Adw.Avatar.new(32, initials, True)
         avatar.add_css_class("message-avatar")
-        header_row.add_prefix(avatar)
+        avatar.set_valign(Gtk.Align.CENTER)
+        header_container.append(avatar)
         
-        # Set title and subtitle
+        
+        sender_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        sender_container.set_hexpand(True)
+        sender_container.set_spacing(2)
+        sender_container.set_valign(Gtk.Align.CENTER)
+        
         display_name = sender_name if sender_name else sender_email
-        header_row.set_title(display_name)
-        if sender_name and sender_email:
-            header_row.set_subtitle(sender_email)
+        name_label = Gtk.Label(label=display_name)
+        name_label.set_halign(Gtk.Align.START)
+        name_label.set_valign(Gtk.Align.CENTER)
+        name_label.add_css_class("message-card-sender")
+        sender_container.append(name_label)
         
-        # Add shortened date on the right
+        if sender_name and sender_email:
+            email_label = Gtk.Label(label=sender_email)
+            email_label.set_halign(Gtk.Align.START)
+            email_label.set_valign(Gtk.Align.CENTER)
+            email_label.add_css_class("message-card-email")
+            sender_container.append(email_label)
+        
+        header_container.append(sender_container)
+        
+        
         date_str = message.get("date", "")
         if date_str:
             short_date = self.get_shortened_date(date_str)
             date_label = Gtk.Label(label=short_date)
             date_label.add_css_class("message-card-date")
             date_label.set_halign(Gtk.Align.END)
-            header_row.add_suffix(date_label)
+            date_label.set_valign(Gtk.Align.CENTER)
+            header_container.append(date_label)
         
-        return header_row
-    
+        return header_container
+       
     def create_message_card_body(self, message):
         """Create the card body with message content"""
         body_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         body_container.add_css_class("message-card-body")
-        body_container.set_margin_top(12)
-        body_container.set_margin_bottom(12)
-        body_container.set_margin_start(12)
-        body_container.set_margin_end(12)
         
-        # Message body
+        
         body_text = message.get("body", "")
         body_html = message.get("body_html", "")
         
-        if body_html:
-            # Use HTML viewer for HTML content
-            html_viewer = HtmlViewer(
-                class_names="message-body",
-                h_fill=True,
-                w_fill=True,
-            )
-            html_viewer.load_html(body_html)
-            # Round the HTML viewer at bottom to fit card
-            html_viewer.widget.add_css_class("message-body-rounded")
-            body_container.append(html_viewer.widget)
-        elif body_text:
-            # Use HTML viewer for plain text with proper formatting
-            html_viewer = HtmlViewer(
-                class_names="message-body",
-                h_fill=True,
-                w_fill=True,
-            )
-            html_viewer.load_plain_text(body_text)
-            # Round the HTML viewer at bottom to fit card
-            html_viewer.widget.add_css_class("message-body-rounded")
+        if body_html or body_text:
+            html_viewer = HtmlViewer()
+            if body_html:
+                html_viewer.load_html(body_html)
+            elif body_text:
+                html_viewer.load_plain_text(body_text)
             body_container.append(html_viewer.widget)
         else:
-            # No body message
+            
+            no_body_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            no_body_container.set_margin_top(12)
+            no_body_container.set_margin_bottom(12)
+            no_body_container.set_margin_start(12)
+            no_body_container.set_margin_end(12)
+            no_body_container.add_css_class("message-body")
+            
             no_body_label = AppText(
                 text="(No message body)",
                 class_names="message-no-body",
                 halign=Gtk.Align.CENTER,
             )
             no_body_label.set_opacity(0.6)
-            body_container.append(no_body_label.widget)
+            no_body_container.append(no_body_label.widget)
+            body_container.append(no_body_container)
         
         return body_container
     
     def get_initials(self, name, email):
         """Get initials for avatar (max 2 characters)"""
         if name:
-            # Split name and take first letter of first two words
+            
             words = name.split()
             if len(words) >= 2:
                 return f"{words[0][0]}{words[1][0]}".upper()
@@ -301,13 +308,13 @@ class MessageViewer:
                 return words[0][:2].upper()
         
         if email:
-            # Use first two characters of email
+            
             return email[:2].upper()
         
         return "??"
     
     def get_shortened_date(self, date_str):
-        """Get shortened date for display"""
+        """Get shortened date for display with time"""
         try:
             from datetime import datetime
             import email.utils
@@ -320,57 +327,59 @@ class MessageViewer:
                 now = datetime.now()
                 diff = now - date_obj
                 
+                time_str = date_obj.strftime("%H:%M")
+                
                 if diff.days == 0:
-                    # Today - show time
-                    return date_obj.strftime("%H:%M")
+                    
+                    return f"Today {time_str}"
                 elif diff.days == 1:
-                    # Yesterday
-                    return "Yesterday"
+                    
+                    return f"Yesterday {time_str}"
                 elif diff.days < 7:
-                    # This week - show day name
-                    return date_obj.strftime("%a")
+                    
+                    return f"{date_obj.strftime('%a')} {time_str}"
                 elif diff.days < 365:
-                    # This year - show month and day
-                    return date_obj.strftime("%b %d")
+                    
+                    return f"{date_obj.strftime('%b %d')} {time_str}"
                 else:
-                    # Older - show year
-                    return date_obj.strftime("%Y")
+                    
+                    return f"{date_obj.strftime('%m/%d/%y')} {time_str}"
         except:
             pass
         
         return ""
-    
+      
     def show_select_message_state(self):
         self.hide_all_states()
-        # Clear all children from the content container
+        
         child = self.content_container.widget.get_first_child()
         while child:
             self.content_container.widget.remove(child)
             child = self.content_container.widget.get_first_child()
         
-        # Clear content header
+        
         if self.content_header:
             self.content_header.set_message_subject(None)
         
-        # Set alignment to center for empty state
+        
         self.content_container.widget.set_valign(Gtk.Align.CENTER)
         self.content_container.widget.set_halign(Gtk.Align.CENTER)
         
-        # Create container with same structure as message list
+        
         state_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         state_container.add_css_class("message-viewer-empty-state")
         state_container.set_halign(Gtk.Align.CENTER)
         state_container.set_valign(Gtk.Align.CENTER)
         state_container.set_spacing(12)
-        state_container.set_vexpand(True)  # Ensure vertical centering
+        state_container.set_vexpand(True)  
         state_container.set_hexpand(True)
         
-        # Icon
+        
         icon = AppIcon("mail-unread-symbolic", class_names="message-viewer-empty-icon")
         icon.set_pixel_size(48)
         icon.set_opacity(0.5)
         
-        # Text
+        
         select_label = AppText(
             text="Select message to view",
             class_names="message-viewer-empty-text",
@@ -389,7 +398,7 @@ class MessageViewer:
         self.content_container.widget.set_valign(Gtk.Align.CENTER)
         self.content_container.widget.set_halign(Gtk.Align.CENTER)
         
-        # Create container with same structure as message list
+        
         state_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         state_container.add_css_class("message-viewer-loading-state")
         state_container.set_halign(Gtk.Align.CENTER)
@@ -398,13 +407,13 @@ class MessageViewer:
         state_container.set_vexpand(True)
         state_container.set_hexpand(True)
         
-        # Spinner
+        
         spinner = Gtk.Spinner()
         spinner.add_css_class("message-viewer-loading-spinner")
         spinner.set_size_request(32, 32)
         spinner.start()
         
-        # Text
+        
         loading_label = AppText(
             text="Loading...",
             class_names="message-viewer-loading-text",
@@ -427,7 +436,7 @@ class MessageViewer:
         self.content_container.widget.set_valign(Gtk.Align.CENTER)
         self.content_container.widget.set_halign(Gtk.Align.CENTER)
         
-        # Create container with same structure as message list
+        
         state_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         state_container.add_css_class("message-viewer-error-state")
         state_container.set_halign(Gtk.Align.CENTER)
@@ -436,12 +445,12 @@ class MessageViewer:
         state_container.set_vexpand(True)
         state_container.set_hexpand(True)
         
-        # Icon
+        
         icon = AppIcon("dialog-error-symbolic", class_names="message-viewer-error-icon")
         icon.set_pixel_size(48)
         icon.set_opacity(0.5)
         
-        # Text
+        
         if error_message:
             logging.error(f"MessageViewer: Showing error state: {error_message}")
             if raw_body is not None:

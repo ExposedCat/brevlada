@@ -7,7 +7,6 @@ import signal
 from typing import Optional, Dict, Any, Callable
 from utils.toolkit import GLib
 
-
 class IMAPConnection:
     """Represents a single IMAP connection with authentication"""
 
@@ -18,7 +17,7 @@ class IMAPConnection:
         self.last_used = 0
         self.is_authenticated = False
         self.lock = threading.Lock()
-        # Handle dbus.String objects by converting to regular strings
+        
         self.email = str(account_data.get("email", "unknown"))
 
     def connect(self) -> bool:
@@ -76,13 +75,13 @@ class IMAPConnection:
                     logging.warning(f"Account {email} does not support OAuth2")
                     return False
 
-                # Get OAuth2 token
+                
                 token = self._get_oauth2_token()
                 if not token:
                     logging.error(f"Failed to get OAuth2 token for {email}")
                     return False
 
-                # Authenticate
+                
                 auth_string = f"user={username}\x01auth=Bearer {token}\x01\x01"
 
                 def auth_callback(response):
@@ -130,7 +129,7 @@ class IMAPConnection:
 
                     self.last_used = time.time()
 
-                    # Use the appropriate IMAP method based on command
+                    
                     if command == "LIST":
                         result = self.connection.list(*args)
                     elif command == "SELECT":
@@ -150,7 +149,7 @@ class IMAPConnection:
                     elif command == "LOGOUT":
                         result = self.connection.logout()
                     else:
-                        # For other commands, use _simple_command
+                        
                         result = self.connection._simple_command(command, *args)
 
                     return result
@@ -162,20 +161,20 @@ class IMAPConnection:
                     self._reset_connection()
                     if attempt == max_retries - 1:
                         raise
-                    time.sleep(1)  # Brief delay before retry
+                    time.sleep(1)  
 
                 except Exception as e:
                     logging.error(
                         f"Unexpected error executing IMAP command for {self.email}: {e}"
                     )
-                    # Don't retry on authentication errors
+                    
                     if "Failed to establish authenticated connection" in str(e):
                         raise
-                    # For other errors, try to reset connection and retry
+                    
                     self._reset_connection()
                     if attempt == max_retries - 1:
                         raise
-                    time.sleep(1)  # Brief delay before retry
+                    time.sleep(1)  
 
     def _reset_connection(self):
         """Reset connection state"""
@@ -196,7 +195,6 @@ class IMAPConnection:
         """Check if connection has been idle for too long"""
         return time.time() - self.last_used > timeout_seconds
 
-
 class IMAPConnectionManager:
     """Manages IMAP connections for multiple accounts"""
 
@@ -211,7 +209,7 @@ class IMAPConnectionManager:
         self, account_data: Dict[str, Any], mail_settings: Dict[str, Any]
     ) -> IMAPConnection:
         """Get or create a connection for an account"""
-        # Handle dbus.String objects by converting to regular strings
+        
         email = str(account_data.get("email", "unknown"))
 
         with self.lock:
@@ -220,7 +218,7 @@ class IMAPConnectionManager:
                 self.connections[email] = IMAPConnection(account_data, mail_settings)
             else:
                 connection = self.connections[email]
-                # Check if connection is too old and needs refresh
+                
                 if connection.is_idle():
                     logging.debug(f"Connection for {email} is idle, refreshing")
                     connection.logout()
@@ -250,11 +248,11 @@ class IMAPConnectionManager:
         def cleanup_loop():
             while self.running:
                 try:
-                    time.sleep(60)  # Check every minute
+                    time.sleep(60)  
                     with self.lock:
                         emails_to_remove = []
                         for email, connection in self.connections.items():
-                            if connection.is_idle(timeout_seconds=600):  # 10 minutes
+                            if connection.is_idle(timeout_seconds=600):  
                                 logging.debug(
                                     f"Cleaning up idle connection for {email}"
                                 )
@@ -276,9 +274,7 @@ class IMAPConnectionManager:
         self.close_all_connections()
 
 
-# Global connection manager instance
 _connection_manager = None
-
 
 def get_connection_manager() -> IMAPConnectionManager:
     """Get the global connection manager instance"""
@@ -286,7 +282,6 @@ def get_connection_manager() -> IMAPConnectionManager:
     if _connection_manager is None:
         _connection_manager = IMAPConnectionManager()
     return _connection_manager
-
 
 def shutdown_connection_manager():
     """Shutdown the global connection manager"""

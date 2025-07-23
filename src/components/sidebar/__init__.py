@@ -13,7 +13,6 @@ from components.ui import AppIcon, AppText, LoadingIcon
 from utils.mail import fetch_imap_folders
 from theme import THEME_MARGIN_LARGE, THEME_INDENT_STEP
 
-
 class AccountsSidebar:
     def __init__(self, class_names=None, **kwargs):
         self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, **kwargs)
@@ -46,7 +45,6 @@ class AccountsSidebar:
         self.sidebar_list.widget.connect("row-selected", callback)
         self.selection_callback = callback
         
-
 
     def get_folder_icon(self, folder_name):
         folder_upper = folder_name.upper()
@@ -169,7 +167,6 @@ class AccountsSidebar:
                         account_row.account_icon_widget
                     )
                     delattr(account_row, "loading_icon")
-
 
 
     def organize_folders_hierarchy(self, folders):
@@ -302,6 +299,7 @@ class AccountsSidebar:
 
                 folder_button = AppButton(
                     variant="expand",
+                    h_fill=True,
                     class_names=["folder-button"],
                     children=folder_box.widget,
                 )
@@ -541,7 +539,7 @@ class AccountsSidebar:
 
                         account_button = AppButton(
                             variant="primary",
-                            expandable=True,
+                            h_fill=True,
                             class_names=["account-button"],
                             children=account_box.widget,
                         )

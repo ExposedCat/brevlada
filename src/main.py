@@ -19,7 +19,6 @@ import atexit
 
 from models import Message
 
-
 class MyWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
@@ -33,8 +32,6 @@ class MyWindow(Adw.ApplicationWindow):
         self.storage = EmailStorage()
         self.current_account = None
         self.current_folder = None
-
-        self.create_sample_messages()
 
         try:
             resource = Gio.resource_load("resources.gresource")
@@ -51,12 +48,12 @@ class MyWindow(Adw.ApplicationWindow):
         self.toolbar_view = Adw.ToolbarView()
         self.toolbar_view.set_top_bar_style(Adw.ToolbarStyle.FLAT)
 
-        # Create headers
+        
         self.sidebar_header = SidebarHeader()
         self.message_list_header = MessageListHeader()
         self.content_header = ContentHeader()
 
-        # Create wrappers that group headers with their content
+        
         self.sidebar_wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.sidebar_wrapper.add_css_class("sidebar-wrapper")
 
@@ -105,7 +102,7 @@ class MyWindow(Adw.ApplicationWindow):
 
         self.message_viewer = MessageViewer(self.storage, None)
         
-        # Connect content header to message viewer
+        
         self.message_viewer.set_content_header(self.content_header)
         
         self.content_area = ContentContainer(
@@ -130,29 +127,29 @@ class MyWindow(Adw.ApplicationWindow):
         self.message_list.connect_message_selected(self.on_message_selected)
         self.message_list.set_header(self.message_list_header)
 
-        # Create search box (hidden by default)
+        
         from components.ui import SearchBox
         self.search_box = SearchBox(placeholder="Search messages", class_names="message-list-search-box")
         self.search_box.connect_search_changed(self.message_list.on_search_changed)
 
-        # Connect refresh button
+        
         self.message_list_header.connect_refresh(self.on_refresh_requested)
 
-        # Connect search box to header
+        
         self.message_list_header.message_list = self.message_list
         self.message_list_header.search_box = self.search_box
 
-        # Initially disable refresh button (no folder selected)
+        
         self.message_list_header.set_enabled(False)
 
         self.sidebar = AccountsSidebar(class_names="main-sidebar")
         self.sidebar.connect_row_selected(self.on_account_selected)
 
-        # Add headers and content to their respective wrappers
+        
         self.sidebar_wrapper.append(self.sidebar_header.widget)
         self.sidebar_wrapper.append(self.sidebar.widget)
 
-        # Wrap message list in scrolled window for proper scrolling
+        
         message_list_scroll = Gtk.ScrolledWindow()
         message_list_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         message_list_scroll.set_vexpand(True)
@@ -166,7 +163,7 @@ class MyWindow(Adw.ApplicationWindow):
         self.content_wrapper.append(self.content_header.widget)
         self.content_wrapper.append(content_scroll.widget)
 
-        # Set up paned with wrappers
+        
         self.main_paned.set_start_child(self.sidebar_wrapper)
         self.main_paned.set_end_child(self.content_paned)
         self.main_paned.set_resize_start_child(True)
@@ -261,146 +258,7 @@ class MyWindow(Adw.ApplicationWindow):
                 f"Refreshing messages for {self.current_account['email']} - {self.current_folder}"
             )
             self.message_list.refresh_messages()
-            
-
-
-    def create_sample_messages(self):
-        sample_messages = [
-            {
-                "uid": 1,
-                "flags": [],
-                "envelope": {
-                    "subject": "Welcome to Brevlada Email Client",
-                    "from": [
-                        {
-                            "name": "Brevlada Team",
-                            "mailbox": "team",
-                            "host": "brevlada.com",
-                        }
-                    ],
-                    "to": [{"name": "", "mailbox": "test", "host": "example.com"}],
-                    "cc": [],
-                    "bcc": [],
-                    "reply_to": [],
-                    "date": "Mon, 01 Jan 2024 14:30:00 +0000",
-                    "message_id": "<msg1@example.com>",
-                    "in_reply_to": "",
-                    "references": "",
-                },
-                "body": "Welcome to Brevlada! This is your first email.",
-                "headers": "",
-                "bodystructure": None,
-            },
-            {
-                "uid": 2,
-                "flags": ["\\Seen", "\\Flagged"],
-                "envelope": {
-                    "subject": "Important: System Update Required",
-                    "from": [
-                        {
-                            "name": "System Administrator",
-                            "mailbox": "admin",
-                            "host": "company.com",
-                        }
-                    ],
-                    "to": [{"name": "", "mailbox": "test", "host": "example.com"}],
-                    "cc": [],
-                    "bcc": [],
-                    "reply_to": [],
-                    "date": "Mon, 01 Jan 2024 11:30:00 +0000",
-                    "message_id": "<msg2@example.com>",
-                    "in_reply_to": "",
-                    "references": "",
-                },
-                "body": "Please update your system at your earliest convenience.",
-                "headers": "",
-                "bodystructure": None,
-            },
-            {
-                "uid": 3,
-                "flags": [],
-                "envelope": {
-                    "subject": "Re: Project Meeting Tomorrow",
-                    "from": [
-                        {
-                            "name": "John Doe",
-                            "mailbox": "john.doe",
-                            "host": "company.com",
-                        }
-                    ],
-                    "to": [{"name": "", "mailbox": "test", "host": "example.com"}],
-                    "cc": [],
-                    "bcc": [],
-                    "reply_to": [],
-                    "date": "Sun, 31 Dec 2023 16:30:00 +0000",
-                    "message_id": "<msg3@example.com>",
-                    "in_reply_to": "",
-                    "references": "",
-                },
-                "body": "Thanks for scheduling the meeting. See you tomorrow.",
-                "headers": "",
-                "bodystructure": None,
-            },
-            {
-                "uid": 4,
-                "flags": ["\\Seen"],
-                "envelope": {
-                    "subject": "Monthly Newsletter - March 2024",
-                    "from": [
-                        {
-                            "name": "Newsletter Team",
-                            "mailbox": "newsletter",
-                            "host": "company.com",
-                        }
-                    ],
-                    "to": [{"name": "", "mailbox": "test", "host": "example.com"}],
-                    "cc": [],
-                    "bcc": [],
-                    "reply_to": [],
-                    "date": "Sat, 30 Dec 2023 16:30:00 +0000",
-                    "message_id": "<msg4@example.com>",
-                    "in_reply_to": "",
-                    "references": "",
-                },
-                "body": "Check out this months updates and news.",
-                "headers": "",
-                "bodystructure": None,
-            },
-            {
-                "uid": 5,
-                "flags": ["\\Flagged"],
-                "envelope": {
-                    "subject": "Urgent: Server Maintenance Window",
-                    "from": [
-                        {
-                            "name": "IT Support",
-                            "mailbox": "support",
-                            "host": "company.com",
-                        }
-                    ],
-                    "to": [{"name": "", "mailbox": "test", "host": "example.com"}],
-                    "cc": [],
-                    "bcc": [],
-                    "reply_to": [],
-                    "date": "Fri, 29 Dec 2023 16:30:00 +0000",
-                    "message_id": "<msg5@example.com>",
-                    "in_reply_to": "",
-                    "references": "",
-                },
-                "body": "Scheduled maintenance will occur tonight from 2-4 AM.",
-                "headers": "",
-                "bodystructure": None,
-            },
-        ]
-
-        try:
-            for msg_data in sample_messages:
-                message = Message(msg_data)
-                self.storage.store_message(message, "INBOX", "test@example.com")
-            logging.info("Sample messages created successfully")
-        except Exception as e:
-            logging.error(f"Error creating sample messages: {e}")
-
+        
 
 class MyApp(Adw.Application):
     def __init__(self):
@@ -411,9 +269,8 @@ class MyApp(Adw.Application):
         self.window = MyWindow(self)
         self.window.present()
 
-
 if __name__ == "__main__":
-    # Register cleanup function to run on exit
+    
     atexit.register(cleanup_all_connections)
 
     app = MyApp()

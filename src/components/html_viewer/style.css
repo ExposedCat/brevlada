@@ -1,0 +1,10 @@
+.html-viewer-frame {
+    border-radius: 0 0 var(--spacing-md) var(--spacing-md);
+    overflow: hidden;
+    border: none;
+    background: transparent;
+}
+
+.html-viewer-view {
+    margin: 0;
+} 

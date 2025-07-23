@@ -7,7 +7,6 @@ import time
 from utils.toolkit import GLib
 from utils.message_parser import extract_best_text_from_message
 
-
 def get_oauth2_token(account_data):
     try:
         logging.debug(
@@ -32,7 +31,6 @@ def get_oauth2_token(account_data):
         )
         logging.debug(f"Full account data: {account_data}")
         return None
-
 
 def get_mail_settings(account_data):
     try:
@@ -64,7 +62,6 @@ def get_mail_settings(account_data):
         logging.debug(f"Account path: {account_data.get('path', 'unknown')}")
         return None
 
-
 def authenticate_imap_oauth2(mail, username, token):
     logging.debug(f"Authenticating with OAuth2 for user: {username}")
     auth_string = f"user={username}\x01auth=Bearer {token}\x01\x01"
@@ -81,7 +78,6 @@ def authenticate_imap_oauth2(mail, username, token):
     except Exception as e:
         logging.error(f"XOAUTH2 authentication failed: {e}")
         raise
-
 
 def connect_to_imap_server(mail_settings):
     server = mail_settings.get("imap_host", "imap.gmail.com")
@@ -119,10 +115,8 @@ def connect_to_imap_server(mail_settings):
         raise
 
 
-# Connection cache: account_email -> (connection, last_used_time)
 _connection_cache = {}
 _connection_cache_lock = threading.Lock()
-
 
 def logout_and_remove_from_cache(mail, account_data):
     """Logout and remove connection from cache"""
@@ -133,19 +127,18 @@ def logout_and_remove_from_cache(mail, account_data):
     except Exception as e:
         logging.warning(f"Error during logout for {email}: {e}")
 
-    # Remove from cache
+    
     with _connection_cache_lock:
         if email in _connection_cache:
             del _connection_cache[email]
             logging.debug(f"Removed connection from cache for {email}")
-
 
 def handle_imap_operation_with_retry(account_data, mail_settings, operation_func, *args, **kwargs):
     """Handle IMAP operations with automatic retry on LOGOUT state errors"""
     email = account_data.get("email", "unknown")
     
     try:
-        # Try with cached connection first
+        
         mail = connect_and_authenticate(mail_settings, account_data)
         if not mail:
             return False, "Authentication failed"
@@ -154,13 +147,13 @@ def handle_imap_operation_with_retry(account_data, mail_settings, operation_func
         
     except Exception as e:
         error_str = str(e)
-        # Check for various connection state errors that require retry
+        
         if ("LOGOUT" in error_str and "illegal" in error_str.lower()) or \
            "unexpected response" in error_str.lower() or \
            "command" in error_str.lower() and "=>" in error_str:
             logging.warning(f"Connection state error for {email}: {error_str}, recreating connection")
             
-            # Force recreate connection and retry once
+            
             try:
                 mail = connect_and_authenticate(mail_settings, account_data, force=True)
                 if not mail:
@@ -172,9 +165,8 @@ def handle_imap_operation_with_retry(account_data, mail_settings, operation_func
                 logging.error(f"Retry failed for {email}: {retry_e}")
                 return False, f"Operation failed after retry: {retry_e}"
         else:
-            # Re-raise non-connection-state errors
+            
             raise
-
 
 def cleanup_all_connections():
     """Close all cached connections - call this on app shutdown"""
@@ -195,16 +187,15 @@ def cleanup_all_connections():
         _connection_cache.clear()
         logging.info(f"Cleaned up {connection_count} cached connections")
 
-
 def connect_and_authenticate(mail_settings, account_data, force=False):
     """Connect to IMAP server and authenticate in one step, with connection caching"""
     email = str(account_data.get("email", "unknown"))
 
     with _connection_cache_lock:
-        # Check if we have a cached connection
+        
         if email in _connection_cache:
             if force:
-                # Force recreation of connection
+                
                 logging.debug(f"Force recreating connection for {email}")
                 cached_connection, _ = _connection_cache[email]
                 try:
@@ -216,13 +207,13 @@ def connect_and_authenticate(mail_settings, account_data, force=False):
                 cached_connection, last_used = _connection_cache[email]
                 current_time = time.time()
 
-                # Check if connection is still fresh (less than 5 minutes old)
-                if current_time - last_used < 300:  # 5 minutes
+                
+                if current_time - last_used < 300:  
                     logging.debug(f"Reusing cached connection for {email}")
                     _connection_cache[email] = (cached_connection, current_time)
                     return cached_connection
                 else:
-                    # Connection is too old, remove it
+                    
                     logging.debug(f"Removing stale cached connection for {email}")
                     try:
                         cached_connection.logout()
@@ -230,21 +221,21 @@ def connect_and_authenticate(mail_settings, account_data, force=False):
                         pass
                     del _connection_cache[email]
 
-    # No cached connection, create new one
+    
     try:
         logging.debug(f"Creating new connection for {email}")
         mail = connect_to_imap_server(mail_settings)
 
-        # Authenticate
+        
         if not authenticate_imap(mail, account_data, mail_settings):
-            # If authentication fails, close connection and return None
+            
             try:
                 mail.logout()
             except:
                 pass
             return None
 
-        # Cache the successful connection
+        
         with _connection_cache_lock:
             _connection_cache[email] = (mail, time.time())
             logging.debug(f"Cached new connection for {email}")
@@ -254,7 +245,6 @@ def connect_and_authenticate(mail_settings, account_data, force=False):
     except Exception as e:
         logging.error(f"Failed to connect and authenticate: {e}")
         return None
-
 
 def authenticate_imap(mail, account_data, mail_settings):
     email = account_data["email"]
@@ -282,7 +272,6 @@ def authenticate_imap(mail, account_data, mail_settings):
         logging.error(f"OAuth2 authentication failed for {email}: {e}")
         logging.debug(f"Authentication exception details: {type(e).__name__}: {str(e)}")
         return False
-
 
 def parse_folder_line(folder_line):
     logging.debug(f"Parsing folder line: {folder_line} (type: {type(folder_line)})")
@@ -319,7 +308,6 @@ def parse_folder_line(folder_line):
     logging.debug("Could not parse folder name")
     return None
 
-
 def _get_folders_operation(mail, email):
     """Internal operation function for fetching folders"""
     logging.debug(f"Listing folders for {email}")
@@ -336,7 +324,7 @@ def _get_folders_operation(mail, email):
     except Exception as e:
         error_str = str(e)
         if "unexpected response" in error_str.lower() or "command" in error_str.lower():
-            # Re-raise to trigger retry mechanism
+            
             raise
         else:
             return False, f"Error listing folders: {error_str}"
@@ -365,7 +353,6 @@ def _get_folders_operation(mail, email):
         logging.warning(f"No folders found for {email}")
         return False, "No folders found"
 
-
 def get_folders_from_imap(mail, email):
     try:
         success, result = _get_folders_operation(mail, email)
@@ -390,7 +377,6 @@ def get_folders_from_imap(mail, email):
         else:
             return ["Error: IMAP connection failed"]
 
-
 def fetch_imap_folders(account_data, callback):
     def fetch_folders():
         try:
@@ -405,7 +391,7 @@ def fetch_imap_folders(account_data, callback):
                 GLib.idle_add(callback, [error_msg])
                 return
 
-            # Use retry mechanism for IMAP operations
+            
             success, result = handle_imap_operation_with_retry(
                 account_data, 
                 mail_settings, 
@@ -435,23 +421,22 @@ def fetch_imap_folders(account_data, callback):
     thread.daemon = True
     thread.start()
 
-
 def _fetch_messages_operation(mail, folder_name, email, limit):
     """Internal operation function for fetching messages"""
-    # Select folder
+    
     logging.debug(f"Selecting folder '{folder_name}' for {email}")
     logging.debug(f"Folder name bytes: {folder_name.encode('utf-8')}")
     logging.debug(f"Folder name repr: {repr(folder_name)}")
     
     try:
-        # Properly quote folder names for IMAP, especially Gmail folders
+        
         if (
             " " in folder_name
             or "[" in folder_name
             or "]" in folder_name
             or "/" in folder_name
         ):
-            # Quote folder names with special characters
+            
             quoted_folder = f'"{folder_name}"'
             logging.debug(
                 f"Calling mail.select() with quoted folder: {quoted_folder}"
@@ -468,7 +453,7 @@ def _fetch_messages_operation(mail, folder_name, email, limit):
     except Exception as e:
         error_str = str(e)
         if "unexpected response" in error_str.lower() or "command" in error_str.lower():
-            # Re-raise to trigger retry mechanism
+            
             raise
         else:
             return False, f"Error selecting folder '{folder_name}': {error_str}"
@@ -479,12 +464,12 @@ def _fetch_messages_operation(mail, folder_name, email, limit):
     if total_messages == 0:
         return True, []
 
-    # Fetch recent messages
+    
     start_msg = max(1, total_messages - limit + 1)
     msg_range = f"{start_msg}:{total_messages}"
     logging.debug(f"Fetching messages {msg_range} from folder '{folder_name}'")
 
-    # Fetch basic headers for display
+    
     status, data = mail.fetch(
         msg_range,
         "(ENVELOPE FLAGS UID BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES)])",
@@ -494,11 +479,10 @@ def _fetch_messages_operation(mail, folder_name, email, limit):
 
     logging.debug(f"Parsing {len(data)} message responses")
     messages = parse_fetched_messages(data, email, folder_name)
-    messages.reverse()  # Show newest first
+    messages.reverse()  
 
     logging.info(f"Successfully fetched {len(messages)} messages from folder '{folder_name}'")
     return True, messages
-
 
 def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
     """Fetch messages from specified folder"""
@@ -520,7 +504,7 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
                 GLib.idle_add(callback, error_msg, None)
                 return
 
-            # Use retry mechanism for IMAP operations
+            
             success, result = handle_imap_operation_with_retry(
                 account_data, 
                 mail_settings, 
@@ -550,7 +534,6 @@ def fetch_messages_from_folder(account_data, folder_name, callback, limit=50):
     thread.daemon = True
     thread.start()
 
-
 def parse_fetched_messages(fetch_data, account_email, folder_name):
     """Parse fetched message data into Message objects"""
     import email
@@ -562,7 +545,7 @@ def parse_fetched_messages(fetch_data, account_email, folder_name):
 
     for item in fetch_data:
         if isinstance(item, tuple) and len(item) >= 2:
-            # Parse message info
+            
             msg_info = (
                 item[0].decode("utf-8") if isinstance(item[0], bytes) else str(item[0])
             )
@@ -570,7 +553,7 @@ def parse_fetched_messages(fetch_data, account_email, folder_name):
 
             logging.debug(f"Processing message item: {msg_info}")
 
-            # Extract UID and FLAGS
+            
             if "UID" in msg_info:
                 uid_start = msg_info.find("UID ") + 4
                 uid_end = msg_info.find(" ", uid_start)
@@ -586,7 +569,7 @@ def parse_fetched_messages(fetch_data, account_email, folder_name):
                 current_flags = [flag.strip() for flag in flags_str.split()]
                 logging.debug(f"Found FLAGS: {current_flags}")
 
-            # Parse headers
+            
             if msg_data:
                 try:
                     header_text = (
@@ -596,14 +579,14 @@ def parse_fetched_messages(fetch_data, account_email, folder_name):
                     )
                     msg_obj = email.message_from_string(header_text)
 
-                    # Extract basic message info
+                    
                     subject = decode_header_value(msg_obj.get("Subject", ""))
                     from_header = decode_header_value(msg_obj.get("From", ""))
                     to_header = decode_header_value(msg_obj.get("To", ""))
                     date_header = msg_obj.get("Date", "")
                     message_id = msg_obj.get("Message-ID", "")
 
-                    # Parse sender info
+                    
                     sender_name = ""
                     sender_email = ""
                     if from_header:
@@ -615,7 +598,7 @@ def parse_fetched_messages(fetch_data, account_email, folder_name):
                         else:
                             sender_email = from_header.strip()
 
-                    # Create message dict
+                    
                     message = {
                         "uid": current_uid,
                         "folder": folder_name,
@@ -659,7 +642,6 @@ def parse_fetched_messages(fetch_data, account_email, folder_name):
     logging.debug(f"Successfully parsed {len(messages)} messages")
     return messages
 
-
 def decode_header_value(header_value):
     """Decode email header value"""
     if not header_value:
@@ -683,13 +665,12 @@ def decode_header_value(header_value):
         logging.debug(f"Error decoding header '{header_value}': {e}")
         return header_value
 
-
 def _fetch_message_body_operation(mail, folder_name, uid, email):
     """Internal operation function for fetching message body"""
     logging.debug(f"Fetching message body for UID {uid} from folder '{folder_name}'")
     
     try:
-        # Select folder
+        
         if (
             " " in folder_name
             or "[" in folder_name
@@ -704,7 +685,7 @@ def _fetch_message_body_operation(mail, folder_name, uid, email):
         if status != "OK":
             return False, f"Could not select folder '{folder_name}': status={status}"
         
-        # Fetch full raw message
+        
         status, data = mail.uid("FETCH", str(uid), "BODY.PEEK[]")
         if status != "OK":
             return False, f"Could not fetch message body: {data}"
@@ -712,7 +693,7 @@ def _fetch_message_body_operation(mail, folder_name, uid, email):
         if not data or len(data) < 1:
             return False, "No message body data received"
         
-        # Parse the response
+        
         message_data = data[0]
         if isinstance(message_data, tuple) and len(message_data) >= 2:
             raw_bytes = message_data[1]
@@ -730,7 +711,6 @@ def _fetch_message_body_operation(mail, folder_name, uid, email):
         else:
             return False, f"Error fetching message body: {error_str}"
 
-
 def fetch_message_body_from_imap(account_data, folder_name, uid, callback):
     """Fetch message body from IMAP for a specific message"""
     logging.debug(f"Starting to fetch message body for UID {uid} from folder {folder_name}")
@@ -747,7 +727,7 @@ def fetch_message_body_from_imap(account_data, folder_name, uid, callback):
                 GLib.idle_add(callback, error_msg, None)
                 return
             
-            # Use retry mechanism for IMAP operations
+            
             success, result = handle_imap_operation_with_retry(
                 account_data,
                 mail_settings,
@@ -758,11 +738,11 @@ def fetch_message_body_from_imap(account_data, folder_name, uid, callback):
             )
             
             if success:
-                # Parse and decode both HTML and text parts
+                
                 from utils.message_parser import extract_html_and_text_from_message
                 html_content, text_content = extract_html_and_text_from_message(result)
                 
-                # Use HTML if available, otherwise fall back to text
+                
                 if html_content:
                     GLib.idle_add(callback, None, {"html": html_content, "text": text_content})
                 elif text_content:

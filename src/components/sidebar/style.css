@@ -1,0 +1,15 @@
+.sidebar-wrapper {
+    background-color: var(--sidebar-bg);
+}
+
+.sidebar-header {
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    min-width: 0;
+}
+
+.sidebar-header headerbar {
+    border: none;
+    box-shadow: none;
+}

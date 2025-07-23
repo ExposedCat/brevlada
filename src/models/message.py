@@ -5,7 +5,6 @@ import re
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 
-
 class Message:
     def __init__(self, message_data: Dict[str, Any]):
         self.uid = message_data.get("uid")
@@ -15,7 +14,7 @@ class Message:
         self.raw_headers = message_data.get("headers", "")
         self.body = message_data.get("body", "")
 
-        # Parse envelope data
+        
         self.subject = self._decode_header(self.envelope.get("subject", ""))
         self.sender = self._parse_address(self.envelope.get("from", []))
         self.recipients = self._parse_address_list(self.envelope.get("to", []))
@@ -27,22 +26,22 @@ class Message:
         self.in_reply_to = self.envelope.get("in_reply_to", "")
         self.references = self.envelope.get("references", "")
 
-        # Message state
+        
         self.is_read = "\\Seen" in self.flags
         self.is_flagged = "\\Flagged" in self.flags
         self.is_deleted = "\\Deleted" in self.flags
         self.is_draft = "\\Draft" in self.flags
         self.is_answered = "\\Answered" in self.flags
 
-        # Threading support
+        
         self.thread_subject = self.get_thread_subject()
         self.thread_references = self._parse_references()
 
-        # Attachments
+        
         self.has_attachments = self._has_attachments()
         self.attachments = []
 
-        # Display formatting
+        
         self.display_sender = self._format_sender_for_display()
         self.display_subject = self._format_subject_for_display()
         self.display_date = self._format_date_for_display()
@@ -105,7 +104,7 @@ class Message:
             return None
 
         try:
-            # Parse RFC 2822 date format
+            
             parsed_date = email.utils.parsedate_tz(date_str)
             if parsed_date:
                 timestamp = email.utils.mktime_tz(parsed_date)
@@ -124,19 +123,19 @@ class Message:
         diff = now - self.date
 
         if diff.days == 0:
-            # Today - show time
+            
             return self.date.strftime("%H:%M")
         elif diff.days == 1:
-            # Yesterday
+            
             return "Yesterday"
         elif diff.days < 7:
-            # This week - show day name
+            
             return self.date.strftime("%A")
         elif diff.days < 365:
-            # This year - show month and day
+            
             return self.date.strftime("%b %d")
         else:
-            # Older - show year
+            
             return self.date.strftime("%b %d, %Y")
 
     def _format_sender_for_display(self) -> str:
@@ -160,7 +159,7 @@ class Message:
         if not self.subject:
             return ""
 
-        # Remove common reply/forward prefixes
+        
         normalized = re.sub(
             r"^(Re|Fwd?|AW|Antw|回复|转发):\s*", "", self.subject, flags=re.IGNORECASE
         )
@@ -173,7 +172,7 @@ class Message:
         refs = []
 
         if self.references:
-            # Split by whitespace and angle brackets
+            
             ref_ids = re.findall(r"<([^>]+)>", self.references)
             refs.extend(ref_ids)
 
@@ -188,7 +187,7 @@ class Message:
         if not self.body_structure:
             return False
 
-        # Simple heuristic - if body structure contains multipart with non-text parts
+        
         if isinstance(self.body_structure, list) and len(self.body_structure) > 1:
             return True
 
@@ -227,7 +226,6 @@ class Message:
 
     def __str__(self) -> str:
         return f"Message(uid={self.uid}, subject='{self.subject}', sender='{self.display_sender}')"
-
 
 class Attachment:
     def __init__(

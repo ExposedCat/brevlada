@@ -1,6 +1,5 @@
 from utils.toolkit import Gtk
 
-
 class ButtonContainer:
     def __init__(
         self,
@@ -46,7 +45,6 @@ class ButtonContainer:
             else:
                 self.widget.append(children)
 
-
 class ContentContainer:
     def __init__(
         self,
@@ -88,7 +86,6 @@ class ContentContainer:
                     self.widget.append(child)
             else:
                 self.widget.append(children)
-
 
 class NavigationList:
     def __init__(
@@ -133,7 +130,6 @@ class NavigationList:
             else:
                 self.widget.append(children)
 
-
 class ContentItem:
     def __init__(
         self,
@@ -177,7 +173,6 @@ class ContentItem:
                     self.widget.set_child(child)
             else:
                 self.widget.set_child(children)
-
 
 class ScrollContainer:
     def __init__(

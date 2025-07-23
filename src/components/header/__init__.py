@@ -2,13 +2,11 @@ from utils.toolkit import Gtk, Adw
 from components.button import AppButton
 from components.ui import LoadingIcon, SearchBox
 
-
 class UnifiedHeader:
     def __init__(self):
         self.widget = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.widget.set_size_request(-1, 48)
         self.widget.add_css_class("unified-header")
-
 
 class SidebarHeader:
     def __init__(self, title="Accounts", width=350):
@@ -17,7 +15,6 @@ class SidebarHeader:
         self.widget.set_show_end_title_buttons(False)
         self.widget.set_size_request(width, -1)
         self.widget.add_css_class("sidebar-header")
-
 
 class ContentHeader:
     def __init__(self, title="Online Accounts", subtitle="Select an account"):
@@ -41,7 +38,6 @@ class ContentHeader:
             self.window_title.set_title("Online Accounts")
             self.window_title.set_subtitle("Select an account")
 
-
 class MessageListHeader:
     def __init__(self, title="Messages", width=400):
         self.widget = Adw.HeaderBar()
@@ -50,7 +46,7 @@ class MessageListHeader:
         self.widget.set_size_request(width, -1)
         self.widget.add_css_class("message-list-header")
 
-        # Add search toggle button to the right
+        
         self.search_button = Gtk.ToggleButton()
         self.search_button.set_icon_name("system-search-symbolic")
         self.search_button.add_css_class("flat")
@@ -58,7 +54,7 @@ class MessageListHeader:
         self.search_button.connect("toggled", self.on_search_toggled)
         self.widget.pack_end(self.search_button)
 
-        # Add refresh button to the left
+        
         self.refresh_button = AppButton()
         self.refresh_button.set_icon_name("view-refresh-symbolic")
         self.refresh_button.widget.set_tooltip_text("Refresh messages")
@@ -67,9 +63,8 @@ class MessageListHeader:
 
         self.refresh_callback = None
         self.search_callback = None
-        self.message_list = None  # Will be set by the message list
-        self.search_box = None  # Will be set by the main window
-
+        self.message_list = None  
+        self.search_box = None  
 
     def on_refresh_clicked(self, button):
         if self.refresh_callback:
@@ -106,7 +101,7 @@ class MessageListHeader:
         if self.search_box:
             self.search_box.set_search_mode(active)
             
-            # Focus search entry when activated
+            
             if active:
                 self.search_box.search_entry.grab_focus()
         

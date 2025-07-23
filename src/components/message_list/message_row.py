@@ -3,14 +3,13 @@ from components.ui import AppIcon, AppText
 from theme import MESSAGE_ROW_ICON_GAP, THEME_ROW_GAP, THEME_ROW_VERTICAL_GAP
 from components.container import ContentContainer
 
-
 class MessageRow:
     def __init__(self, message_or_thread):
         self.message_or_thread = message_or_thread
         self.selected_callback = None
         self.read_changed_callback = None
 
-        # Determine if this is a thread or single message
+        
         self.is_thread = hasattr(message_or_thread, "messages") and hasattr(
             message_or_thread, "get_unread_count"
         )
@@ -23,7 +22,7 @@ class MessageRow:
         self.container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=THEME_ROW_GAP)
         self.container.add_css_class("message-row-container")
 
-        # Left side: read indicator and message content
+        
         self.left_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.left_container.set_spacing(MESSAGE_ROW_ICON_GAP)
         self.left_container.add_css_class("message-row-left")
@@ -31,7 +30,7 @@ class MessageRow:
         self.read_indicator = self.create_read_indicator()
         self.left_container.append(self.read_indicator)
 
-        # Message content: sender and subject vertically stacked
+        
         self.content_container = ContentContainer(
             spacing=THEME_ROW_VERTICAL_GAP,
             orientation=Gtk.Orientation.VERTICAL,
@@ -39,14 +38,14 @@ class MessageRow:
             children=None
         ).widget
 
-        # Sender with optional thread count
+        
         sender_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=THEME_ROW_GAP)
         sender_container.add_css_class("message-row-sender-container")
         if self.is_thread and self.get_message_count() > 1:
             self.thread_count_badge = self.create_thread_count_badge()
             sender_container.append(self.thread_count_badge)
         
-        # Apply bold styling for unread messages
+        
         sender_classes = ["heading"]
         if not self.get_is_read():
             sender_classes.append("message-row-sender-unread")
@@ -65,7 +64,7 @@ class MessageRow:
         self.left_container.append(self.content_container)
         self.container.append(self.left_container)
 
-        # Right side: top (icons) and bottom (date)
+        
         self.right_container = ContentContainer(
             spacing=THEME_ROW_VERTICAL_GAP,
             orientation=Gtk.Orientation.VERTICAL,
@@ -73,15 +72,15 @@ class MessageRow:
             children=None
         ).widget
 
-        # Date label (top right, smaller, muted)
+        
         self.date_label = AppText(
             self.get_display_date(),
             halign=Gtk.Align.END,
-            class_names="message-row-date-label message-row-date-muted",
+            class_names="message-row-date",
         )
         self.right_container.append(self.date_label.widget)
 
-        # Icons container (bottom right)
+        
         self.icons_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=THEME_ROW_GAP)
         self.icons_container.set_halign(Gtk.Align.END)
         self.icons_container.add_css_class("message-row-icons")
@@ -113,7 +112,7 @@ class MessageRow:
         print(f"MessageRow.on_activated called for: {self.message_or_thread}")
         if self.selected_callback:
             if self.is_thread:
-                # For threads, pass the latest message
+                
                 latest_message = (
                     self.message_or_thread.messages[-1]
                     if self.message_or_thread.messages
@@ -175,7 +174,7 @@ class MessageRow:
 
                 try:
                     if isinstance(date_str, str):
-                        # Try to parse the date string
+                        
                         import email.utils
 
                         parsed_date = email.utils.parsedate_tz(date_str)
@@ -221,12 +220,12 @@ class MessageRow:
         """Create a circular badge showing thread message count"""
         count = self.get_message_count()
 
-        # Create a label with the count
+        
         badge_label = Gtk.Label(label=str(count))
         badge_label.add_css_class("thread-count-badge-label")
-        # Padding will be set via CSS, not set_padding
+        
 
-        # Wrap in a box for styling
+        
         badge_box = Gtk.Box()
         badge_box.append(badge_label)
         badge_box.add_css_class("thread-count-container")

@@ -4,12 +4,11 @@ from .message import Message
 import email.utils
 import re
 
-
 class MessageThread:
     def __init__(self, subject: str):
         self.subject = subject
         self.messages: List[Union[Message, Dict[str, Any]]] = []
-        self.participants: Dict[str, str] = {}  # email -> name mapping
+        self.participants: Dict[str, str] = {}  
         self.latest_date: Optional[datetime] = None
         self.earliest_date: Optional[datetime] = None
         self.unread_count = 0
@@ -20,7 +19,7 @@ class MessageThread:
         """Add a message to the thread and update thread metadata"""
         self.messages.append(message)
 
-        # Get message attributes regardless of format
+        
         sender = self._get_attr(message, "sender", {})
         recipients = self._get_attr(message, "recipients", [])
         msg_date = self._get_attr(message, "date", None)
@@ -28,7 +27,7 @@ class MessageThread:
         has_attachments = self._get_attr(message, "has_attachments", False)
         is_flagged = self._get_attr(message, "is_flagged", False)
 
-        # Update participants
+        
         if isinstance(sender, dict) and sender.get("email"):
             self.participants[sender["email"]] = sender.get("name") or sender["email"]
 
@@ -38,7 +37,7 @@ class MessageThread:
                     recipient.get("name") or recipient["email"]
                 )
 
-        # Parse date if it's a string
+        
         if isinstance(msg_date, str) and msg_date:
             try:
                 parsed_date = email.utils.parsedate_tz(msg_date)
@@ -48,14 +47,14 @@ class MessageThread:
             except:
                 msg_date = None
 
-        # Update dates
+        
         if msg_date:
             if not self.latest_date or msg_date > self.latest_date:
                 self.latest_date = msg_date
             if not self.earliest_date or msg_date < self.earliest_date:
                 self.earliest_date = msg_date
 
-        # Update flags
+        
         if not is_read:
             self.unread_count += 1
 
@@ -65,7 +64,7 @@ class MessageThread:
         if is_flagged:
             self.is_flagged = True
 
-        # Sort messages by date
+        
         self.messages.sort(key=lambda m: self._get_date_for_sort(m))
 
     def get_display_subject(self) -> str:
@@ -77,7 +76,7 @@ class MessageThread:
         if not self.messages:
             return "Unknown"
 
-        # Use the latest message's sender
+        
         latest_message = self.messages[-1]
         if isinstance(latest_message, dict):
             sender = latest_message.get("sender", {})
@@ -95,7 +94,7 @@ class MessageThread:
         if not self.latest_date:
             return ""
 
-        # Format date for display
+        
         now = datetime.now()
         diff = now - self.latest_date
 

@@ -1,66 +1,24 @@
 :root {
-  --main-content-bg: @accent_bg_color;
-  --main-content-spacing: 24px;
+  --spacing-xs: 4px;
+  --spacing-sm: 6px;
+  --spacing-md: 12px;
+  --spacing-lg: 20px;
+  --spacing-xl: 36px;
+
   --sidebar-bg: @sidebar_bg_color;
-  --sidebar-spacing: 16px;
-  --header-bg: @headerbar_bg_color;
-  --header-spacing: 20px;
-  --message-list-bg: @window_bg_color;
-  --message-list-spacing: 12px;
-  --message-row-hover-bg: alpha(@accent_color, 0.05);
-  --message-row-selected-bg: alpha(@accent_color, 0.1);
+  --message-row-hover-bg: alpha(@accent_color, 0.2);
+  --message-row-selected-bg: alpha(@accent_color, 0.3);
   --border-color: @borders;
   --error-color: @error_color;
   --success-color: @success_color;
   --info-color: @accent_color;
   --color-text: @window_fg_color;
-  --content-padding: 20px;
-  --content-gap: 16px;
-  --thread-badge-margin-right: 16px;
-  --thread-header-margin-top: 6px;
-  --thread-header-margin-bottom: 6px;
-  --thread-header-margin-start: 12px;
-  --thread-header-margin-end: 12px;
-  --thread-message-row-margin-top: 4px;
-  --thread-message-row-margin-bottom: 4px;
-  --thread-message-row-margin-start: 36px;
-  --thread-message-row-margin-end: 12px;
-  --message-viewer-root-margin-top: 6px;
-  --message-viewer-root-margin-bottom: 6px;
-  --message-viewer-root-margin-start: 6px;
-  --message-viewer-root-margin-end: 6px;
-  --message-list-root-margin-top: 6px;
-  --message-list-root-margin-bottom: 6px;
-  --message-list-root-margin-start: 6px;
-  --message-list-root-margin-end: 6px;
-  --html-viewer-root-margin-top: 0px;
-  --html-viewer-root-margin-bottom: 0px;
-  --html-viewer-root-margin-start: 0px;
-  --html-viewer-root-margin-end: 0px;
-  --app-icon-margin-top: 0px;
-  --app-icon-margin-bottom: 0px;
-  --app-icon-margin-start: 0px;
-  --app-icon-margin-end: 0px;
-  --app-text-margin-top: 0px;
-  --app-text-margin-bottom: 0px;
-  --app-text-margin-start: 0px;
-  --app-text-margin-end: 0px;
-  --container-margin-top: 0px;
-  --container-margin-bottom: 0px;
-  --container-margin-start: 0px;
-  --container-margin-end: 0px;
-  --button-margin-top: 0px;
-  --button-margin-bottom: 0px;
-  --button-margin-start: 0px;
-  --button-margin-end: 0px;
-  --muted-bg: #e0e0e0;
-  --muted-fg: #888;
-  --badge-padding-horizontal: 6px;
-  --badge-padding-vertical: 2px;
-  --badge-font-size: 14px;
+  --theme-fg-color: @theme_fg_color;
+  --theme-bg-color: @theme_bg_color;
+  --headerbar-bg-color: @headerbar_bg_color;
+  --borders: @borders;
 } 
 
-/* Remove search entry background */
 searchentry {
   background: transparent;
 }
@@ -72,5 +30,3 @@ searchbar > revealer > box {
 .message-list-search-box searchentry {
   background: transparent;
 }
-
-/* Message card styling - moved to style.css */ 
