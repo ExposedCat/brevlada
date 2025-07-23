@@ -105,6 +105,9 @@ class MyWindow(Adw.ApplicationWindow):
 
         self.message_viewer = MessageViewer(self.storage, None)
         
+        # Connect content header to message viewer
+        self.message_viewer.set_content_header(self.content_header)
+        
         self.content_area = ContentContainer(
             spacing=20,
             orientation=Gtk.Orientation.VERTICAL,

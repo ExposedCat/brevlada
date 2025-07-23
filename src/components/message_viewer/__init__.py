@@ -18,6 +18,7 @@ class MessageViewer:
         self.current_account_data = None
         self.body_fetch_id = 0
         self.current_state = None
+        self.content_header = None  # Will be set by main window
         
         self.widget = Adw.PreferencesGroup()
         self.widget.set_vexpand(True)
@@ -191,62 +192,65 @@ class MessageViewer:
         self.content_container.widget.set_valign(Gtk.Align.FILL)
         self.content_container.widget.set_halign(Gtk.Align.FILL)
         
-        # Message header
-        subject_label = AppText(
-            text=message.get("subject", "(No Subject)"),
-            class_names="message-subject",
-            margin_bottom=THEME_MARGIN_MEDIUM,
-            halign=Gtk.Align.START,
-        )
-        subject_label.set_markup(
-            f"<span size='xx-large' weight='bold'>{message.get('subject', '(No Subject)')}</span>"
-        )
-        self.content_container.widget.append(subject_label.widget)
+        # Update content header with subject
+        if self.content_header:
+            self.content_header.set_message_subject(message.get("subject", "(No Subject)"))
         
-        # Sender info
+        # Create message card
+        message_card = Adw.PreferencesGroup()
+        message_card.add_css_class("message-card")
+        
+        # Card header with avatar, sender, and date
+        card_header = self.create_message_card_header(message)
+        message_card.add(card_header)
+        
+        # Card body with message content
+        card_body = self.create_message_card_body(message)
+        message_card.add(card_body)
+        
+        self.content_container.widget.append(message_card)
+    
+    def create_message_card_header(self, message):
+        """Create the card header with avatar, sender email, and shortened date"""
+        header_row = Adw.ActionRow()
+        header_row.add_css_class("message-card-header")
+        
+        # Get sender info
         sender_info = message.get("sender", {})
         sender_name = sender_info.get("name", "")
         sender_email = sender_info.get("email", "")
-        sender_display = sender_name if sender_name else sender_email
         
-        sender_container = ContentContainer(
-            spacing=10,
-            orientation=Gtk.Orientation.HORIZONTAL,
-            class_names="sender-info-row",
-            children=[
-                AppText(
-                    text="From:",
-                    class_names=["dim-label"],
-                    halign=Gtk.Align.START,
-                ).widget,
-                AppText(
-                    text=sender_display,
-                    class_names="sender-value",
-                    halign=Gtk.Align.START,
-                ).widget,
-            ],
-        )
-        self.content_container.widget.append(sender_container.widget)
+        # Create avatar with initials (max 2 characters)
+        initials = self.get_initials(sender_name, sender_email)
+        avatar = Adw.Avatar.new(40, initials, True)
+        avatar.add_css_class("message-avatar")
+        header_row.add_prefix(avatar)
         
-        # Date info
-        date_container = ContentContainer(
-            spacing=10,
-            orientation=Gtk.Orientation.HORIZONTAL,
-            class_names="date-info-row",
-            children=[
-                AppText(
-                    text="Date:",
-                    class_names=["dim-label"],
-                    halign=Gtk.Align.START,
-                ).widget,
-                AppText(
-                    text=message.get("date", ""),
-                    class_names="date-value",
-                    halign=Gtk.Align.START,
-                ).widget,
-            ],
-        )
-        self.content_container.widget.append(date_container.widget)
+        # Set title and subtitle
+        display_name = sender_name if sender_name else sender_email
+        header_row.set_title(display_name)
+        if sender_name and sender_email:
+            header_row.set_subtitle(sender_email)
+        
+        # Add shortened date on the right
+        date_str = message.get("date", "")
+        if date_str:
+            short_date = self.get_shortened_date(date_str)
+            date_label = Gtk.Label(label=short_date)
+            date_label.add_css_class("message-card-date")
+            date_label.set_halign(Gtk.Align.END)
+            header_row.add_suffix(date_label)
+        
+        return header_row
+    
+    def create_message_card_body(self, message):
+        """Create the card body with message content"""
+        body_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        body_container.add_css_class("message-card-body")
+        body_container.set_margin_top(12)
+        body_container.set_margin_bottom(12)
+        body_container.set_margin_start(12)
+        body_container.set_margin_end(12)
         
         # Message body
         body_text = message.get("body", "")
@@ -256,34 +260,85 @@ class MessageViewer:
             # Use HTML viewer for HTML content
             html_viewer = HtmlViewer(
                 class_names="message-body",
-                margin_top=THEME_MARGIN_MEDIUM,
                 h_fill=True,
                 w_fill=True,
             )
             html_viewer.load_html(body_html)
-            self.content_container.widget.append(html_viewer.widget)
+            # Round the HTML viewer at bottom to fit card
+            html_viewer.widget.add_css_class("message-body-rounded")
+            body_container.append(html_viewer.widget)
         elif body_text:
             # Use HTML viewer for plain text with proper formatting
             html_viewer = HtmlViewer(
                 class_names="message-body",
-                margin_top=THEME_MARGIN_MEDIUM,
                 h_fill=True,
                 w_fill=True,
             )
             html_viewer.load_plain_text(body_text)
-            self.content_container.widget.append(html_viewer.widget)
+            # Round the HTML viewer at bottom to fit card
+            html_viewer.widget.add_css_class("message-body-rounded")
+            body_container.append(html_viewer.widget)
         else:
-            # Center the no-body message
-            self.content_container.widget.set_valign(Gtk.Align.CENTER)
-            self.content_container.widget.set_halign(Gtk.Align.CENTER)
+            # No body message
             no_body_label = AppText(
                 text="(No message body)",
                 class_names="message-no-body",
-                margin_top=THEME_MARGIN_LARGE,
                 halign=Gtk.Align.CENTER,
             )
             no_body_label.set_opacity(0.6)
-            self.content_container.widget.append(no_body_label.widget)
+            body_container.append(no_body_label.widget)
+        
+        return body_container
+    
+    def get_initials(self, name, email):
+        """Get initials for avatar (max 2 characters)"""
+        if name:
+            # Split name and take first letter of first two words
+            words = name.split()
+            if len(words) >= 2:
+                return f"{words[0][0]}{words[1][0]}".upper()
+            elif len(words) == 1:
+                return words[0][:2].upper()
+        
+        if email:
+            # Use first two characters of email
+            return email[:2].upper()
+        
+        return "??"
+    
+    def get_shortened_date(self, date_str):
+        """Get shortened date for display"""
+        try:
+            from datetime import datetime
+            import email.utils
+            
+            parsed_date = email.utils.parsedate_tz(date_str)
+            if parsed_date:
+                timestamp = email.utils.mktime_tz(parsed_date)
+                date_obj = datetime.fromtimestamp(timestamp)
+                
+                now = datetime.now()
+                diff = now - date_obj
+                
+                if diff.days == 0:
+                    # Today - show time
+                    return date_obj.strftime("%H:%M")
+                elif diff.days == 1:
+                    # Yesterday
+                    return "Yesterday"
+                elif diff.days < 7:
+                    # This week - show day name
+                    return date_obj.strftime("%a")
+                elif diff.days < 365:
+                    # This year - show month and day
+                    return date_obj.strftime("%b %d")
+                else:
+                    # Older - show year
+                    return date_obj.strftime("%Y")
+        except:
+            pass
+        
+        return ""
     
     def show_select_message_state(self):
         self.hide_all_states()
@@ -292,6 +347,10 @@ class MessageViewer:
         while child:
             self.content_container.widget.remove(child)
             child = self.content_container.widget.get_first_child()
+        
+        # Clear content header
+        if self.content_header:
+            self.content_header.set_message_subject(None)
         
         # Set alignment to center for empty state
         self.content_container.widget.set_valign(Gtk.Align.CENTER)
@@ -413,3 +472,7 @@ class MessageViewer:
         elif self.current_state == "error":
             self.main_container.remove(self.error_state.widget)
         self.current_state = None 
+
+    def set_content_header(self, content_header):
+        """Set the content header reference for updating title"""
+        self.content_header = content_header 

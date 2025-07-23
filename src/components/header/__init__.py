@@ -31,6 +31,15 @@ class ContentHeader:
         self.widget.set_centering_policy(Adw.CenteringPolicy.STRICT)
         self.widget.set_hexpand(True)
         self.widget.add_css_class("content-header")
+    
+    def set_message_subject(self, subject):
+        """Update header to show message subject"""
+        if subject:
+            self.window_title.set_title(subject)
+            self.window_title.set_subtitle("Message")
+        else:
+            self.window_title.set_title("Online Accounts")
+            self.window_title.set_subtitle("Select an account")
 
 
 class MessageListHeader:

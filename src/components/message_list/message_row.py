@@ -45,7 +45,13 @@ class MessageRow:
         if self.is_thread and self.get_message_count() > 1:
             self.thread_count_badge = self.create_thread_count_badge()
             sender_container.append(self.thread_count_badge)
-        self.sender_label = AppText(self.get_display_sender(), class_names="heading")
+        
+        # Apply bold styling for unread messages
+        sender_classes = ["heading"]
+        if not self.get_is_read():
+            sender_classes.append("message-row-sender-unread")
+        
+        self.sender_label = AppText(self.get_display_sender(), class_names=sender_classes)
         sender_container.append(self.sender_label.widget)
 
         self.content_container.append(sender_container)

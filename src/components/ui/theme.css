@@ -59,3 +59,18 @@
   --badge-padding-vertical: 2px;
   --badge-font-size: 14px;
 } 
+
+/* Remove search entry background */
+searchentry {
+  background: transparent;
+}
+
+searchbar > revealer > box {
+  background: transparent;
+}
+
+.message-list-search-box searchentry {
+  background: transparent;
+}
+
+/* Message card styling - moved to style.css */ 

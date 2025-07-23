@@ -188,7 +188,7 @@ toolbarview > * {
 }
 
 .message-row-sender-unread {
-    font-weight: 600;
+    font-weight: bold;
     color: var(--color-text);
 }
 
@@ -334,4 +334,35 @@ toolbarview > * {
     letter-spacing: 0.5px;
     text-align: center;
     padding: 2px 6px;
+}
+
+/* Message card styling */
+.message-card {
+    border-radius: 12px;
+    margin: 16px;
+    background: @window_bg_color;
+    border: 1px solid @borders;
+}
+
+.message-card-header {
+    padding: 16px;
+    border-bottom: 1px solid @borders;
+}
+
+.message-avatar {
+    margin-right: 12px;
+}
+
+.message-card-date {
+    font-size: 14px;
+    opacity: 0.7;
+    color: @theme_fg_color;
+}
+
+.message-card-body {
+    background: transparent;
+}
+
+.message-body-rounded {
+    border-radius: 0 0 12px 12px;
 }
