@@ -2,6 +2,7 @@ import email
 import email.utils
 import email.header
 from typing import Dict, List, Optional, Any, Tuple
+import re
 from models.message import Message
 
 def parse_message_from_imap(uid: int, fetch_data: Tuple) -> Optional[Message]:
@@ -459,3 +460,209 @@ def extract_html_from_email(email_msg) -> str:
                 return payload.decode("utf-8", errors="ignore")
 
     return ""
+
+def detect_and_process_embedded_replies(content: str, is_html: bool = False) -> str:
+    """
+    Detect embedded replies in email content and wrap them in collapsible sections.
+    
+    Args:
+        content: The email content (HTML or plain text)
+        is_html: Whether the content is HTML or plain text
+        
+    Returns:
+        Processed content with embedded replies wrapped in collapsible sections
+    """
+    if not content or not content.strip():
+        return content
+    
+    if is_html:
+        return _process_html_embedded_replies(content)
+    else:
+        return _process_plain_text_embedded_replies(content)
+
+def _process_plain_text_embedded_replies(content: str) -> str:
+    """Process embedded replies in plain text content"""
+    lines = content.split('\n')
+    processed_parts = []
+    in_reply = False
+    reply_buffer = []
+    text_buffer = []
+    
+    for line in lines:
+        is_reply_line = _is_embedded_reply_line(line)
+        
+        if is_reply_line and not in_reply:
+            # Starting a new embedded reply section
+            # First, close any pending text content
+            if text_buffer:
+                text_content = '\n'.join(text_buffer)
+                processed_parts.append(f'<pre>{_escape_html(text_content)}</pre>')
+                text_buffer = []
+            
+            in_reply = True
+            reply_buffer = [line]
+        elif is_reply_line and in_reply:
+            # Continue collecting reply lines
+            reply_buffer.append(line)
+        elif not is_reply_line and in_reply:
+            # End of reply section
+            if reply_buffer:
+                reply_content = '\n'.join(reply_buffer)
+                processed_parts.append(_create_collapsible_reply_section(reply_content))
+                reply_buffer = []
+            in_reply = False
+            text_buffer.append(line)
+        else:
+            # Regular line
+            text_buffer.append(line)
+    
+    # Handle remaining content
+    if in_reply and reply_buffer:
+        reply_content = '\n'.join(reply_buffer)
+        processed_parts.append(_create_collapsible_reply_section(reply_content))
+    elif text_buffer:
+        text_content = '\n'.join(text_buffer)
+        processed_parts.append(f'<pre>{_escape_html(text_content)}</pre>')
+    
+    return ''.join(processed_parts)
+
+def _process_html_embedded_replies(content: str) -> str:
+    """Process embedded replies in HTML content"""
+    # Handle HTML blockquotes
+    content = re.sub(
+        r'<blockquote[^>]*>(.*?)</blockquote>',
+        lambda m: _create_collapsible_html_reply_section(m.group(1)),
+        content,
+        flags=re.DOTALL | re.IGNORECASE
+    )
+    
+    # Handle quoted text in HTML (lines starting with >)
+    lines = content.split('\n')
+    processed_lines = []
+    in_reply = False
+    reply_buffer = []
+    
+    for line in lines:
+        # Check if this line contains quoted text
+        if re.search(r'^\s*(&gt;|>)', line.strip()):
+            if not in_reply:
+                in_reply = True
+                reply_buffer = [line]
+            else:
+                reply_buffer.append(line)
+        elif in_reply:
+            # End of reply section
+            if reply_buffer:
+                reply_content = '\n'.join(reply_buffer)
+                processed_lines.append(_create_collapsible_html_reply_section(reply_content))
+                reply_buffer = []
+            in_reply = False
+            processed_lines.append(line)
+        else:
+            processed_lines.append(line)
+    
+    # Handle case where content ends with a reply
+    if in_reply and reply_buffer:
+        reply_content = '\n'.join(reply_buffer)
+        processed_lines.append(_create_collapsible_html_reply_section(reply_content))
+    
+    return '\n'.join(processed_lines)
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters"""
+    return (text.replace('&', '&amp;')
+               .replace('<', '&lt;')
+               .replace('>', '&gt;')
+               .replace('"', '&quot;')
+               .replace("'", '&#x27;'))
+
+def _is_embedded_reply_line(line: str) -> bool:
+    """Check if a line is part of an embedded reply"""
+    line = line.strip()
+    
+    # Empty lines within replies are considered part of the reply
+    if not line:
+        return False
+    
+    # Lines starting with >
+    if line.startswith('>'):
+        return True
+    
+    # Common reply headers patterns
+    reply_patterns = [
+        r'^On\s+.+wrote:?\s*$',  # "On [date] [person] wrote:"
+        r'^-----Original Message-----',
+        r'^From:\s+.+',
+        r'^Sent:\s+.+',
+        r'^To:\s+.+',
+        r'^Subject:\s+.+',
+        r'^\d{1,2}/\d{1,2}/\d{2,4}.+wrote:?\s*$',  # Date patterns
+        r'^Le\s+.+a\s+écrit\s*:?\s*$',  # French "Le [date] [person] a écrit:"
+        r'^Am\s+.+schrieb\s+.+:?\s*$',  # German "Am [date] schrieb [person]:"
+        r'^El\s+.+escribió\s*:?\s*$',  # Spanish "El [date] [person] escribió:"
+    ]
+    
+    for pattern in reply_patterns:
+        if re.match(pattern, line, re.IGNORECASE):
+            return True
+    
+    return False
+
+def _create_collapsible_reply_section(reply_content: str) -> str:
+    """Create a collapsible section for plain text reply content"""
+    # Extract first meaningful line for the summary
+    lines = reply_content.strip().split('\n')
+    summary = lines[0] if lines else "Previous message"
+    
+    # Clean up the summary
+    summary = re.sub(r'^>+\s*', '', summary)
+    if not summary.strip():
+        summary = "Previous message"
+    
+    # Truncate long summaries
+    if len(summary) > 80:
+        summary = summary[:77] + "..."
+    
+    escaped_summary = _escape_html(summary)
+    escaped_content = _escape_html(reply_content)
+    
+    return f"""<div class="embedded-reply-container">
+    <div class="embedded-reply-toggle" onclick="toggleEmbeddedReply(this)">
+        <span class="toggle-icon">▶</span>
+        <span class="reply-summary">{escaped_summary}</span>
+    </div>
+    <div class="embedded-reply-content" style="display: none;">
+        <pre>{escaped_content}</pre>
+    </div>
+</div>"""
+
+def _create_collapsible_html_reply_section(reply_content: str) -> str:
+    """Create a collapsible section for HTML reply content"""
+    # Extract text content for summary
+    text_content = re.sub(r'<[^>]+>', ' ', reply_content)
+    text_content = re.sub(r'\s+', ' ', text_content).strip()
+    
+    # Get first meaningful line
+    lines = text_content.split('\n')
+    summary = lines[0] if lines else "Previous message"
+    
+    # Clean up the summary
+    summary = re.sub(r'^>+\s*', '', summary)
+    if not summary.strip():
+        summary = "Previous message"
+    
+    # Truncate long summaries
+    if len(summary) > 80:
+        summary = summary[:77] + "..."
+    
+    escaped_summary = _escape_html(summary)
+    
+    return f"""<div class="embedded-reply-container">
+    <div class="embedded-reply-toggle" onclick="toggleEmbeddedReply(this)">
+        <span class="toggle-icon">▶</span>
+        <span class="reply-summary">{escaped_summary}</span>
+    </div>
+    <div class="embedded-reply-content" style="display: none;">
+        {reply_content}
+    </div>
+</div>"""

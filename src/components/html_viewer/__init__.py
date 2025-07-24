@@ -1,4 +1,6 @@
 from utils.toolkit import Gtk, WebKit
+from utils.message_parser import detect_and_process_embedded_replies
+import html
 
 class HtmlViewer:
     def __init__(self):
@@ -42,10 +44,23 @@ class HtmlViewer:
             self.webview.set_size_request(-1, 100)
 
     def load_html(self, html_content):
-        self.webview.load_html(html_content, "file:///")
+        processed_content = detect_and_process_embedded_replies(html_content, is_html=True)
+        full_html = self._wrap_with_styles_and_scripts(processed_content)
+        self.webview.load_html(full_html, "file:///")
 
     def load_plain_text(self, text_content):
+        processed_content = detect_and_process_embedded_replies(text_content, is_html=False)
         html_content = f"""
+        <body>
+            {processed_content}
+        </body>
+        """
+        full_html = self._wrap_with_styles_and_scripts(html_content)
+        self.webview.load_html(full_html, "file:///")
+
+    def _wrap_with_styles_and_scripts(self, body_content):
+        """Wrap content with necessary styles and scripts for embedded reply functionality"""
+        return f"""
         <!DOCTYPE html>
         <html>
         <head>
@@ -65,14 +80,94 @@ class HtmlViewer:
                     font-family: inherit;
                     margin: 0;
                 }}
+                
+                .embedded-reply-container {{
+                    margin: 12px 0;
+                    border: 1px solid #e0e0e0;
+                    border-radius: 6px;
+                    background-color: #f8f9fa;
+                }}
+                
+                .embedded-reply-toggle {{
+                    padding: 8px 12px;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    background-color: #f0f0f0;
+                    border-radius: 6px 6px 0 0;
+                    user-select: none;
+                    transition: background-color 0.2s ease;
+                }}
+                
+                .embedded-reply-toggle:hover {{
+                    background-color: #e8e8e8;
+                }}
+                
+                .toggle-icon {{
+                    font-size: 12px;
+                    margin-right: 8px;
+                    transition: transform 0.2s ease;
+                    display: inline-block;
+                    width: 12px;
+                }}
+                
+                .toggle-icon.expanded {{
+                    transform: rotate(90deg);
+                }}
+                
+                .reply-summary {{
+                    flex: 1;
+                    font-size: 14px;
+                    color: #666;
+                    font-style: italic;
+                }}
+                
+                .embedded-reply-content {{
+                    padding: 12px;
+                    border-top: 1px solid #e0e0e0;
+                    background-color: #fff;
+                    border-radius: 0 0 6px 6px;
+                }}
+                
+                .embedded-reply-content pre {{
+                    color: #666;
+                    font-size: 13px;
+                    margin: 0;
+                    white-space: pre-wrap;
+                    word-wrap: break-word;
+                }}
+                
+                .embedded-reply-content blockquote {{
+                    margin: 0;
+                    padding-left: 12px;
+                    border-left: 3px solid #ccc;
+                    color: #666;
+                }}
             </style>
+            <script>
+                function toggleEmbeddedReply(toggleElement) {{
+                    const container = toggleElement.parentElement;
+                    const content = container.querySelector('.embedded-reply-content');
+                    const icon = toggleElement.querySelector('.toggle-icon');
+                    
+                    if (content.style.display === 'none') {{
+                        content.style.display = 'block';
+                        icon.classList.add('expanded');
+                    }} else {{
+                        content.style.display = 'none';
+                        icon.classList.remove('expanded');
+                    }}
+                    
+                    // Trigger resize to recalculate height
+                    setTimeout(() => {{
+                        window.dispatchEvent(new Event('resize'));
+                    }}, 100);
+                }}
+            </script>
         </head>
-        <body>
-            <pre>{text_content}</pre>
-        </body>
+        {body_content}
         </html>
         """
-        self.load_html(html_content)
 
     def get_webview(self):
         return self.webview 
