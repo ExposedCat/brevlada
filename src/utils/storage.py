@@ -5,19 +5,39 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from pathlib import Path
+from utils.toolkit import GLib
 
 class EmailStorage:
     def __init__(self, db_path: Optional[str] = None):
-        if db_path is None:
-            
-            cache_dir = Path.home() / ".cache" / "brevlada"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            db_path = str(cache_dir / "emails.db")
+        if db_path is None: 
+            try:
+                user_data_dir = Path(GLib.get_user_data_dir()) / "brevlada"
+                user_data_dir.mkdir(parents=True, exist_ok=True)
+                db_path = str(user_data_dir / "emails.db")
+                logging.debug(f"EmailStorage: Using data directory: {user_data_dir}")
+            except Exception as e:
+                logging.error(f"EmailStorage: Could not create user data directory: {e}")
+                db_path = "emails.db"
+                logging.warning(f"EmailStorage: Falling back to current directory: {db_path}")
 
         self.db_path = db_path
         logging.debug(f"EmailStorage: Initializing with database path: {db_path}")
         self._lock = threading.Lock()
         self._init_database()
+
+    @staticmethod
+    def get_cache_dir() -> Path:
+        """Get cache directory for temporary files (attachments, etc.)"""
+        cache_dir = Path(GLib.get_user_cache_dir()) / "brevlada"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    @staticmethod  
+    def get_config_dir() -> Path:
+        """Get config directory for user settings"""
+        config_dir = Path(GLib.get_user_config_dir()) / "brevlada"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir
 
     def get_connection(self):
         """Get database connection"""

@@ -192,21 +192,14 @@ class MessageList:
                         logging.debug(
                             "MessageList: No messages in storage, fetching from IMAP"
                         )
-                        
                         if self.header:
                             GLib.idle_add(self.header.set_loading, True)
                         self.fetch_from_imap(fetch_id)
                         return
-
-                    
-                    GLib.idle_add(self.on_messages_loaded, messages)
-
-                    
-                    if self.header:
-                        GLib.idle_add(self.header.set_loading, True)
-
-                    
-                    self.fetch_from_imap(fetch_id)
+                    else:
+                        logging.info(f"MessageList: Using {len(messages)} messages from storage, skipping IMAP")
+                        GLib.idle_add(self.on_messages_loaded, messages)
+                        return
                 else:
                     logging.debug(
                         "MessageList: Force refresh requested, fetching from IMAP"

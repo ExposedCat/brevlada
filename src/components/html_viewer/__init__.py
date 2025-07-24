@@ -1,9 +1,7 @@
 from utils.toolkit import Gtk, WebKit
 
 class HtmlViewer:
-    def __init__(
-        self,
-    ):
+    def __init__(self):
         self.widget = Gtk.Frame()
         self.widget.set_hexpand(True)
         self.widget.add_css_class("html-viewer-frame")
@@ -38,10 +36,10 @@ class HtmlViewer:
             js_result = self.webview.evaluate_javascript_finish(result)
             if js_result and js_result.is_number():
                 content_height = int(js_result.to_int32())
-                height = max(100, min(content_height, 800))
+                height = max(50, content_height)
                 self.webview.set_size_request(-1, height)
         except:
-            self.webview.set_size_request(-1, 300)
+            self.webview.set_size_request(-1, 100)
 
     def load_html(self, html_content):
         self.webview.load_html(html_content, "file:///")

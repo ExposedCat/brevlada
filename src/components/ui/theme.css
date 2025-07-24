@@ -17,6 +17,7 @@
   --theme-bg-color: @theme_bg_color;
   --headerbar-bg-color: @headerbar_bg_color;
   --borders: @borders;
+  --card-shadow: @shade_color;
 } 
 
 searchentry {
@@ -29,4 +30,20 @@ searchbar > revealer > box {
 
 .message-list-search-box searchentry {
   background: transparent;
+}
+
+scrolledwindow {
+    background: none;
+}
+
+row {
+    background: none;
+}
+
+row:hover {
+    background: none;
+}
+
+row:selected {
+    background: none;
 }

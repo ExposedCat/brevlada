@@ -3,44 +3,31 @@
     padding: var(--spacing-sm);
 }
 
-.message-card {
-    border-radius: var(--spacing-md);
+.message-date-suffix {
+    font-size: 0.85em;
+    color: var(--dim-label);
+}
+
+.message-viewer-empty-icon,
+.message-viewer-error-icon {
+    margin-bottom: var(--spacing-md);
+}
+
+.message-viewer-loading-spinner {
+    margin-bottom: var(--spacing-md);
+}
+
+.message-container {
+    border: none;
     margin: 0;
+    padding: var(--spacing-sm);
+    border-radius: var(--spacing-md);
+}
+
+.message-row-widget {
+    border-radius: var(--spacing-md);
     background: var(--headerbar-bg-color);
     border: 1px solid var(--borders);
-}
-
-.message-card-header {
-    padding: var(--spacing-md);
-    border-bottom: 1px solid var(--borders);
-    border-radius: var(--spacing-md) var(--spacing-md) 0 0;
-}
-
-.message-avatar {
-    margin-right: 8px;
-}
-
-.message-card-sender {
-    font-weight: 500;
-}
-
-.message-card-email {
-    opacity: 0.7;
-}
-
-.message-card-date {
-    opacity: 0.7;
-    color: var(--theme-fg-color);
-}
-
-.message-card-body {
-    background: transparent;
-}
-
-.message-body-loading {
-    opacity: 0.7;
-}
-
-.message-body-loading-text {
-    font-size: 0.9em;
+    margin: var(--spacing-sm) 0;
+    box-shadow: 0 2px 4px var(--card-shadow);
 }

@@ -17,36 +17,27 @@ class MessageViewer:
         self.current_account_data = None
         self.body_fetch_id = 0
         self.current_state = None
-        self.content_header = None  
+        self.content_header = None
+        self.is_showing_thread = False
+        self.expanded_messages = {}  
         
-        self.widget = Adw.PreferencesGroup()
+        self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.widget.set_vexpand(True)
         self.widget.set_hexpand(True)
         self.widget.add_css_class("message-viewer-root")
         
-        
-        self.main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.main_container.set_vexpand(True)
-        self.main_container.set_hexpand(True)
-        
-        self.content_container = ContentContainer(
-            spacing=20,
-            orientation=Gtk.Orientation.VERTICAL,
-            class_names="message-viewer-content",
-            
-            h_fill=True,
-            w_fill=True,
-        )
+        self.message_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.message_container.set_vexpand(False)
+        self.message_container.set_hexpand(True)
+        self.message_container.add_css_class("message-container")
         
         self.scroll_window = Gtk.ScrolledWindow()
         self.scroll_window.set_vexpand(True)
         self.scroll_window.set_hexpand(True)
         self.scroll_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.scroll_window.add_css_class("message-viewer-scroll")
-        self.scroll_window.set_child(self.content_container.widget)
+        self.scroll_window.set_child(self.message_container)
         
-        self.main_container.append(self.scroll_window)
-        self.widget.add(self.main_container)
+        self.widget.append(self.scroll_window)
         
         self.loading_state = self.create_loading_state()
         self.error_state = self.create_error_state()
@@ -101,10 +92,9 @@ class MessageViewer:
     
     def show_message(self, message_or_thread):
         
-        child = self.content_container.widget.get_first_child()
-        while child:
-            self.content_container.widget.remove(child)
-            child = self.content_container.widget.get_first_child()
+        
+        while self.message_container.get_first_child():
+            self.message_container.remove(self.message_container.get_first_child())
         if not message_or_thread:
             self.show_select_message_state()
             return
@@ -145,76 +135,160 @@ class MessageViewer:
         self.fetch_message_body_smart(message)
     
     def display_thread(self, thread):
-        """Display all messages in a thread"""
         logging.info(f"MessageViewer: Displaying thread with {len(thread.messages)} messages")
-        
-        
-        self.hide_all_states()
-        
-        
-        child = self.content_container.widget.get_first_child()
-        while child:
-            self.content_container.widget.remove(child)
-            child = self.content_container.widget.get_first_child()
-        
+        while self.message_container.get_first_child():
+            self.message_container.remove(self.message_container.get_first_child())
         self.current_state = "content"
-        
-        self.content_container.widget.set_valign(Gtk.Align.FILL)
-        self.content_container.widget.set_halign(Gtk.Align.FILL)
-        
-        
+        self.is_showing_thread = len(thread.messages) > 1
+        self.current_thread_total = len(thread.messages)  
         if self.content_header:
             self.content_header.set_message_subject(thread.get_display_subject())
-        
-        
         self.thread_message_cards = {}
-        
+        self.expanded_messages.clear()  
         
         for i, message in enumerate(thread.messages):
             logging.debug(f"MessageViewer: Creating card for message {i+1}: UID={message.get('uid')}, has_body={self.message_has_body(message)}")
             
-            message_card = self.create_message_card(message, is_in_thread=True, thread_position=i+1, thread_total=len(thread.messages))
-            self.content_container.widget.append(message_card)
+            message_uid = message.get("uid")
             
-            
+            is_unread = not message.get("is_read", True)  
+            if is_unread and message_uid:
+                self.expanded_messages[message_uid] = True
+                logging.debug(f"MessageViewer: Auto-expanding unread message UID {message_uid}")
+            message_row = self.create_simple_message_row(message, is_in_thread=True, thread_total=len(thread.messages))
+            self.message_container.append(message_row)
             message_uid = message.get("uid")
             if message_uid:
-                self.thread_message_cards[message_uid] = message_card
-            
-            
+                self.thread_message_cards[message_uid] = message_row
             if not self.message_has_body(message):
                 logging.debug(f"MessageViewer: Message UID {message_uid} needs body, trying database first")
                 self.fetch_message_body_smart(message, thread)
             else:
                 logging.debug(f"MessageViewer: Message UID {message_uid} already has body")
-        
         logging.info(f"MessageViewer: Thread display complete, {len(thread.messages)} cards created")
 
-    def create_message_card(self, message, is_in_thread=False, thread_position=None, thread_total=None):
-        """Create a message card for display"""
-        message_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        message_card.add_css_class("message-card")
-        if is_in_thread:
-            message_card.add_css_class("message-card-in-thread")
+    def create_simple_message_row(self, message, is_in_thread=False, thread_total=None):
+        message_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        message_container.add_css_class("message-row-widget")
         
         
-        card_header = self.create_message_card_header(message)
-        message_card.append(card_header)
+        header_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        header_container.set_spacing(6)
         
         
-        loading = not self.message_has_body(message)
-        card_body = self.create_message_card_body(message, loading=loading)
-        message_card.append(card_body)
+        expand_button = None
+        is_actual_thread = is_in_thread and thread_total and thread_total > 1
+        if is_actual_thread:
+            expand_button = AppButton(
+                variant="expand",
+                class_names=["expand-button", "message-expand"],
+                h_fill=False,
+                w_fill=False
+            )
+            expand_button.widget.set_size_request(32, 32)  
+            expand_button.widget.set_margin_start(12)  
+            expand_button.widget.set_margin_end(0)  
+            expand_button.widget.set_margin_top(6)  
+            expand_button.widget.set_margin_bottom(6)  
+            expand_button.widget.set_valign(Gtk.Align.CENTER)  
+            message_uid = message.get("uid")
+            is_expanded = self.expanded_messages.get(message_uid, False)
+            expand_button.set_icon_name("pan-down-symbolic" if is_expanded else "pan-end-symbolic")
+            expand_button.connect("clicked", self.on_message_expand_clicked, message, message_container, expand_button)
+            header_container.append(expand_button.widget)
         
-        return message_card
+        header_row = Adw.ActionRow()
+        header_row.set_hexpand(True)  
+        
+        sender_info = message.get("sender", {})
+        sender_name = sender_info.get("name", "")
+        sender_email = sender_info.get("email", "")
+        
+        display_name = sender_name if sender_name else sender_email
+        header_row.set_title(display_name)
+        
+        if sender_name and sender_email:
+            header_row.set_subtitle(sender_email)
+        
+        date_str = message.get("date", "")
+        if date_str:
+            short_date = self.get_shortened_date(date_str)
+            if short_date:
+                date_label = Gtk.Label(label=short_date)
+                date_label.add_css_class("message-date-suffix")
+                date_label.set_halign(Gtk.Align.END)
+                date_label.set_opacity(0.7)
+                header_row.add_suffix(date_label)
+        
+        initials = self.get_initials(sender_name, sender_email)
+        avatar = Adw.Avatar.new(32, initials, True)
+        avatar.add_css_class("message-avatar")
+        header_row.add_prefix(avatar)
+        
+        header_container.append(header_row)
+        message_container.append(header_container)
+        
+        
+        
+        if not is_actual_thread:
+            
+            loading = not self.message_has_body(message)
+            body_content = self.create_message_body_content(message, loading=loading)
+            message_container.append(body_content)
+        else:
+            
+            message_uid = message.get("uid")
+            is_expanded = self.expanded_messages.get(message_uid, False)
+            if is_expanded:
+                loading = not self.message_has_body(message)
+                body_content = self.create_message_body_content(message, loading=loading)
+                message_container.append(body_content)
+        
+        return message_container
+    
+    def on_message_expand_clicked(self, button, message, message_container, expand_button):
+        """Handle expand button click for threaded messages"""
+        message_uid = message.get("uid")
+        if not message_uid:
+            return
+            
+        
+        is_expanded = self.expanded_messages.get(message_uid, False)
+        self.expanded_messages[message_uid] = not is_expanded
+        
+        
+        if is_expanded:
+            
+            expand_button.set_icon_name("pan-end-symbolic")
+            
+            if message_container.get_last_child() != message_container.get_first_child():
+                body_content = message_container.get_last_child()
+                message_container.remove(body_content)
+        else:
+            
+            expand_button.set_icon_name("pan-down-symbolic")
+            
+            if not self.message_has_body(message):
+                logging.debug(f"MessageViewer: Message UID {message_uid} expanding but no body, fetching from IMAP")
+                
+                loading_content = self.create_message_body_content(message, loading=True)
+                message_container.append(loading_content)
+                
+                self.fetch_message_body_smart(message, thread=True)
+            else:
+                loading = False
+                body_content = self.create_message_body_content(message, loading=loading)
+                message_container.append(body_content)
 
     def fetch_message_body_for_thread(self, message, thread):
         """Fetch message body for a message in a thread"""
+        message_uid = message.get("uid")
+        logging.debug(f"MessageViewer: STARTING IMAP FETCH for thread message UID {message_uid}")
+        
         if not self.current_account_data:
             logging.warning("MessageViewer: No account data available for body fetch")
             return
-        
-        message_uid = message.get("uid")
+
         if not message_uid:
             logging.warning("MessageViewer: No UID found for message, skipping body fetch")
             return
@@ -296,8 +370,11 @@ class MessageViewer:
         folder = message.get("folder")
         account_id = message.get("account_id")
         
+        logging.debug(f"MessageViewer: Database fetch attempt - UID={message_uid}, folder={folder}, account_id={account_id}")
+        
         if not all([message_uid, folder, account_id]):
             logging.warning(f"MessageViewer: Missing required fields for database fetch: UID={message_uid}, folder={folder}, account_id={account_id}")
+            logging.debug(f"MessageViewer: IMAP FETCH REASON: Missing required database fields")
             
             if thread:
                 self.fetch_message_body_for_thread(message, thread)
@@ -308,6 +385,14 @@ class MessageViewer:
         try:
             
             db_message = self.storage.get_message_by_uid(message_uid, folder, account_id)
+            
+            logging.debug(f"MessageViewer: Database lookup result for UID {message_uid}: found={db_message is not None}")
+            if db_message:
+                body_text = db_message.get("body", "")
+                body_html = db_message.get("body_html", "")
+                logging.debug(f"MessageViewer: Database body content - text_length={len(body_text) if body_text else 0}, html_length={len(body_html) if body_html else 0}")
+                has_body = bool((body_text and body_text.strip()) or (body_html and body_html.strip()))
+                logging.debug(f"MessageViewer: Database message has_body={has_body}")
             
             if db_message and self.message_has_body(db_message):
                 logging.info(f"MessageViewer: Found body in database for UID {message_uid}")
@@ -322,6 +407,11 @@ class MessageViewer:
                     
                     self.display_message(message)
             else:
+                if not db_message:
+                    logging.debug(f"MessageViewer: IMAP FETCH REASON: Message UID {message_uid} not found in database")
+                else:
+                    logging.debug(f"MessageViewer: IMAP FETCH REASON: Message UID {message_uid} found in database but has empty body (body_length={len(db_message.get('body', ''))}, html_length={len(db_message.get('body_html', ''))})")
+                
                 logging.debug(f"MessageViewer: No body found in database for UID {message_uid}, fetching from IMAP")
                 
                 if thread:
@@ -331,6 +421,7 @@ class MessageViewer:
                     
         except Exception as e:
             logging.error(f"MessageViewer: Error fetching from database for UID {message_uid}: {e}")
+            logging.debug(f"MessageViewer: IMAP FETCH REASON: Database error - {type(e).__name__}: {str(e)}")
             
             if thread:
                 self.fetch_message_body_for_thread(message, thread)
@@ -339,6 +430,9 @@ class MessageViewer:
 
     def fetch_message_body_from_imap_direct(self, message):
         """Fetch message body directly from IMAP (for single messages)"""
+        message_uid = message.get("uid")
+        logging.debug(f"MessageViewer: STARTING IMAP FETCH for single message UID {message_uid}")
+        
         if not self.current_account_data:
             self.show_error_state("No account data set")
             return
@@ -391,146 +485,50 @@ class MessageViewer:
         )
 
     def display_message(self, message):
-        
-        child = self.content_container.widget.get_first_child()
-        while child:
-            self.content_container.widget.remove(child)
-            child = self.content_container.widget.get_first_child()
-        
-        
+        while self.message_container.get_first_child():
+            self.message_container.remove(self.message_container.get_first_child())
         self.hide_all_states()
         self.current_state = "content"
-        
-        self.content_container.widget.set_valign(Gtk.Align.FILL)
-        self.content_container.widget.set_halign(Gtk.Align.FILL)
-        
-        
+        self.is_showing_thread = False
+        self.current_thread_total = 1  
         if self.content_header:
             self.content_header.set_message_subject(message.get("subject", "(No Subject)"))
-        
-        
-        message_card = self.create_message_card(message)
-        self.content_container.widget.append(message_card)
-    
-    def create_message_card_header(self, message):
-        """Create the card header with avatar, sender email, and shortened date"""
-        header_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        header_container.add_css_class("message-card-header")
-        header_container.set_spacing(12)
-        
-        
-        sender_info = message.get("sender", {})
-        sender_name = sender_info.get("name", "")
-        sender_email = sender_info.get("email", "")
-        
-        
-        initials = self.get_initials(sender_name, sender_email)
-        avatar = Adw.Avatar.new(32, initials, True)
-        avatar.add_css_class("message-avatar")
-        avatar.set_valign(Gtk.Align.CENTER)
-        header_container.append(avatar)
-        
-        
-        sender_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        sender_container.set_hexpand(True)
-        sender_container.set_spacing(2)
-        sender_container.set_valign(Gtk.Align.CENTER)
-        
-        display_name = sender_name if sender_name else sender_email
-        name_label = Gtk.Label(label=display_name)
-        name_label.set_halign(Gtk.Align.START)
-        name_label.set_valign(Gtk.Align.CENTER)
-        name_label.add_css_class("message-card-sender")
-        sender_container.append(name_label)
-        
-        if sender_name and sender_email:
-            email_label = Gtk.Label(label=sender_email)
-            email_label.set_halign(Gtk.Align.START)
-            email_label.set_valign(Gtk.Align.CENTER)
-            email_label.add_css_class("message-card-email")
-            sender_container.append(email_label)
-        
-        header_container.append(sender_container)
-        
-        
-        date_str = message.get("date", "")
-        if date_str:
-            short_date = self.get_shortened_date(date_str)
-            date_label = Gtk.Label(label=short_date)
-            date_label.add_css_class("message-card-date")
-            date_label.set_halign(Gtk.Align.END)
-            date_label.set_valign(Gtk.Align.CENTER)
-            header_container.append(date_label)
-        
-        return header_container
+        message_row = self.create_simple_message_row(message, is_in_thread=False, thread_total=1)
+        self.message_container.append(message_row)
+
        
-    def create_message_card_body(self, message, loading=False):
-        """Create the card body with message content or loading state"""
-        body_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        body_container.add_css_class("message-card-body")
-        
-        
+    def create_message_body_content(self, message, loading=False):
+        """Create the expandable body content for the expander row"""
         body_text = message.get("body", "")
         body_html = message.get("body_html", "")
         
         if body_html or body_text:
+            
             html_viewer = HtmlViewer()
             if body_html:
                 html_viewer.load_html(body_html)
             elif body_text:
                 html_viewer.load_plain_text(body_text)
-            body_container.append(html_viewer.widget)
+            return html_viewer.widget
         elif loading:
             
-            loading_container = self.create_message_body_loading_state()
-            body_container.append(loading_container)
+            loading_row = Adw.ActionRow()
+            loading_row.set_title("Loading...")
+            
+            
+            loading_spinner = Gtk.Spinner()
+            loading_spinner.set_size_request(16, 16)
+            loading_spinner.start()
+            loading_row.add_suffix(loading_spinner)
+            
+            return loading_row
         else:
             
-            no_body_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            no_body_container.set_margin_top(12)
-            no_body_container.set_margin_bottom(12)
-            no_body_container.set_margin_start(12)
-            no_body_container.set_margin_end(12)
-            no_body_container.add_css_class("message-body")
-            
-            no_body_label = AppText(
-                text="(No message body)",
-                class_names="message-no-body",
-                halign=Gtk.Align.CENTER,
-            )
-            no_body_label.set_opacity(0.6)
-            no_body_container.append(no_body_label.widget)
-            body_container.append(no_body_container)
-        
-        return body_container
+            empty_row = Adw.ActionRow()
+            empty_row.set_title("(No message body)")
+            empty_row.add_css_class("dim-label")
+            return empty_row
 
-    def create_message_body_loading_state(self):
-        """Create loading state for message body"""
-        loading_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        loading_container.set_margin_top(12)
-        loading_container.set_margin_bottom(12)
-        loading_container.set_margin_start(12)
-        loading_container.set_margin_end(12)
-        loading_container.set_spacing(8)
-        loading_container.set_halign(Gtk.Align.CENTER)
-        loading_container.add_css_class("message-body-loading")
-        
-        
-        spinner = Gtk.Spinner()
-        spinner.set_size_request(16, 16)
-        spinner.start()
-        loading_container.append(spinner)
-        
-        
-        loading_label = AppText(
-            text="Loading...",
-            class_names="message-body-loading-text",
-            halign=Gtk.Align.CENTER,
-        )
-        loading_label.set_opacity(0.7)
-        loading_container.append(loading_label.widget)
-        
-        return loading_container
     
     def get_initials(self, name, email):
         """Get initials for avatar (max 2 characters)"""
@@ -586,20 +584,11 @@ class MessageViewer:
       
     def show_select_message_state(self):
         self.hide_all_states()
-        
-        child = self.content_container.widget.get_first_child()
-        while child:
-            self.content_container.widget.remove(child)
-            child = self.content_container.widget.get_first_child()
-        
-        
+        while self.message_container.get_first_child():
+            self.message_container.remove(self.message_container.get_first_child())
+        self.is_showing_thread = False
         if self.content_header:
             self.content_header.set_message_subject(None)
-        
-        
-        self.content_container.widget.set_valign(Gtk.Align.CENTER)
-        self.content_container.widget.set_halign(Gtk.Align.CENTER)
-        
         
         state_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         state_container.add_css_class("message-viewer-empty-state")
@@ -609,11 +598,9 @@ class MessageViewer:
         state_container.set_vexpand(True)  
         state_container.set_hexpand(True)
         
-        
         icon = AppIcon("mail-unread-symbolic", class_names="message-viewer-empty-icon")
         icon.set_pixel_size(48)
         icon.set_opacity(0.5)
-        
         
         select_label = AppText(
             text="Select message to view",
@@ -625,13 +612,12 @@ class MessageViewer:
         state_container.append(icon.widget)
         state_container.append(select_label.widget)
         
-        self.content_container.widget.append(state_container)
+        self.message_container.append(state_container)
         self.current_state = "empty"
 
     def show_loading_state(self):
         self.hide_all_states()
-        self.content_container.widget.set_valign(Gtk.Align.CENTER)
-        self.content_container.widget.set_halign(Gtk.Align.CENTER)
+        
         
         
         state_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -639,15 +625,14 @@ class MessageViewer:
         state_container.set_halign(Gtk.Align.CENTER)
         state_container.set_valign(Gtk.Align.CENTER)
         state_container.set_spacing(12)
-        state_container.set_vexpand(True)
-        state_container.set_hexpand(True)
+        
+        
         
         
         spinner = Gtk.Spinner()
         spinner.add_css_class("message-viewer-loading-spinner")
         spinner.set_size_request(32, 32)
         spinner.start()
-        
         
         loading_label = AppText(
             text="Loading...",
@@ -660,7 +645,7 @@ class MessageViewer:
         state_container.append(spinner)
         state_container.append(loading_label.widget)
         
-        self.content_container.widget.append(state_container)
+        self.message_container.append(state_container) 
         self.current_state = "loading"
 
     def show_empty_state(self):
@@ -668,8 +653,7 @@ class MessageViewer:
     
     def show_error_state(self, error_message=None, raw_body=None):
         self.hide_all_states()
-        self.content_container.widget.set_valign(Gtk.Align.CENTER)
-        self.content_container.widget.set_halign(Gtk.Align.CENTER)
+        
         
         
         state_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -677,14 +661,13 @@ class MessageViewer:
         state_container.set_halign(Gtk.Align.CENTER)
         state_container.set_valign(Gtk.Align.CENTER)
         state_container.set_spacing(12)
-        state_container.set_vexpand(True)
-        state_container.set_hexpand(True)
+        
+        
         
         
         icon = AppIcon("dialog-error-symbolic", class_names="message-viewer-error-icon")
         icon.set_pixel_size(48)
         icon.set_opacity(0.5)
-        
         
         if error_message:
             logging.error(f"MessageViewer: Showing error state: {error_message}")
@@ -707,14 +690,14 @@ class MessageViewer:
         state_container.append(icon.widget)
         state_container.append(error_label.widget)
         
-        self.content_container.widget.append(state_container)
+        self.message_container.append(state_container) 
         self.current_state = "error"
     
     def hide_all_states(self):
         if self.current_state == "loading":
-            self.main_container.remove(self.loading_state.widget)
+            self.message_container.remove(self.loading_state.widget) 
         elif self.current_state == "error":
-            self.main_container.remove(self.error_state.widget)
+            self.message_container.remove(self.error_state.widget) 
         self.current_state = None 
 
     def set_content_header(self, content_header):
@@ -727,43 +710,37 @@ class MessageViewer:
             logging.warning(f"MessageViewer: No message card found for UID {message_uid} to update")
             return
             
-        message_card = self.thread_message_cards[message_uid]
-        logging.debug(f"MessageViewer: Updating body for message card UID {message_uid}")
+        
+        is_expanded = self.expanded_messages.get(message_uid, False)
         
         
+        if self.is_showing_thread and not is_expanded:
+            logging.debug(f"MessageViewer: Message UID {message_uid} is collapsed, body loaded but UI not updated")
+            return
+            
+        old_card = self.thread_message_cards[message_uid]
         
         
-        body_child = None
-        child = message_card.get_first_child()
-        while child:
-            if child.has_css_class("message-card-body"):
-                body_child = child
-                break
+        previous_sibling = None
+        child = self.message_container.get_first_child()
+        while child and child != old_card:
+            previous_sibling = child
             child = child.get_next_sibling()
         
-        if body_child:
-            logging.debug(f"MessageViewer: Found existing body child for UID {message_uid}, replacing it")
-            
-            message_card.remove(body_child)
-            
-            
-            
-            new_body = self.create_message_card_body(message)
-            message_card.append(new_body)
-            logging.info(f"MessageViewer: Successfully updated message card body for UID {message_uid}")
+        
+        self.message_container.remove(old_card)
+        
+        
+        new_card = self.create_simple_message_row(message, is_in_thread=self.is_showing_thread, thread_total=self.current_thread_total)
+        
+        
+        if previous_sibling:
+            self.message_container.insert_child_after(new_card, previous_sibling)
         else:
-            logging.warning(f"MessageViewer: Could not find body child in message card for UID {message_uid}")
             
-            child = message_card.get_first_child()
-            child_count = 0
-            while child:
-                child_classes = []
-                
-                try:
-                    css_classes = child.get_css_classes()
-                    child_classes = list(css_classes)
-                except:
-                    child_classes = ["unknown"]
-                logging.debug(f"MessageViewer: Child {child_count} classes: {child_classes}")
-                child = child.get_next_sibling()
-                child_count += 1 
+            self.message_container.prepend(new_card)
+        
+        
+        self.thread_message_cards[message_uid] = new_card
+        
+        logging.info(f"MessageViewer: Successfully updated message card body for UID {message_uid}") 
