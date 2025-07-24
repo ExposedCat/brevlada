@@ -672,3 +672,21 @@ class EmailStorage:
         except Exception as e:
             logging.error(f"EmailStorage: Error updating message body for uid={uid}: {e}")
             raise
+
+    def update_message_read_status(self, uid: int, folder: str, account_id: str, is_read: bool):
+        """Update message read status in database"""
+        logging.debug(f"EmailStorage: Updating read status for UID {uid} to {is_read}")
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE messages 
+                SET is_read = ?, last_sync = ?
+                WHERE uid = ? AND folder = ? AND account_id = ?
+                """,
+                (is_read, datetime.now(), uid, folder, account_id),
+            )
+            
+            if cursor.rowcount > 0:
+                logging.debug(f"EmailStorage: Successfully updated read status for UID {uid}")
+            else:
+                logging.warning(f"EmailStorage: No message found to update for UID {uid}")

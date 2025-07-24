@@ -2,12 +2,15 @@ from utils.toolkit import Gtk, Pango
 from components.ui import AppIcon, AppText
 from theme import MESSAGE_ROW_ICON_GAP, THEME_ROW_GAP, THEME_ROW_VERTICAL_GAP
 from components.container import ContentContainer
+import logging
 
 class MessageRow:
     def __init__(self, message_or_thread):
         self.message_or_thread = message_or_thread
         self.selected_callback = None
         self.read_changed_callback = None
+        self.storage = None
+        self.current_account_data = None
 
         
         self.is_thread = hasattr(message_or_thread, "messages") and hasattr(
@@ -109,14 +112,10 @@ class MessageRow:
         return AppIcon("starred-symbolic").widget
 
     def on_activated(self, row):
-        print(f"MessageRow.on_activated called for: {self.message_or_thread}")
         if self.selected_callback:
             if self.is_thread:
-                
-                print(f"Calling callback with thread: {self.message_or_thread}")
                 self.selected_callback(self.message_or_thread)
             else:
-                print(f"Calling callback with message: {self.message_or_thread}")
                 self.selected_callback(self.message_or_thread)
 
     def get_is_read(self):
@@ -233,84 +232,105 @@ class MessageRow:
         if not self.is_thread:
             if isinstance(self.message_or_thread, dict):
                 self.message_or_thread["is_read"] = True
+                
+                if self.storage and self.current_account_data:
+                    uid = self.message_or_thread.get("uid")
+                    folder = self.message_or_thread.get("folder")
+                    account_id = self.current_account_data.get("email")
+                    
+                    if uid and folder and account_id:
+                        try:
+                            self.storage.update_message_read_status(uid, folder, account_id, True)
+                            
+                            from utils.mail import mark_message_as_read_on_imap
+                            def on_imap_update(error, result):
+                                if error:
+                                    logging.error(f"MessageRow: IMAP update failed: {error}")
+                                else:
+                                    logging.debug(f"MessageRow: IMAP update successful: {result}")
+                            
+                            mark_message_as_read_on_imap(self.current_account_data, folder, uid, on_imap_update)
+                        except Exception as e:
+                            logging.error(f"MessageRow: Storage/IMAP update failed: {e}")
+                    else:
+                        logging.warning(f"MessageRow: Missing required data for storage update - UID: {uid}, folder: {folder}, account: {account_id}")
+                else:
+                    logging.warning(f"MessageRow: No storage or account data available")
             else:
                 self.message_or_thread.is_read = True
 
+        # Update visual elements
         self.container.remove_css_class("message-row-unread")
         self.sender_label.widget.remove_css_class("message-row-sender-unread")
         self.subject_label.widget.remove_css_class("message-row-subject-unread")
 
-        self.container.remove(self.read_indicator)
+        self.left_container.remove(self.read_indicator)
         self.read_indicator = self.create_read_indicator()
-        self.container.prepend(self.read_indicator)
+        self.left_container.prepend(self.read_indicator)
 
         if self.read_changed_callback:
-            self.read_changed_callback(self.message)
-
-    def mark_as_unread(self):
-        if not self.message.is_read:
-            return
-
-        self.message.is_read = False
-
-        self.container.add_css_class("message-row-unread")
-        self.sender_label.widget.add_css_class("message-row-sender-unread")
-        self.subject_label.widget.add_css_class("message-row-subject-unread")
-
-        self.container.remove(self.read_indicator)
-        self.read_indicator = self.create_read_indicator()
-        self.container.prepend(self.read_indicator)
-
-        if self.read_changed_callback:
-            self.read_changed_callback(self.message)
+            self.read_changed_callback(self.message_or_thread)
 
     def toggle_flag(self):
-        self.message.is_flagged = not self.message.is_flagged
+        if not self.is_thread:
+            if isinstance(self.message_or_thread, dict):
+                self.message_or_thread["is_flagged"] = not self.message_or_thread.get("is_flagged", False)
+            else:
+                self.message_or_thread.is_flagged = not self.message_or_thread.is_flagged
 
-        if self.message.is_flagged:
-            if not hasattr(self, "flag_indicator"):
-                self.flag_indicator = self.create_flag_indicator()
-                self.container.append(self.flag_indicator)
-        else:
-            if hasattr(self, "flag_indicator"):
-                self.container.remove(self.flag_indicator)
-                delattr(self, "flag_indicator")
+            if self.get_is_flagged():
+                if not hasattr(self, "flag_indicator"):
+                    self.flag_indicator = self.create_flag_indicator()
+                    self.flag_indicator.add_css_class("message-row-flag-icon")
+                    self.icons_container.append(self.flag_indicator)
+            else:
+                if hasattr(self, "flag_indicator"):
+                    self.icons_container.remove(self.flag_indicator)
+                    delattr(self, "flag_indicator")
 
     def update_display(self):
-        self.sender_label.set_text_content(self.message.get_display_sender())
-        self.subject_label.set_text_content(self.message.get_display_subject())
-        self.date_label.set_text_content(self.message.get_display_date())
+        if self.is_thread:
+            return
+            
+        if isinstance(self.message_or_thread, dict):
+            self.sender_label.set_text_content(self.get_display_sender())
+            self.subject_label.set_text_content(self.get_display_subject())
+            self.date_label.set_text_content(self.get_display_date())
 
-        if not self.message.is_read:
-            self.container.add_css_class("message-row-unread")
-            self.sender_label.widget.add_css_class("message-row-sender-unread")
-            self.subject_label.widget.add_css_class("message-row-subject-unread")
-        else:
-            self.container.remove_css_class("message-row-unread")
-            self.sender_label.widget.remove_css_class("message-row-sender-unread")
-            self.subject_label.widget.remove_css_class("message-row-subject-unread")
+            if not self.get_is_read():
+                self.container.add_css_class("message-row-unread")
+                self.sender_label.widget.add_css_class("message-row-sender-unread")
+                self.subject_label.widget.add_css_class("message-row-subject-unread")
+            else:
+                self.container.remove_css_class("message-row-unread")
+                self.sender_label.widget.remove_css_class("message-row-sender-unread")
+                self.subject_label.widget.remove_css_class("message-row-subject-unread")
 
-        self.container.remove(self.read_indicator)
-        self.read_indicator = self.create_read_indicator()
-        self.container.prepend(self.read_indicator)
+            self.left_container.remove(self.read_indicator)
+            self.read_indicator = self.create_read_indicator()
+            self.left_container.prepend(self.read_indicator)
 
-        if self.message.get_attachment_count() > 0:
-            if not hasattr(self, "attachment_indicator"):
-                self.attachment_indicator = self.create_attachment_indicator()
-                self.container.append(self.attachment_indicator)
-        else:
-            if hasattr(self, "attachment_indicator"):
-                self.container.remove(self.attachment_indicator)
-                delattr(self, "attachment_indicator")
+            if self.get_attachment_count() > 0:
+                if not hasattr(self, "attachment_indicator"):
+                    self.attachment_indicator = self.create_attachment_indicator()
+                    self.icons_container.append(self.attachment_indicator)
+            else:
+                if hasattr(self, "attachment_indicator"):
+                    self.icons_container.remove(self.attachment_indicator)
+                    delattr(self, "attachment_indicator")
 
     def get_message(self):
-        return self.message
+        return self.message_or_thread
 
     def connect_selected(self, callback):
         self.selected_callback = callback
 
     def connect_read_changed(self, callback):
         self.read_changed_callback = callback
+
+    def set_storage_and_account(self, storage, account_data):
+        self.storage = storage
+        self.current_account_data = account_data
 
     def set_selected(self, selected):
         if selected:

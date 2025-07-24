@@ -10,17 +10,20 @@ from utils.mail import fetch_message_body_from_imap
 from theme import THEME_MARGIN_MEDIUM, THEME_MARGIN_LARGE
 
 class MessageViewer:
-    def __init__(self, storage, imap_backend):
+    def __init__(self, storage, parent=None):
         self.storage = storage
-        self.imap_backend = imap_backend
-        self.current_message = None
         self.current_account_data = None
+        self.current_thread = None
+        self.current_message = None
         self.body_fetch_id = 0
-        self.current_state = None
-        self.content_header = None
+        self.current_state = "placeholder"
         self.is_showing_thread = False
-        self.expanded_messages = {}  
-        
+        self.current_thread_total = 0
+        self.thread_message_cards = {}
+        self.expanded_messages = set()
+        self.content_header = None
+        self.on_read_status_changed = None  # Callback for when read status changes
+
         self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.widget.set_vexpand(True)
         self.widget.set_hexpand(True)
@@ -89,7 +92,11 @@ class MessageViewer:
     
     def set_account_data(self, account_data):
         self.current_account_data = account_data
-    
+
+    def set_read_status_callback(self, callback):
+        """Set callback to be called when a message read status changes"""
+        self.on_read_status_changed = callback
+
     def show_message(self, message_or_thread):
         
         
@@ -146,6 +153,9 @@ class MessageViewer:
         self.thread_message_cards = {}
         self.expanded_messages.clear()  
         
+        # Track which messages should be expanded
+        unread_expanded_count = 0
+        
         for i, message in enumerate(thread.messages):
             logging.debug(f"MessageViewer: Creating card for message {i+1}: UID={message.get('uid')}, has_body={self.message_has_body(message)}")
             
@@ -153,8 +163,10 @@ class MessageViewer:
             
             is_unread = not message.get("is_read", True)  
             if is_unread and message_uid:
-                self.expanded_messages[message_uid] = True
+                self.expanded_messages.add(message_uid)
+                unread_expanded_count += 1
                 logging.debug(f"MessageViewer: Auto-expanding unread message UID {message_uid}")
+                self._mark_message_as_read_if_needed(message)
             message_row = self.create_simple_message_row(message, is_in_thread=True, thread_total=len(thread.messages))
             self.message_container.append(message_row)
             message_uid = message.get("uid")
@@ -165,7 +177,27 @@ class MessageViewer:
                 self.fetch_message_body_smart(message, thread)
             else:
                 logging.debug(f"MessageViewer: Message UID {message_uid} already has body")
-        logging.info(f"MessageViewer: Thread display complete, {len(thread.messages)} cards created")
+        
+        # If no unread messages were expanded, expand the last message
+        if unread_expanded_count == 0 and len(thread.messages) > 0:
+            last_message = thread.messages[-1]
+            last_message_uid = last_message.get("uid")
+            if last_message_uid:
+                self.expanded_messages.add(last_message_uid)
+                logging.debug(f"MessageViewer: No unread messages found, auto-expanding last message UID {last_message_uid}")
+                # Re-create the last message card to show it expanded
+                if last_message_uid in self.thread_message_cards:
+                    old_card = self.thread_message_cards[last_message_uid]
+                    self.message_container.remove(old_card)
+                    new_card = self.create_simple_message_row(last_message, is_in_thread=True, thread_total=len(thread.messages))
+                    self.message_container.append(new_card)
+                    self.thread_message_cards[last_message_uid] = new_card
+                    
+                    # Fetch body if needed
+                    if not self.message_has_body(last_message):
+                        self.fetch_message_body_smart(last_message, thread)
+        
+        logging.info(f"MessageViewer: Thread display complete, {len(thread.messages)} cards created, {len(self.expanded_messages)} messages expanded")
 
     def create_simple_message_row(self, message, is_in_thread=False, thread_total=None):
         message_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -192,7 +224,7 @@ class MessageViewer:
             expand_button.widget.set_margin_bottom(6)  
             expand_button.widget.set_valign(Gtk.Align.CENTER)  
             message_uid = message.get("uid")
-            is_expanded = self.expanded_messages.get(message_uid, False)
+            is_expanded = message_uid in self.expanded_messages
             expand_button.set_icon_name("pan-down-symbolic" if is_expanded else "pan-end-symbolic")
             expand_button.connect("clicked", self.on_message_expand_clicked, message, message_container, expand_button)
             header_container.append(expand_button.widget)
@@ -238,7 +270,7 @@ class MessageViewer:
         else:
             
             message_uid = message.get("uid")
-            is_expanded = self.expanded_messages.get(message_uid, False)
+            is_expanded = message_uid in self.expanded_messages
             if is_expanded:
                 loading = not self.message_has_body(message)
                 body_content = self.create_message_body_content(message, loading=loading)
@@ -253,8 +285,8 @@ class MessageViewer:
             return
             
         
-        is_expanded = self.expanded_messages.get(message_uid, False)
-        self.expanded_messages[message_uid] = not is_expanded
+        is_expanded = message_uid in self.expanded_messages
+        self.expanded_messages.add(message_uid) if not is_expanded else self.expanded_messages.discard(message_uid)
         
         
         if is_expanded:
@@ -493,10 +525,41 @@ class MessageViewer:
         self.current_thread_total = 1  
         if self.content_header:
             self.content_header.set_message_subject(message.get("subject", "(No Subject)"))
+        
+        self._mark_message_as_read_if_needed(message)
+        
         message_row = self.create_simple_message_row(message, is_in_thread=False, thread_total=1)
         self.message_container.append(message_row)
 
-       
+    def _mark_message_as_read_if_needed(self, message):
+        """Mark message as read if it's unread"""
+        if not message.get("is_read", True) and self.current_account_data:
+            uid = message.get("uid")
+            folder = message.get("folder")
+            account_id = self.current_account_data.get("email")
+            
+            if uid and folder and account_id:
+                message["is_read"] = True
+                
+                try:
+                    self.storage.update_message_read_status(uid, folder, account_id, True)
+                    logging.debug(f"MessageViewer: Updated read status in database for UID {uid}")
+                    
+                    # Notify message list that read status changed
+                    if self.on_read_status_changed:
+                        self.on_read_status_changed(message)
+                    
+                    from utils.mail import mark_message_as_read_on_imap
+                    def on_imap_update(error, result):
+                        if error:
+                            logging.error(f"MessageViewer: IMAP update failed for UID {uid}: {error}")
+                        else:
+                            logging.debug(f"MessageViewer: IMAP update successful for UID {uid}: {result}")
+                    
+                    mark_message_as_read_on_imap(self.current_account_data, folder, uid, on_imap_update)
+                except Exception as e:
+                    logging.error(f"MessageViewer: Error updating read status for UID {uid}: {e}")
+
     def create_message_body_content(self, message, loading=False):
         """Create the expandable body content for the expander row"""
         body_text = message.get("body", "")
@@ -711,7 +774,7 @@ class MessageViewer:
             return
             
         
-        is_expanded = self.expanded_messages.get(message_uid, False)
+        is_expanded = message_uid in self.expanded_messages
         
         
         if self.is_showing_thread and not is_expanded:

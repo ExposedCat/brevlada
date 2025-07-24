@@ -761,3 +761,77 @@ def fetch_message_body_from_imap(account_data, folder_name, uid, callback):
     thread = threading.Thread(target=fetch_body)
     thread.daemon = True
     thread.start()
+
+def mark_message_as_read_on_imap(account_data, folder_name, uid, callback):
+    """Mark a message as read on the IMAP server"""
+    logging.debug(f"Starting to mark message UID {uid} as read on IMAP server in folder {folder_name}")
+    
+    def mark_read():
+        try:
+            email = account_data["email"]
+            logging.info(f"Marking message UID {uid} as read on IMAP server in folder '{folder_name}'")
+            
+            mail_settings = get_mail_settings(account_data)
+            if not mail_settings:
+                error_msg = "Error: Could not get mail settings"
+                logging.error(f"No mail settings for account: {email}")
+                GLib.idle_add(callback, error_msg, None)
+                return
+            
+            success, result = handle_imap_operation_with_retry(
+                account_data,
+                mail_settings,
+                _mark_message_read_operation,
+                folder_name,
+                uid,
+                email
+            )
+            
+            if success:
+                GLib.idle_add(callback, None, "Message marked as read")
+            else:
+                error_msg = f"Error: {result}"
+                GLib.idle_add(callback, error_msg, None)
+                
+        except Exception as e:
+            logging.error(f"Failed to mark message UID {uid} as read: {e}")
+            error_msg = "Error: Failed to connect to mail server"
+            GLib.idle_add(callback, error_msg, None)
+
+    logging.debug(f"Starting thread to mark message UID {uid} as read")
+    thread = threading.Thread(target=mark_read)
+    thread.daemon = True
+    thread.start()
+
+def _mark_message_read_operation(mail, folder_name, uid, email):
+    """Internal operation function for marking message as read"""
+    logging.debug(f"Marking message UID {uid} as read in folder '{folder_name}'")
+    
+    try:
+        if (
+            " " in folder_name
+            or "[" in folder_name
+            or "]" in folder_name
+            or "/" in folder_name
+        ):
+            quoted_folder = f'"{folder_name}"'
+            status, data = mail.select(quoted_folder)
+        else:
+            status, data = mail.select(folder_name)
+        
+        if status != "OK":
+            return False, f"Could not select folder '{folder_name}': status={status}"
+        
+        status, data = mail.uid("STORE", str(uid), "+FLAGS", "\\Seen")
+        if status != "OK":
+            return False, f"Could not mark message as read: {data}"
+        
+        logging.debug(f"Successfully marked UID {uid} as read on IMAP server")
+        return True, "Message marked as read"
+            
+    except Exception as e:
+        error_str = str(e)
+        if "unexpected response" in error_str.lower() or "command" in error_str.lower():
+            raise
+        else:
+            return False, f"Error marking message as read: {error_str}"

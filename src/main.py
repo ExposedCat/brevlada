@@ -127,6 +127,9 @@ class MyWindow(Adw.ApplicationWindow):
         self.message_list.connect_message_selected(self.on_message_selected)
         self.message_list.set_header(self.message_list_header)
 
+        # Wire up read status change callback from viewer to list
+        self.message_viewer.set_read_status_callback(self.on_message_read_status_changed)
+
         
         from components.ui import SearchBox
         self.search_box = SearchBox(placeholder="Search messages", class_names="message-list-search-box")
@@ -258,7 +261,13 @@ class MyWindow(Adw.ApplicationWindow):
                 f"Refreshing messages for {self.current_account['email']} - {self.current_folder}"
             )
             self.message_list.refresh_messages()
-        
+
+    def on_message_read_status_changed(self, message):
+        """Handle when a message read status changes in the viewer"""
+        logging.debug(f"Main: Message read status changed for UID {message.get('uid')}")
+        # Trigger a re-render of the message list to update read status indicators
+        self.message_list.refresh_message_display()
+
 
 class MyApp(Adw.Application):
     def __init__(self):

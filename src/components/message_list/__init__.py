@@ -66,6 +66,7 @@ class MessageList:
         self.current_account_data = account_data
         self.loader.set_account_data(account_data)
         self.sync_handler.set_account_data(account_data)
+        self.renderer.set_storage_and_account(self.storage, account_data)
 
     def load_messages(self, force_refresh=False):
         if not self.current_folder:
@@ -151,6 +152,12 @@ class MessageList:
     def refresh_messages(self):
         logging.info("MessageList: Force refreshing messages from IMAP")
         self.load_messages(force_refresh=True)
+
+    def refresh_message_display(self):
+        """Refresh the UI display of messages without reloading data"""
+        logging.debug("MessageList: Refreshing message display UI")
+        if self.messages:
+            self.apply_search_filter()
         
     def on_search_changed(self, search_text):
         self.search.set_search_text(search_text)

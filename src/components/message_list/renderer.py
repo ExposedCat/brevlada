@@ -9,6 +9,12 @@ class MessageRenderer:
         self.message_row_instances = {}
         self.threading_enabled = True
         self._restoring_selection = False
+        self.storage = None
+        self.current_account_data = None
+
+    def set_storage_and_account(self, storage, account_data):
+        self.storage = storage
+        self.current_account_data = account_data
 
     def clear_list(self):
         self.message_row_instances.clear()
@@ -48,6 +54,8 @@ class MessageRenderer:
             for i, thread in enumerate(threads):
                 logging.debug(f"MessageRenderer: Creating thread row {i+1}/{len(threads)} with {len(thread.messages)} messages")
                 thread_row = MessageRow(thread)
+                if self.storage and self.current_account_data:
+                    thread_row.set_storage_and_account(self.storage, self.current_account_data)
                 if on_row_selected_callback:
                     thread_row.connect_selected(on_row_selected_callback)
                 self.message_row_instances[thread_row.widget] = thread_row
@@ -64,6 +72,8 @@ class MessageRenderer:
             for i, message in enumerate(messages):
                 logging.debug(f"MessageRenderer: Creating message row {i+1}/{len(messages)}")
                 message_row = MessageRow(message)
+                if self.storage and self.current_account_data:
+                    message_row.set_storage_and_account(self.storage, self.current_account_data)
                 if on_row_selected_callback:
                     message_row.connect_selected(on_row_selected_callback)
                 self.message_row_instances[message_row.widget] = message_row
