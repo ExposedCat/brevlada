@@ -17,12 +17,11 @@ class SidebarHeader:
         self.widget.add_css_class("sidebar-header")
 
 class ContentHeader:
-    def __init__(self, title="Online Accounts", subtitle="Select an account"):
+    def __init__(self, title=""):
         self.widget = Adw.HeaderBar()
 
         self.window_title = Adw.WindowTitle()
         self.window_title.set_title(title)
-        self.window_title.set_subtitle(subtitle)
 
         self.widget.set_title_widget(self.window_title)
         self.widget.set_centering_policy(Adw.CenteringPolicy.STRICT)
@@ -33,10 +32,8 @@ class ContentHeader:
         """Update header to show message subject"""
         if subject:
             self.window_title.set_title(subject)
-            self.window_title.set_subtitle("Message")
         else:
             self.window_title.set_title("Online Accounts")
-            self.window_title.set_subtitle("Select an account")
 
 class MessageListHeader:
     def __init__(self, title="Messages", width=400):
