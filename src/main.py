@@ -4,7 +4,7 @@ import logging
 import atexit
 from components.sidebar import AccountsSidebar
 from components.container import ScrollContainer, ContentContainer
-from components.ui import AppIcon, AppText
+from components.ui import AppIcon, AppText, AppPaned, AppBox, AppScrolledWindow, AppLabel, SearchBox
 from components.header import (
     UnifiedHeader,
     SidebarHeader,
@@ -54,30 +54,17 @@ class MyWindow(Adw.ApplicationWindow):
         self.content_header = ContentHeader()
 
         
-        self.sidebar_wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.sidebar_wrapper.add_css_class("sidebar-wrapper")
+        self.sidebar_wrapper = AppBox(orientation=Gtk.Orientation.VERTICAL, class_names="sidebar-wrapper")
 
-        self.message_list_wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.message_list_wrapper.add_css_class("message-list-wrapper")
+        self.message_list_wrapper = AppBox(orientation=Gtk.Orientation.VERTICAL, class_names="message-list-wrapper")
 
-        self.content_wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.content_wrapper.add_css_class("content-wrapper")
+        self.content_wrapper = AppBox(orientation=Gtk.Orientation.VERTICAL, class_names="content-wrapper")
 
-        self.main_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.main_paned.set_position(300)
-        self.main_paned.set_wide_handle(False)
-        self.main_paned.set_vexpand(True)
-        self.main_paned.set_hexpand(True)
-        self.main_paned.connect("notify::position", self.on_main_paned_position_changed)
+        self.main_paned = AppPaned(orientation=Gtk.Orientation.HORIZONTAL, position=300, wide_handle=False)
+        self.main_paned.connect_position_changed(self.on_main_paned_position_changed)
 
-        self.content_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.content_paned.set_position(400)
-        self.content_paned.set_wide_handle(False)
-        self.content_paned.set_vexpand(True)
-        self.content_paned.set_hexpand(True)
-        self.content_paned.connect(
-            "notify::position", self.on_content_paned_position_changed
-        )
+        self.content_paned = AppPaned(orientation=Gtk.Orientation.HORIZONTAL, position=400, wide_handle=False)
+        self.content_paned.connect_position_changed(self.on_content_paned_position_changed)
 
         css_provider = Gtk.CssProvider()
         css_file = os.path.join(os.path.dirname(__file__), "style.css")
@@ -127,11 +114,10 @@ class MyWindow(Adw.ApplicationWindow):
         self.message_list.connect_message_selected(self.on_message_selected)
         self.message_list.set_header(self.message_list_header)
 
-        # Wire up read status change callback from viewer to list
+        
         self.message_viewer.set_read_status_callback(self.on_message_read_status_changed)
 
         
-        from components.ui import SearchBox
         self.search_box = SearchBox(placeholder="Search messages", class_names="message-list-search-box")
         self.search_box.connect_search_changed(self.message_list.on_search_changed)
 
@@ -153,31 +139,30 @@ class MyWindow(Adw.ApplicationWindow):
         self.sidebar_wrapper.append(self.sidebar.widget)
 
         
-        message_list_scroll = Gtk.ScrolledWindow()
-        message_list_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        message_list_scroll = AppScrolledWindow(h_policy=Gtk.PolicyType.NEVER, v_policy=Gtk.PolicyType.AUTOMATIC)
         message_list_scroll.set_vexpand(True)
         message_list_scroll.set_hexpand(True)
         message_list_scroll.set_child(self.message_list.widget)
 
         self.message_list_wrapper.append(self.message_list_header.widget)
         self.message_list_wrapper.append(self.search_box.widget)
-        self.message_list_wrapper.append(message_list_scroll)
+        self.message_list_wrapper.append(message_list_scroll.widget)
 
         self.content_wrapper.append(self.content_header.widget)
         self.content_wrapper.append(content_scroll.widget)
 
         
-        self.main_paned.set_start_child(self.sidebar_wrapper)
-        self.main_paned.set_end_child(self.content_paned)
+        self.main_paned.set_start_child(self.sidebar_wrapper.widget)
+        self.main_paned.set_end_child(self.content_paned.widget)
         self.main_paned.set_resize_start_child(True)
         self.main_paned.set_shrink_start_child(False)
 
-        self.content_paned.set_start_child(self.message_list_wrapper)
-        self.content_paned.set_end_child(self.content_wrapper)
+        self.content_paned.set_start_child(self.message_list_wrapper.widget)
+        self.content_paned.set_end_child(self.content_wrapper.widget)
         self.content_paned.set_resize_start_child(True)
         self.content_paned.set_shrink_start_child(False)
 
-        self.toolbar_view.set_content(self.main_paned)
+        self.toolbar_view.set_content(self.main_paned.widget)
 
         self.set_content(self.toolbar_view)
 
@@ -193,7 +178,7 @@ class MyWindow(Adw.ApplicationWindow):
             self.message_viewer.widget.set_visible(True)
             self.content_header.window_title.set_subtitle("Select an account")
             self.message_list_header.widget.set_title_widget(
-                Gtk.Label(label="Messages")
+                AppLabel(text="Messages").widget
             )
             self.message_list.set_account_data(None)
             self.message_list.set_folder(None)
@@ -215,7 +200,7 @@ class MyWindow(Adw.ApplicationWindow):
             self.content_header.window_title.set_subtitle(account_data["account_name"])
 
             self.message_list_header.widget.set_title_widget(
-                Gtk.Label(label=folder_full_path)
+                AppLabel(text=folder_full_path).widget
             )
             self.message_list.set_account_data(account_data)
             self.message_list.set_folder(folder_full_path)
@@ -237,7 +222,7 @@ class MyWindow(Adw.ApplicationWindow):
         self.content_header.window_title.set_title(account_data["provider"])
         self.content_header.window_title.set_subtitle(account_data["account_name"])
 
-        self.message_list_header.widget.set_title_widget(Gtk.Label(label="INBOX"))
+        self.message_list_header.widget.set_title_widget(AppLabel(text="INBOX").widget)
         self.message_list.set_account_data(account_data)
         self.message_list.set_folder("INBOX")
         self.message_viewer.set_account_data(account_data)
@@ -265,7 +250,7 @@ class MyWindow(Adw.ApplicationWindow):
     def on_message_read_status_changed(self, message):
         """Handle when a message read status changes in the viewer"""
         logging.debug(f"Main: Message read status changed for UID {message.get('uid')}")
-        # Trigger a re-render of the message list to update read status indicators
+        
         self.message_list.refresh_message_display()
 
 

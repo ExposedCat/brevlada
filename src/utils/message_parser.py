@@ -492,8 +492,6 @@ def _process_plain_text_embedded_replies(content: str) -> str:
         is_reply_line = _is_embedded_reply_line(line)
         
         if is_reply_line and not in_reply:
-            # Starting a new embedded reply section
-            # First, close any pending text content
             if text_buffer:
                 text_content = '\n'.join(text_buffer)
                 processed_parts.append(f'<pre>{_escape_html(text_content)}</pre>')
@@ -505,7 +503,6 @@ def _process_plain_text_embedded_replies(content: str) -> str:
             # Continue collecting reply lines
             reply_buffer.append(line)
         elif not is_reply_line and in_reply:
-            # End of reply section
             if reply_buffer:
                 reply_content = '\n'.join(reply_buffer)
                 processed_parts.append(_create_collapsible_reply_section(reply_content))
@@ -513,10 +510,8 @@ def _process_plain_text_embedded_replies(content: str) -> str:
             in_reply = False
             text_buffer.append(line)
         else:
-            # Regular line
             text_buffer.append(line)
     
-    # Handle remaining content
     if in_reply and reply_buffer:
         reply_content = '\n'.join(reply_buffer)
         processed_parts.append(_create_collapsible_reply_section(reply_content))
@@ -528,7 +523,6 @@ def _process_plain_text_embedded_replies(content: str) -> str:
 
 def _process_html_embedded_replies(content: str) -> str:
     """Process embedded replies in HTML content"""
-    # Handle HTML blockquotes
     content = re.sub(
         r'<blockquote[^>]*>(.*?)</blockquote>',
         lambda m: _create_collapsible_html_reply_section(m.group(1)),
@@ -536,14 +530,12 @@ def _process_html_embedded_replies(content: str) -> str:
         flags=re.DOTALL | re.IGNORECASE
     )
     
-    # Handle quoted text in HTML (lines starting with >)
     lines = content.split('\n')
     processed_lines = []
     in_reply = False
     reply_buffer = []
     
     for line in lines:
-        # Check if this line contains quoted text
         if re.search(r'^\s*(&gt;|>)', line.strip()):
             if not in_reply:
                 in_reply = True
@@ -551,7 +543,6 @@ def _process_html_embedded_replies(content: str) -> str:
             else:
                 reply_buffer.append(line)
         elif in_reply:
-            # End of reply section
             if reply_buffer:
                 reply_content = '\n'.join(reply_buffer)
                 processed_lines.append(_create_collapsible_html_reply_section(reply_content))
@@ -561,7 +552,7 @@ def _process_html_embedded_replies(content: str) -> str:
         else:
             processed_lines.append(line)
     
-    # Handle case where content ends with a reply
+    
     if in_reply and reply_buffer:
         reply_content = '\n'.join(reply_buffer)
         processed_lines.append(_create_collapsible_html_reply_section(reply_content))
@@ -580,26 +571,25 @@ def _is_embedded_reply_line(line: str) -> bool:
     """Check if a line is part of an embedded reply"""
     line = line.strip()
     
-    # Empty lines within replies are considered part of the reply
+            
     if not line:
         return False
     
-    # Lines starting with >
+            
     if line.startswith('>'):
         return True
     
-    # Common reply headers patterns
     reply_patterns = [
-        r'^On\s+.+wrote:?\s*$',  # "On [date] [person] wrote:"
+        r'^On\s+.+wrote:?\s*$',  
         r'^-----Original Message-----',
         r'^From:\s+.+',
         r'^Sent:\s+.+',
         r'^To:\s+.+',
         r'^Subject:\s+.+',
-        r'^\d{1,2}/\d{1,2}/\d{2,4}.+wrote:?\s*$',  # Date patterns
-        r'^Le\s+.+a\s+écrit\s*:?\s*$',  # French "Le [date] [person] a écrit:"
-        r'^Am\s+.+schrieb\s+.+:?\s*$',  # German "Am [date] schrieb [person]:"
-        r'^El\s+.+escribió\s*:?\s*$',  # Spanish "El [date] [person] escribió:"
+                    r'^\d{1,2}/\d{1,2}/\d{2,4}.+wrote:?\s*$',  
+            r'^Le\s+.+a\s+écrit\s*:?\s*$',  
+            r'^Am\s+.+schrieb\s+.+:?\s*$',  
+            r'^El\s+.+escribió\s*:?\s*$',  
     ]
     
     for pattern in reply_patterns:
@@ -610,11 +600,11 @@ def _is_embedded_reply_line(line: str) -> bool:
 
 def _create_collapsible_reply_section(reply_content: str) -> str:
     """Create a collapsible section for plain text reply content"""
-    # Extract first meaningful line for the summary
+            
     lines = reply_content.strip().split('\n')
     summary = lines[0] if lines else "Previous message"
     
-    # Clean up the summary
+    
     summary = re.sub(r'^>+\s*', '', summary)
     if not summary.strip():
         summary = "Previous message"
@@ -638,15 +628,15 @@ def _create_collapsible_reply_section(reply_content: str) -> str:
 
 def _create_collapsible_html_reply_section(reply_content: str) -> str:
     """Create a collapsible section for HTML reply content"""
-    # Extract text content for summary
+    
     text_content = re.sub(r'<[^>]+>', ' ', reply_content)
     text_content = re.sub(r'\s+', ' ', text_content).strip()
     
-    # Get first meaningful line
+    
     lines = text_content.split('\n')
     summary = lines[0] if lines else "Previous message"
     
-    # Clean up the summary
+    
     summary = re.sub(r'^>+\s*', '', summary)
     if not summary.strip():
         summary = "Previous message"

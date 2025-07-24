@@ -1,3 +1,31 @@
+searchentry {
+  background: transparent;
+}
+
+searchbar > revealer > box {
+  background: transparent;
+}
+
+.message-list-search-box searchentry {
+  background: transparent;
+}
+
+scrolledwindow {
+    background: none;
+}
+
+row {
+    background: none;
+}
+
+row:hover {
+    background: none;
+}
+
+row:selected {
+    background: none;
+}
+
 .app-icon-margin {
     margin: 0;
 }
@@ -23,4 +51,4 @@
 .error {
     color: var(--error-color);
     font-weight: bold;
-}
+} 
