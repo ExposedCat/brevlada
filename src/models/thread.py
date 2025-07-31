@@ -65,7 +65,7 @@ class MessageThread:
             self.is_flagged = True
 
         
-        self.messages.sort(key=lambda m: self._get_date_for_sort(m))
+        self.messages.sort(key=lambda m: (not self._get_attr(m, "is_read", True), self._get_date_for_sort(m)))
 
     def get_display_subject(self) -> str:
         """Get subject for display in thread list"""

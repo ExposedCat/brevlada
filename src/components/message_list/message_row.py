@@ -49,17 +49,13 @@ class MessageRow:
             sender_container.append(self.thread_count_badge)
         
         
-        sender_classes = ["heading"]
-        if not self.get_is_read():
-            sender_classes.append("message-row-sender-unread")
-        
-        self.sender_label = AppText(self.get_display_sender(), class_names=sender_classes)
+        self.sender_label = AppText(self.get_display_sender(), class_names=["heading", "message-row-sender"])
         sender_container.append(self.sender_label.widget)
 
         self.content_container.append(sender_container)
 
         self.subject_label = AppText(
-            self.get_display_subject(), class_names="dim-label"
+            self.get_display_subject(), class_names=["dim-label"]
         )
         self.subject_label.widget.add_css_class("message-row-subject-label")
         self.content_container.append(self.subject_label.widget)
@@ -96,6 +92,8 @@ class MessageRow:
 
         self.widget.set_child(self.container)
         self.widget.connect("activate", self.on_activated)
+            
+        self.update_display()
 
     def create_read_indicator(self):
         if self.get_is_read():
@@ -209,15 +207,18 @@ class MessageRow:
         else:
             return 1
 
+    def get_unread_count(self):
+        if self.is_thread:
+            return self.message_or_thread.get_unread_count()
+        else:
+            return 0 if self.get_is_read() else 1
+
     def create_thread_count_badge(self):
         """Create a circular badge showing thread message count"""
         count = self.get_message_count()
 
-        
         badge_label = Gtk.Label(label=str(count))
         badge_label.add_css_class("thread-count-badge-label")
-        
-
         
         badge_box = Gtk.Box()
         badge_box.append(badge_label)
@@ -259,14 +260,7 @@ class MessageRow:
             else:
                 self.message_or_thread.is_read = True
 
-        # Update visual elements
-        self.container.remove_css_class("message-row-unread")
-        self.sender_label.widget.remove_css_class("message-row-sender-unread")
-        self.subject_label.widget.remove_css_class("message-row-subject-unread")
-
-        self.left_container.remove(self.read_indicator)
-        self.read_indicator = self.create_read_indicator()
-        self.left_container.prepend(self.read_indicator)
+        self.update_display()
 
         if self.read_changed_callback:
             self.read_changed_callback(self.message_or_thread)
@@ -289,23 +283,23 @@ class MessageRow:
                     delattr(self, "flag_indicator")
 
     def update_display(self):
-        if self.is_thread:
-            return
-            
-        if isinstance(self.message_or_thread, dict):
+        if not self.is_thread and isinstance(self.message_or_thread, dict):
             self.sender_label.set_text_content(self.get_display_sender())
             self.subject_label.set_text_content(self.get_display_subject())
             self.date_label.set_text_content(self.get_display_date())
 
-            if not self.get_is_read():
-                self.container.add_css_class("message-row-unread")
-                self.sender_label.widget.add_css_class("message-row-sender-unread")
-                self.subject_label.widget.add_css_class("message-row-subject-unread")
-            else:
-                self.container.remove_css_class("message-row-unread")
-                self.sender_label.widget.remove_css_class("message-row-sender-unread")
-                self.subject_label.widget.remove_css_class("message-row-subject-unread")
+        is_unread = self.get_unread_count() > 0 if self.is_thread else not self.get_is_read()
+        
+        if is_unread:
+            self.container.add_css_class("message-row-unread")
+            self.sender_label.widget.add_css_class("message-row-sender-unread")
+            self.subject_label.widget.add_css_class("message-row-subject-unread")
+        else:
+            self.container.remove_css_class("message-row-unread")
+            self.sender_label.widget.remove_css_class("message-row-sender-unread")
+            self.subject_label.widget.remove_css_class("message-row-subject-unread")
 
+        if not self.is_thread:
             self.left_container.remove(self.read_indicator)
             self.read_indicator = self.create_read_indicator()
             self.left_container.prepend(self.read_indicator)

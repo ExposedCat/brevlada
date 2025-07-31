@@ -22,7 +22,7 @@ def group_messages_into_threads(
             threads.append(thread)
 
     
-    threads.sort(key=lambda t: t.latest_date or datetime.min, reverse=True)
+    threads.sort(key=lambda t: (t.unread_count > 0, t.latest_date or datetime.min), reverse=True)
 
     return threads
 

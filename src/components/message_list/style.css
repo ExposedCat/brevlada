@@ -75,12 +75,12 @@ toolbarview > * {
 }
 
 .message-row-sender {
+    font-weight: normal;
     color: var(--color-text);
 }
 
 .message-row-sender-unread {
     font-weight: bold;
-    color: var(--color-text);
 }
 
 .message-row-subject {
@@ -90,7 +90,6 @@ toolbarview > * {
 
 .message-row-subject-unread {
     color: var(--color-text);
-    font-weight: 500;
     opacity: 1;
 }
 

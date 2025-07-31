@@ -411,7 +411,7 @@ class EmailStorage:
                     """
                     SELECT * FROM messages
                     WHERE folder = ? AND account_id = ? AND is_deleted = 0
-                    ORDER BY date_sent DESC
+                    ORDER BY is_read DESC, date_sent DESC
                     LIMIT ? OFFSET ?
                 """,
                     (folder, account_id, limit, offset),
@@ -558,7 +558,7 @@ class EmailStorage:
                 SELECT * FROM messages
                 WHERE folder = ? AND account_id = ? AND is_deleted = 0
                 AND (subject LIKE ? OR sender_name LIKE ? OR sender_email LIKE ? OR body_text LIKE ?)
-                ORDER BY date_sent DESC
+                ORDER BY is_read DESC, date_sent DESC
                 LIMIT ?
             """,
                 (
