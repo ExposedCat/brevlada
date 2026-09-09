@@ -6,6 +6,7 @@ use std::{path::PathBuf, sync::mpsc};
 pub enum Command {
     Discover,
     Folders(Account),
+    Unread(Account),
     SyncInbox(Account),
     Load {
         account: Account,
@@ -16,7 +17,10 @@ pub enum Command {
 
 pub enum Event {
     Accounts(Vec<Account>),
+    SidebarReady,
     Folders(String, Vec<String>),
+    Unread(String, Vec<(String, bool)>),
+    UnreadSnapshot(String, Vec<(String, bool)>),
     Messages(u64, Vec<Message>, bool),
     Body(u64, u64, Message),
     BodyError(u64, u64, u32, String),
@@ -34,6 +38,7 @@ pub struct BodyRequest {
 
 pub struct Worker {
     commands: mpsc::Sender<Command>,
+    unread: mpsc::Sender<Command>,
     bodies: super::body_queue::BodyQueue,
 }
 
@@ -42,13 +47,19 @@ impl Worker {
     pub fn disconnected() -> Self {
         let (commands, _) = mpsc::channel();
         Self {
+            unread: commands.clone(),
             commands,
             bodies: super::body_queue::BodyQueue::default(),
         }
     }
 
     pub fn send(&self, command: Command) -> Result<()> {
-        self.commands
+        let sender = if matches!(&command, Command::Unread(_)) {
+            &self.unread
+        } else {
+            &self.commands
+        };
+        sender
             .send(command)
             .map_err(|_| anyhow::anyhow!("Mail service stopped"))
     }
@@ -73,6 +84,25 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     for _ in 0..2 {
         super::body_worker::start(path.clone(), bodies.clone(), events.clone());
     }
+    // A whole-account STATUS scan must never delay interactive folder/message loads.
+    let (unread, unread_receiver) = mpsc::channel();
+    start_commands(path.clone(), unread_receiver, events.clone());
+    start_commands(path, receiver, events);
+    (
+        Worker {
+            commands: sender,
+            unread,
+            bodies,
+        },
+        results,
+    )
+}
+
+fn start_commands(
+    path: PathBuf,
+    receiver: mpsc::Receiver<Command>,
+    events: async_channel::Sender<Event>,
+) {
     std::thread::spawn(move || {
         let mut storage = match Storage::open(&path) {
             Ok(storage) => storage,
@@ -99,13 +129,6 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
             }
         }
     });
-    (
-        Worker {
-            commands: sender,
-            bodies,
-        },
-        results,
-    )
 }
 
 fn execute(
@@ -116,7 +139,19 @@ fn execute(
 ) -> Result<()> {
     match command {
         Command::Discover => {
-            events.send_blocking(Event::Accounts(accounts::discover()?))?;
+            let accounts = accounts::discover()?;
+            events.send_blocking(Event::Accounts(accounts.clone()))?;
+            for account in accounts {
+                events.send_blocking(Event::UnreadSnapshot(
+                    account.email.clone(),
+                    storage.unread(&account.email)?,
+                ))?;
+                let folders = storage.folders(&account.email)?;
+                if !folders.is_empty() {
+                    events.send_blocking(Event::Folders(account.email, folders))?;
+                }
+            }
+            events.send_blocking(Event::SidebarReady)?;
         }
         Command::Folders(account) => {
             let cached = storage.folders(&account.email)?;
@@ -127,10 +162,29 @@ fn execute(
             storage.store_folders(&account.email, &folders)?;
             events.send_blocking(Event::Folders(account.email, folders))?;
         }
+        Command::Unread(account) => {
+            let folders = connections.execute(&account, |mail| mail.folders())?;
+            storage.store_folders(&account.email, &folders)?;
+            events.send_blocking(Event::Folders(account.email.clone(), folders.clone()))?;
+            let mut counts = Vec::new();
+            for folder in folders {
+                let unread = connections.execute(&account, |mail| mail.has_unread(&folder))?;
+                storage.store_unread(&account.email, &folder, unread)?;
+                events.send_blocking(Event::Unread(
+                    account.email.clone(),
+                    vec![(folder.clone(), unread)],
+                ))?;
+                counts.push((folder, unread));
+            }
+            events.send_blocking(Event::UnreadSnapshot(account.email, counts))?;
+        }
         Command::SyncInbox(account) => {
             let (validity, messages, uids) =
                 connections.execute(&account, |mail| mail.headers("INBOX"))?;
             storage.reconcile(&account.email, "INBOX", validity, messages, &uids)?;
+            let unread = connections.execute(&account, |mail| mail.has_unread("INBOX"))?;
+            storage.store_unread(&account.email, "INBOX", unread)?;
+            events.send_blocking(Event::Unread(account.email, vec![("INBOX".into(), unread)]))?;
         }
         Command::Load {
             account,
@@ -150,6 +204,9 @@ fn execute(
                 storage.messages(&account.email, &folder)?,
                 false,
             ))?;
+            let unread = connections.execute(&account, |mail| mail.has_unread(&folder))?;
+            storage.store_unread(&account.email, &folder, unread)?;
+            events.send_blocking(Event::Unread(account.email, vec![(folder, unread)]))?;
         }
     }
     Ok(())

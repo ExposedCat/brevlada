@@ -32,6 +32,8 @@ struct State {
     cards: RefCell<HashMap<u32, ui::viewer::Card>>,
     sidebar: gtk::Box,
     folder_boxes: RefCell<HashMap<String, (Account, gtk::Box)>>,
+    folder_names: RefCell<HashMap<String, Vec<String>>>,
+    unread: RefCell<HashMap<String, ui::sidebar::Unread>>,
     list: gtk::ListBox,
     list_scroll: gtk::ScrolledWindow,
     viewer_scroll: gtk::ScrolledWindow,
@@ -39,6 +41,7 @@ struct State {
     list_stack: gtk::Stack,
     toast: adw::ToastOverlay,
     navigation_selection: ui::sidebar::Selection,
+    expansion: ui::expansion::Expansion,
     refresh: gtk::Button,
     search: gtk::SearchEntry,
     list_title: gtk::Label,
@@ -49,7 +52,7 @@ pub fn create(app: &adw::Application) {
     let shell = ui::shell::Shell::new(app);
     let window = shell.window.clone();
     let (sender, events) = worker::start(glib::user_data_dir().join("brevlada/emails.db"));
-    let state = State::new(shell, sender);
+    let state = State::new(shell, sender, ui::expansion::Expansion::load());
     let weak = Rc::downgrade(&state);
     state.refresh.connect_clicked(move |_| {
         if let Some(state) = weak.upgrade() {
@@ -89,6 +92,9 @@ pub fn create(app: &adw::Application) {
                     state.send(Command::SyncInbox(account.clone()));
                 }
             }
+            for (account, _) in state.folder_boxes.borrow().values() {
+                state.send(Command::Unread(account.clone()));
+            }
         }
         glib::ControlFlow::Continue
     });
@@ -115,7 +121,11 @@ pub fn create(app: &adw::Application) {
 }
 
 impl State {
-    fn new(shell: ui::shell::Shell, sender: worker::Worker) -> Rc<Self> {
+    fn new(
+        shell: ui::shell::Shell,
+        sender: worker::Worker,
+        expansion: ui::expansion::Expansion,
+    ) -> Rc<Self> {
         let ui::shell::Shell {
             window: _,
             sidebar,
@@ -146,6 +156,8 @@ impl State {
             cards: RefCell::new(HashMap::new()),
             sidebar,
             folder_boxes: RefCell::new(HashMap::new()),
+            folder_names: RefCell::new(HashMap::new()),
+            unread: RefCell::new(HashMap::new()),
             list,
             list_scroll,
             viewer_scroll,
@@ -153,6 +165,7 @@ impl State {
             list_stack,
             toast,
             navigation_selection: ui::sidebar::Selection::default(),
+            expansion,
             refresh,
             search,
             list_title,
@@ -177,7 +190,11 @@ mod diagnostics {
         app.register(gtk::gio::Cancellable::NONE).unwrap();
         let shell = ui::shell::Shell::new(&app);
         let window = shell.window.clone();
-        let state = State::new(shell, worker::Worker::disconnected());
+        let state = State::new(
+            shell,
+            worker::Worker::disconnected(),
+            ui::expansion::Expansion::default(),
+        );
         *state.account.borrow_mut() = Some(Account {
             path: String::new(),
             email: "fixture".into(),
@@ -189,6 +206,72 @@ mod diagnostics {
             tls: false,
             oauth2: true,
         });
+        let account = state.account.borrow().clone().unwrap();
+        state.event(Event::Accounts(vec![account]));
+        let account_row = state.sidebar.first_child().unwrap();
+        let expand = account_row
+            .first_child()
+            .unwrap()
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        let folders = state.folder_boxes.borrow()["fixture"].1.clone();
+        expand.emit_clicked();
+        assert!(folders.get_visible());
+        assert_eq!(expand.icon_name().as_deref(), Some("pan-down-symbolic"));
+        assert!(folders.has_css_class("folders-loading"));
+        state.event(Event::Unread(
+            "fixture".into(),
+            vec![("Work/Updates".into(), true)],
+        ));
+        state.event(Event::Folders(
+            "fixture".into(),
+            vec!["Work/Updates".into()],
+        ));
+        assert!(folders.get_visible());
+        assert!(!folders.has_css_class("folders-loading"));
+        let folder_row = folders.first_child().unwrap();
+        assert!(folder_row.get_visible());
+        assert!(folder_row.has_css_class("folder-item"));
+        let folder_button = folder_row
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        folder_button.emit_clicked();
+        let nested = folder_row.last_child().unwrap();
+        assert!(nested.get_visible());
+        // A background scan of an unchanged folder list must preserve expansion.
+        state.event(Event::Folders(
+            "fixture".into(),
+            vec!["Work/Updates".into()],
+        ));
+        assert_eq!(folders.first_child().unwrap(), folder_row);
+        assert!(nested.get_visible());
+        expand.emit_clicked();
+        assert!(!folders.get_visible());
+        state.event(Event::UnreadSnapshot(
+            "fixture".into(),
+            vec![("Work/Updates".into(), false)],
+        ));
+        assert!(!folders.get_visible());
+        expand.emit_clicked();
+        assert!(folders.get_visible());
+        assert_eq!(folders.first_child().unwrap(), folder_row);
+        let account = state.account.borrow().clone().unwrap();
+        state.event(Event::Accounts(vec![account]));
+        let restored_folders = state.folder_boxes.borrow()["fixture"].1.clone();
+        assert!(restored_folders.get_visible());
+        assert!(restored_folders.has_css_class("folders-loading"));
+        state.event(Event::Folders(
+            "fixture".into(),
+            vec!["Work/Updates".into(), "Work/Projects".into()],
+        ));
+        let restored_work = restored_folders.first_child().unwrap();
+        assert!(restored_work.last_child().unwrap().get_visible());
+        assert!(state.expansion.for_account("fixture").is_expanded(""));
+        assert!(state.expansion.for_account("fixture").is_expanded("Work"));
         let first = Message {
             uid: 1,
             subject: "First".into(),

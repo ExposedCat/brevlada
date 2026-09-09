@@ -1,9 +1,11 @@
 mod body;
 mod body_layout;
 mod display;
+pub mod expansion;
 pub mod folders;
 mod html;
 mod message_row;
+mod pane_state;
 pub mod scroll_position;
 pub mod shell;
 pub mod sidebar;
@@ -68,7 +70,9 @@ pub fn pane(
         .end_child(right)
         .position(position)
         .resize_start_child(true)
+        .resize_end_child(true)
         .shrink_start_child(false)
+        .shrink_end_child(false)
         .wide_handle(false)
         .build()
 }

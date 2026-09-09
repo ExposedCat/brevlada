@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use imap::{Authenticator, Session};
 use native_tls::{TlsConnector, TlsStream};
 use std::{
+    io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},
     time::Duration,
 };
@@ -100,6 +101,10 @@ impl Mail {
         Ok(names)
     }
 
+    pub fn has_unread(&mut self, folder: &str) -> Result<bool> {
+        has_unread(&mut self.session, folder)
+    }
+
     pub fn headers(&mut self, folder: &str) -> Result<(u32, Vec<Message>, Vec<u32>)> {
         let mailbox = self.session.select(folder)?;
         let validity = mailbox
@@ -165,5 +170,86 @@ impl Mail {
 impl Drop for Mail {
     fn drop(&mut self) {
         let _ = self.session.logout();
+    }
+}
+
+fn has_unread<T: Read + Write>(session: &mut Session<T>, folder: &str) -> Result<bool> {
+    use imap::types::{StatusAttribute, UnsolicitedResponse};
+
+    // imap 2.4 routes STATUS attributes through unsolicited_responses; the
+    // returned Mailbox.unseen is only populated by SELECT/EXAMINE response codes.
+    // Discard earlier notifications so only this request can supply the count.
+    for _ in session.unsolicited_responses.try_iter() {}
+    session.status(folder, "(UNSEEN)")?;
+    let mut count = None;
+    for response in session.unsolicited_responses.try_iter() {
+        if let UnsolicitedResponse::Status {
+            mailbox,
+            attributes,
+        } = response
+            && (mailbox == folder
+                || (mailbox.eq_ignore_ascii_case("INBOX") && folder.eq_ignore_ascii_case("INBOX")))
+        {
+            for attribute in attributes {
+                if let StatusAttribute::Unseen(value) = attribute {
+                    count = Some(value);
+                }
+            }
+        }
+    }
+    Ok(count.context("Mail server did not return an unread count for the requested folder")? > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Cursor};
+
+    #[derive(Debug)]
+    struct MockStream(Cursor<Vec<u8>>);
+
+    impl Read for MockStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buffer)
+        }
+    }
+
+    impl Write for MockStream {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn session(responses: &str) -> Session<MockStream> {
+        imap::Client::new(MockStream(Cursor::new(
+            format!("a1 OK Logged in\r\n{responses}").into_bytes(),
+        )))
+        .login("fixture", "fixture")
+        .unwrap()
+    }
+
+    #[test]
+    fn reads_status_counts_from_the_imap_response_channel() {
+        let mut session = session(
+            "* STATUS INBOX (UNSEEN 3)\r\na2 OK STATUS completed\r\n\
+             * STATUS INBOX (UNSEEN 0)\r\na3 OK STATUS completed\r\n",
+        );
+        assert!(has_unread(&mut session, "inbox").unwrap());
+        assert!(!has_unread(&mut session, "INBOX").unwrap());
+    }
+
+    #[test]
+    fn ignores_stale_counts_and_other_mailboxes() {
+        let mut session = session(
+            "* STATUS INBOX (UNSEEN 5)\r\na2 OK STATUS completed\r\n\
+             * STATUS Other (UNSEEN 9)\r\n\
+             * STATUS INBOX (MESSAGES 7)\r\na3 OK STATUS completed\r\n",
+        );
+        session.status("INBOX", "(UNSEEN)").unwrap();
+        assert!(has_unread(&mut session, "INBOX").is_err());
     }
 }

@@ -2,6 +2,16 @@
     background-color: var(--sidebar-bg);
 }
 
+.account-text,
+.folder-text {
+    font-weight: normal;
+}
+
+.account-text.unread,
+.folder-text.unread {
+    font-weight: bold;
+}
+
 .sidebar-header {
     background-color: transparent;
     border: none;

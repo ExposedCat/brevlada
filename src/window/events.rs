@@ -6,16 +6,21 @@ impl State {
             Event::Accounts(accounts) => {
                 ui::clear(&self.sidebar);
                 self.folder_boxes.borrow_mut().clear();
+                self.folder_names.borrow_mut().clear();
+                self.unread.borrow_mut().clear();
                 if accounts.is_empty() {
                     ui::shell::no_accounts(&self.sidebar);
                 }
                 for account in accounts {
+                    let unread = ui::sidebar::Unread::default();
                     let weak = Rc::downgrade(self);
                     let selected = account.clone();
                     let discover_state = Rc::downgrade(self);
                     let discovery = account.clone();
                     let row = ui::sidebar::AccountRow::new(
                         &account,
+                        &unread,
+                        &self.expansion.for_account(&account.email),
                         self.navigation_selection.clone(),
                         move || {
                             if let Some(state) = weak.upgrade() {
@@ -29,19 +34,36 @@ impl State {
                         },
                     );
                     self.sidebar.append(&row.widget);
+                    self.unread
+                        .borrow_mut()
+                        .insert(account.email.clone(), unread);
                     self.folder_boxes
                         .borrow_mut()
                         .insert(account.email.clone(), (account, row.folders));
                 }
             }
+            Event::SidebarReady => {
+                for (account, _) in self.folder_boxes.borrow().values() {
+                    self.send(Command::Unread(account.clone()));
+                }
+            }
             Event::Folders(email, folders) => {
+                if self.folder_names.borrow().get(&email) == Some(&folders) {
+                    return;
+                }
+                self.folder_names
+                    .borrow_mut()
+                    .insert(email.clone(), folders.clone());
                 if let Some((account, container)) = self.folder_boxes.borrow().get(&email) {
+                    container.remove_css_class("folders-loading");
                     ui::clear(container);
                     let weak = Rc::downgrade(self);
                     let account = account.clone();
                     ui::folders::populate(
                         container,
                         folders,
+                        &self.unread.borrow()[&email],
+                        &self.expansion.for_account(&email),
                         self.navigation_selection.clone(),
                         move |folder| {
                             if let Some(state) = weak.upgrade() {
@@ -49,6 +71,19 @@ impl State {
                             }
                         },
                     );
+                    if container.first_child().is_none() {
+                        container.append(&ui::label("No folders", "dim-label"));
+                    }
+                }
+            }
+            Event::Unread(email, folders) => {
+                if let Some(unread) = self.unread.borrow().get(&email) {
+                    unread.update(folders);
+                }
+            }
+            Event::UnreadSnapshot(email, folders) => {
+                if let Some(unread) = self.unread.borrow().get(&email) {
+                    unread.replace(folders);
                 }
             }
             Event::Messages(generation, mut messages, pending)

@@ -1,6 +1,6 @@
 use super::{
     column, horizontal, label,
-    sidebar::{Selection, folder_icon},
+    sidebar::{Selection, Unread, folder_icon},
 };
 use crate::theme;
 use adw::prelude::*;
@@ -15,6 +15,8 @@ struct FolderNode {
 pub fn populate(
     container: &gtk::Box,
     folders: Vec<String>,
+    unread: &Unread,
+    expansion: &super::expansion::Expansion,
     selection: Selection,
     select: impl Fn(String) + 'static,
 ) {
@@ -34,12 +36,23 @@ pub fn populate(
             node.path = path.clone();
         }
     }
-    append(container, root, selection, Rc::new(select), 1);
+    unread.clear_folder_labels();
+    append(
+        container,
+        root,
+        unread,
+        expansion,
+        selection,
+        Rc::new(select),
+        1,
+    );
 }
 
 fn append(
     container: &gtk::Box,
     node: FolderNode,
+    unread: &Unread,
+    expansion: &super::expansion::Expansion,
     selection: Selection,
     select: Rc<dyn Fn(String)>,
     depth: i32,
@@ -49,12 +62,18 @@ fn append(
         let content = horizontal("folder-content", theme::ROW_VERTICAL_GAP);
         let has_children = !child.children.is_empty();
         let icon = gtk::Image::from_icon_name(if has_children {
-            "pan-end-symbolic"
+            if expansion.is_expanded(&child.path) {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            }
         } else {
             folder_icon(&child.path)
         });
         content.append(&icon);
-        content.append(&label(&name, "folder-text"));
+        let name = label(&name, "folder-text");
+        unread.bind(&child.path, &name);
+        content.append(&name);
         let button = gtk::Button::builder()
             .child(&content)
             .hexpand(true)
@@ -63,13 +82,15 @@ fn append(
             .build();
         row.append(&button);
         let children = column("folder-children");
-        children.set_visible(false);
+        expansion.bind(&child.path, &children);
         append(
             &children,
             FolderNode {
                 path: String::new(),
                 children: child.children,
             },
+            unread,
+            expansion,
             selection.clone(),
             select.clone(),
             depth + 1,
@@ -79,7 +100,7 @@ fn append(
         let callback = select.clone();
         button.connect_clicked(move |button| {
             if has_children {
-                let expanded = !children.is_visible();
+                let expanded = !children.get_visible();
                 children.set_visible(expanded);
                 icon.set_icon_name(Some(if expanded {
                     "pan-down-symbolic"

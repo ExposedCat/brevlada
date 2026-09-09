@@ -129,6 +129,7 @@ impl Shell {
         right.append(&viewer_root);
         let content = pane(&middle, &right, theme::LIST_WIDTH);
         let main = pane(&sidebar_column, &content, theme::SIDEBAR_WIDTH);
+        super::pane_state::remember(&window, &main, &content);
         let toolbar = adw::ToolbarView::builder()
             .content(&main)
             .top_bar_style(adw::ToolbarStyle::Flat)
@@ -155,4 +156,99 @@ impl Shell {
 
 pub fn no_accounts(sidebar: &gtk::Box) {
     sidebar.append(&label("No accounts found", "dim-label"));
+}
+
+#[cfg(test)]
+mod diagnostics {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn settle(window: &adw::ApplicationWindow, fullscreen: bool, maximized: bool) {
+        let context = gtk::glib::MainContext::default();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        eprintln!(
+            "requested fullscreen={fullscreen} maximized={maximized}; actual fullscreen={} maximized={} size={}x{}",
+            window.is_fullscreen(),
+            window.is_maximized(),
+            window.width(),
+            window.height()
+        );
+        assert_eq!(window.is_fullscreen(), fullscreen);
+        assert_eq!(window.is_maximized(), maximized);
+    }
+
+    fn check_shell(shell: &Shell) {
+        let window = &shell.window;
+        for widget in [
+            shell.list_title.upcast_ref::<gtk::Widget>(),
+            shell.content_title.upcast_ref(),
+        ] {
+            let bounds = widget.compute_bounds(window).unwrap();
+            assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0, "{bounds:?}");
+            assert!(
+                bounds.x() + bounds.width() <= window.width() as f32,
+                "{bounds:?}"
+            );
+            assert!(
+                bounds.y() + bounds.height() <= window.height() as f32,
+                "{bounds:?}"
+            );
+        }
+        let bounds = shell.refresh.compute_bounds(window).unwrap();
+        let picked = window
+            .pick(
+                f64::from(bounds.x() + bounds.width() / 2.0),
+                f64::from(bounds.y() + bounds.height() / 2.0),
+                gtk::PickFlags::DEFAULT,
+            )
+            .unwrap();
+        assert!(
+            picked == shell.refresh || picked.is_ancestor(&shell.refresh),
+            "Picked {} instead of refresh",
+            picked.type_().name()
+        );
+        assert_eq!(gtk::Window::list_toplevels().len(), 1);
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session; presents an isolated shell without mail workers"]
+    fn window_transitions_keep_headers_and_input_in_sync() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("org.example.BrevladaWindowDiagnostic")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let shell = Shell::new(&app);
+        let sidebar_pane = shell
+            .sidebar
+            .ancestor(gtk::Paned::static_type())
+            .and_downcast::<gtk::Paned>()
+            .unwrap();
+        sidebar_pane.set_position(1106);
+        shell.refresh.set_sensitive(true);
+        shell.window.present();
+        settle(&shell.window, false, false);
+        check_shell(&shell);
+        for _ in 0..4 {
+            shell.window.fullscreen();
+            settle(&shell.window, true, false);
+            check_shell(&shell);
+            shell.window.unfullscreen();
+            settle(&shell.window, false, false);
+            check_shell(&shell);
+            shell.window.maximize();
+            settle(&shell.window, false, true);
+            check_shell(&shell);
+            shell.window.unmaximize();
+            settle(&shell.window, false, false);
+            check_shell(&shell);
+        }
+        shell.window.destroy();
+    }
 }

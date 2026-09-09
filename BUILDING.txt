@@ -6,9 +6,10 @@ WebKitGTK 6.0, OpenSSL, pkg-config, and glib-compile-resources.
 Fedora development packages:
   gtk4-devel libadwaita-devel webkitgtk6.0-devel openssl-devel gcc
 
-Build: cargo build (or make build)
-Run: cargo run (or make start)
-Verify: cargo test && make check
+Build: cargo build
+Run: cargo run
+Format: cargo fmt
+Verify: cargo test && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 
 GNOME Online Accounts must have a mail account configured. Configure accounts through the GNOME Settings Online Accounts panel.
 

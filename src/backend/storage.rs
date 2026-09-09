@@ -23,7 +23,10 @@ impl Storage {
             CREATE TABLE IF NOT EXISTS rust_folders (
             account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER,
             PRIMARY KEY(account_id, folder));
-            CREATE TABLE IF NOT EXISTS rust_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            CREATE TABLE IF NOT EXISTS rust_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rust_unread (
+            account_id TEXT NOT NULL, folder TEXT NOT NULL, unread BOOLEAN NOT NULL,
+            PRIMARY KEY(account_id, folder));",
         )?;
         let legacy: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')",
@@ -142,6 +145,28 @@ impl Storage {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn unread(&self, account: &str) -> Result<Vec<(String, bool)>> {
+        let mut statement = self.0.prepare(
+            "SELECT folder, unread FROM rust_unread WHERE account_id=?1
+             UNION ALL
+             SELECT folder, MAX(NOT json_extract(data, '$.is_read')) FROM rust_messages
+             WHERE account_id=?1 AND folder NOT IN
+                 (SELECT folder FROM rust_unread WHERE account_id=?1)
+             GROUP BY folder",
+        )?;
+        Ok(statement
+            .query_map([account], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn store_unread(&self, account: &str, folder: &str, unread: bool) -> Result<()> {
+        self.0.execute(
+            "INSERT OR REPLACE INTO rust_unread VALUES (?1,?2,?3)",
+            params![account, folder, unread],
+        )?;
+        Ok(())
+    }
+
     pub fn store_folders(&mut self, account: &str, folders: &[String]) -> Result<()> {
         let transaction = self.0.transaction()?;
         for folder in folders {
@@ -226,6 +251,33 @@ mod tests {
 
     fn storage() -> Storage {
         Storage::open(Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn restores_unread_state_with_cached_messages_as_a_fallback() {
+        let storage = storage();
+        storage
+            .store(
+                "a",
+                "INBOX",
+                &Message {
+                    uid: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(storage.unread("a").unwrap(), vec![("INBOX".into(), true)]);
+        // Server counts take precedence over an older cached message's flags.
+        storage.store_unread("a", "INBOX", false).unwrap();
+        storage.store_unread("a", "Archive", true).unwrap();
+        storage.store_unread("b", "INBOX", true).unwrap();
+        let reopened = Storage::initialize(storage.0).unwrap();
+        let mut unread = reopened.unread("a").unwrap();
+        unread.sort();
+        assert_eq!(
+            unread,
+            vec![("Archive".into(), true), ("INBOX".into(), false)]
+        );
     }
 
     #[test]

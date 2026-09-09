@@ -70,6 +70,15 @@ fn load(
         if queue.current(request.selection) {
             events.send_blocking(Event::Body(request.generation, request.selection, message))?;
         }
+        let unread =
+            connections.execute_body(&request.account, queue, request.selection, |mail| {
+                mail.has_unread(&request.folder)
+            })?;
+        storage.store_unread(&request.account.email, &request.folder, unread)?;
+        events.send_blocking(Event::Unread(
+            request.account.email.clone(),
+            vec![(request.folder.clone(), unread)],
+        ))?;
     }
     Ok(())
 }
