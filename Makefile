@@ -1,8 +1,14 @@
+.PHONY: build start format check
+
 build:
-	glib-compile-resources --target=resources.gresource --sourcedir=resources resources/resources.gresource.xml
+	cargo build
 
 start:
-	python3 src/main.py
+	cargo run
 
 format:
-	black src
+	cargo fmt
+
+check:
+	cargo fmt --check
+	cargo clippy --all-targets -- -D warnings

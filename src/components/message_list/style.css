@@ -17,8 +17,6 @@ toolbarview > * {
 
 .message-list {
     background-color: transparent;
-    min-height: 100%;
-    height: 100%;
 }
 
 .message-list-empty-state {
@@ -39,8 +37,6 @@ toolbarview > * {
 }
 
 .message-list-loading-spinner {
-    width: 32px;
-    height: 32px;
     margin-bottom: 12px;
 }
 
@@ -116,19 +112,17 @@ toolbarview > * {
     color: var(--theme-fg-color);
     font-weight: bold;
     letter-spacing: 0.5px;
-    text-align: center;
     padding: 2px 6px;
 }
 
 .thread-count-container {
     min-width: 20px;
     min-height: 20px;
-    border-radius: 10px;
+    border-radius: 9999px;
     background-color: var(--theme-bg-color);
 }
 
 .message-row-date {
-    align-self: flex-end;
     color: var(--theme-fg-color);
     opacity: 0.5;
 }

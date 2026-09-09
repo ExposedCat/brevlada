@@ -6,6 +6,11 @@ searchbar > revealer > box {
   background: transparent;
 }
 
+.message-list-search-box > revealer > box {
+  border-bottom: none;
+  box-shadow: none;
+}
+
 .message-list-search-box searchentry {
   background: transparent;
 }
@@ -51,4 +56,4 @@ row:selected {
 .error {
     color: var(--error-color);
     font-weight: bold;
-} 
+}

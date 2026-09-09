@@ -1,11 +1,13 @@
 .message-viewer-root {
     margin: var(--spacing-sm);
-    padding: var(--spacing-sm);
+    padding: 0;
 }
 
-.message-date-suffix {
-    font-size: 0.85em;
-    color: var(--dim-label);
+.message-load-error .subtitle {
+    font-size: 1em;
+    font-weight: normal;
+    color: var(--error-color);
+    opacity: 1;
 }
 
 .message-viewer-empty-icon,
@@ -20,7 +22,7 @@
 .message-container {
     border: none;
     margin: 0;
-    padding: var(--spacing-sm);
+    padding: 0;
     border-radius: var(--spacing-md);
 }
 
@@ -28,6 +30,6 @@
     border-radius: var(--spacing-md);
     background: var(--headerbar-bg-color);
     border: 1px solid var(--borders);
-    margin: var(--spacing-sm) 0;
+    margin: 0 0 var(--spacing-sm);
     box-shadow: 0 2px 4px var(--card-shadow);
 }

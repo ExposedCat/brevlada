@@ -1,0 +1,161 @@
+use super::{
+    body_queue::BodyQueue,
+    connections::Connections,
+    storage::Storage,
+    worker::{BodyRequest, Event},
+};
+use anyhow::{Context, Result};
+use std::path::PathBuf;
+
+pub fn start(path: PathBuf, queue: BodyQueue, events: async_channel::Sender<Event>) {
+    std::thread::spawn(move || {
+        let mut connections = Connections::default();
+        while let Some(request) = queue.pop() {
+            if !queue.current(request.selection) {
+                continue;
+            }
+            if let Err(error) = load(&path, &request, &queue, &events, &mut connections)
+                && queue.current(request.selection)
+            {
+                let _ = events.send_blocking(Event::BodyError(
+                    request.generation,
+                    request.selection,
+                    request.uid,
+                    error.to_string(),
+                ));
+            }
+        }
+    });
+}
+
+fn load(
+    path: &std::path::Path,
+    request: &BodyRequest,
+    queue: &BodyQueue,
+    events: &async_channel::Sender<Event>,
+    connections: &mut Connections,
+) -> Result<()> {
+    let storage = Storage::open(path)?;
+    let mut message = storage
+        .message(&request.account.email, &request.folder, request.uid)?
+        .context("Message is no longer in this folder")?;
+    if !message.body_loaded {
+        let fetched =
+            connections.execute_body(&request.account, queue, request.selection, |mail| {
+                mail.body(&request.folder, request.uid)
+            })?;
+        anyhow::ensure!(
+            super::parser::normalize_message_id(&message.message_id).is_empty()
+                || super::parser::normalize_message_id(&message.message_id)
+                    == super::parser::normalize_message_id(&fetched.message_id),
+            "The mailbox changed. Reload the folder."
+        );
+        message = fetched;
+        storage.store(&request.account.email, &request.folder, &message)?;
+    }
+    if !queue.current(request.selection) {
+        return Ok(());
+    }
+    events.send_blocking(Event::Body(
+        request.generation,
+        request.selection,
+        message.clone(),
+    ))?;
+    if !message.is_read {
+        connections.execute_body(&request.account, queue, request.selection, |mail| {
+            mail.mark_read(&request.folder, request.uid)
+        })?;
+        message.is_read = true;
+        storage.store(&request.account.email, &request.folder, &message)?;
+        if queue.current(request.selection) {
+            events.send_blocking(Event::Body(request.generation, request.selection, message))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Account, Message};
+
+    #[test]
+    fn reads_latest_cached_body_and_ignores_cancelled_selection() {
+        let path = std::env::temp_dir().join(format!(
+            "brevlada-body-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storage = Storage::open(&path).unwrap();
+        let request = BodyRequest {
+            account: Account {
+                path: String::new(),
+                email: "a".into(),
+                name: String::new(),
+                host: String::new(),
+                username: String::new(),
+                port: 993,
+                ssl: true,
+                tls: false,
+                oauth2: true,
+            },
+            folder: "INBOX".into(),
+            uid: 1,
+            generation: 1,
+            selection: 1,
+        };
+        storage
+            .store(
+                "a",
+                "INBOX",
+                &Message {
+                    uid: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        storage
+            .store(
+                "a",
+                "INBOX",
+                &Message {
+                    uid: 1,
+                    body_loaded: true,
+                    is_read: true,
+                    body_text: "Already fetched".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let queue = BodyQueue::default();
+        let (events, received) = async_channel::unbounded();
+        queue.select(1);
+        load(
+            &path,
+            &request,
+            &queue,
+            &events,
+            &mut Connections::default(),
+        )
+        .unwrap();
+        match received.try_recv().unwrap() {
+            Event::Body(1, 1, message) => assert_eq!(message.body_text, "Already fetched"),
+            _ => panic!("Expected cached body"),
+        }
+        queue.select(2);
+        load(
+            &path,
+            &request,
+            &queue,
+            &events,
+            &mut Connections::default(),
+        )
+        .unwrap();
+        assert!(received.try_recv().is_err());
+        drop(storage);
+        std::fs::remove_file(path).unwrap();
+    }
+}

@@ -1,0 +1,23 @@
+Brevlada
+
+Requires Rust 1.92 or newer, GTK 4.12 or newer, libadwaita 1.4 or newer,
+WebKitGTK 6.0, OpenSSL, pkg-config, and glib-compile-resources.
+
+Fedora development packages:
+  gtk4-devel libadwaita-devel webkitgtk6.0-devel openssl-devel gcc
+
+Build: cargo build (or make build)
+Run: cargo run (or make start)
+Verify: cargo test && make check
+
+GNOME Online Accounts must have a mail account configured. Configure accounts through the GNOME Settings Online Accounts panel.
+
+The SQLite cache remains at $XDG_DATA_HOME/brevlada/emails.db, defaulting to
+~/.local/share/brevlada/emails.db. Existing Python cache tables are imported
+once into Rust tables and retained. New cache records use account, folder,
+and UID together; UIDVALIDITY changes invalidate the affected folder cache.
+
+Folder synchronization and cancellable message-body requests run on separate
+background workers. Message cards update in place, retain loading/error states,
+and create HTML views only as expanded cards enter the viewport. The selected folder and inboxes of visited accounts
+refresh every five minutes. Message bodies load when expanded. Scripts supplied by mail HTML and external resource loading are blocked; links open externally.

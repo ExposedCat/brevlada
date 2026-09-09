@@ -1,3 +1,6 @@
 __pycache__
 .ropeproject
 resources.gresource
+/target/
+/.native/
+/.cargo/config.toml
