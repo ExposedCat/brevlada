@@ -14,12 +14,12 @@ paned {
 }
 
 .sidebar {
-    background-color: var(--headerbar-bg-color);
+    background-color: var(--sidebar-bg);
     padding: var(--spacing-sm);
 }
 
 .navigation-list {
-    background-color: var(--headerbar-bg-color);
+    background-color: var(--sidebar-bg);
 }
 
 .navigation-list row,

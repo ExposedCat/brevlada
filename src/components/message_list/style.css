@@ -110,8 +110,6 @@ toolbarview > * {
 
 .thread-count-badge-label {
     color: var(--theme-fg-color);
-    font-weight: bold;
-    letter-spacing: 0.5px;
     padding: 2px 6px;
 }
 
@@ -119,7 +117,7 @@ toolbarview > * {
     min-width: 20px;
     min-height: 20px;
     border-radius: 9999px;
-    background-color: var(--theme-bg-color);
+    background-color: alpha(var(--theme-fg-color), 0.12);
 }
 
 .message-row-date {

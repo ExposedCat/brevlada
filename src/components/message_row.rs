@@ -26,6 +26,11 @@ pub fn message_row(group: &[Message]) -> gtk::ListBoxRow {
         let badge = horizontal("thread-count-container", 0);
         badge.set_valign(gtk::Align::Center);
         let count = label(&group.len().to_string(), "thread-count-badge-label");
+        count.add_css_class("heading");
+        count.add_css_class("message-row-sender");
+        if unread {
+            count.add_css_class("message-row-sender-unread");
+        }
         count.set_halign(gtk::Align::Center);
         count.set_hexpand(false);
         count.set_ellipsize(gtk::pango::EllipsizeMode::None);
