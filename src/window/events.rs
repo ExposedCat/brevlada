@@ -155,7 +155,7 @@ impl State {
                     .cards
                     .borrow()
                     .get(&uid)
-                    .is_some_and(|card| card.is_expanded())
+                    .is_some_and(|card| card.is_expanded() || card.is_reply_pending())
                 {
                     self.open(uid);
                 }

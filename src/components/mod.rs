@@ -1,13 +1,16 @@
 pub mod avatars;
 mod body;
 mod body_layout;
+pub mod compose;
 mod display;
 pub mod expansion;
 pub mod folders;
 mod html;
+mod html_editor;
 mod message_row;
 mod pane_state;
 mod preview;
+mod reply_quote;
 pub mod scroll_position;
 pub mod shell;
 pub mod sidebar;
@@ -15,7 +18,6 @@ pub mod states;
 pub mod sync_status;
 pub mod viewer;
 use adw::prelude::*;
-pub use display::{sender_name, subject};
 pub use message_row::{message_row, sender_row, update as update_message_row, update_sender};
 
 pub fn column(class: &str) -> gtk::Box {

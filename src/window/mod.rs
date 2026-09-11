@@ -46,12 +46,12 @@ struct State {
     navigation_selection: ui::sidebar::Selection,
     expansion: ui::expansion::Expansion,
     avatars: Rc<ui::avatars::Avatars>,
+    compose_button: gtk::Button,
+    compose: ui::compose::Compose,
     refresh: gtk::Button,
     sync: gtk::Button,
     back: gtk::Button,
     search: gtk::SearchEntry,
-    list_title: gtk::Label,
-    content_title: adw::WindowTitle,
 }
 
 pub fn create(app: &adw::Application) {
@@ -168,15 +168,15 @@ impl State {
             viewer_scroll,
             list_stack,
             viewer,
+            compose_button,
+            compose,
             refresh,
             sync,
             back,
             search,
-            list_title,
-            content_title,
             toast,
         } = shell;
-        Rc::new(State {
+        let state = Rc::new(State {
             sender,
             account: RefCell::new(None),
             folder: RefCell::new(String::new()),
@@ -205,13 +205,28 @@ impl State {
             navigation_selection: ui::sidebar::Selection::default(),
             expansion,
             avatars,
+            compose_button,
+            compose,
             refresh,
             sync,
             back,
             search,
-            list_title,
-            content_title,
-        })
+        });
+        let weak = Rc::downgrade(&state);
+        state.compose_button.connect_clicked(move |_| {
+            if let Some(state) = weak.upgrade() {
+                state.compose.show(
+                    state
+                        .selected_sender
+                        .borrow()
+                        .as_deref()
+                        .unwrap_or_default(),
+                );
+                let adjustment = state.viewer_scroll.vadjustment();
+                adjustment.set_value(adjustment.lower());
+            }
+        });
+        state
     }
 }
 
@@ -482,6 +497,101 @@ mod diagnostics {
         ));
         assert!(account_avatar.custom_image().is_some());
         state.filter_sender(Some(first.clone()));
+        let compose_header = state
+            .compose_button
+            .ancestor(adw::HeaderBar::static_type())
+            .unwrap();
+        assert!(compose_header.has_css_class("content-header"));
+        state.compose_button.emit_clicked();
+        assert!(state.compose.widget.get_visible());
+        let header = state.compose.widget.first_child().unwrap();
+        let receiver = header
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Entry>()
+            .unwrap();
+        assert_eq!(receiver.text(), "ada@example.com");
+        receiver.set_text("edited@example.com");
+        state.compose_button.emit_clicked();
+        assert_eq!(receiver.text(), "edited@example.com");
+        let cancel = header
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        let draft = cancel
+            .prev_sibling()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        let send = draft
+            .prev_sibling()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        for button in [&draft, &cancel] {
+            assert!(button.icon_name().is_some());
+            assert!(button.label().is_none());
+        }
+        assert!(!send.is_sensitive());
+        assert!(labels(send.clone().upcast()).contains(&"Send".into()));
+        let subject = header
+            .next_sibling()
+            .unwrap()
+            .downcast::<gtk::Entry>()
+            .unwrap();
+        let body_header = subject.next_sibling().unwrap();
+        let modes = body_header.first_child().unwrap();
+        let formatting = modes.next_sibling().unwrap();
+        let group = body_header
+            .next_sibling()
+            .unwrap()
+            .downcast::<adw::PreferencesGroup>()
+            .unwrap();
+        fn find_editor(widget: gtk::Widget) -> Option<gtk::TextView> {
+            if let Ok(editor) = widget.clone().downcast::<gtk::TextView>() {
+                return Some(editor);
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if let Some(editor) = find_editor(widget.clone()) {
+                    return Some(editor);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        let editor = find_editor(group.clone().upcast()).unwrap();
+        subject.set_text("Subject");
+        assert!(!send.is_sensitive());
+        editor.buffer().set_text("  ");
+        assert!(!send.is_sensitive());
+        editor.buffer().set_text("Hello");
+        assert!(send.is_sensitive());
+        let html = modes
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::ToggleButton>()
+            .unwrap();
+        html.set_active(true);
+        assert!(formatting.get_visible());
+        assert!(!editor.is_monospace());
+        editor.buffer().set_text("Hello");
+        assert!(send.is_sensitive());
+        subject.set_text("");
+        assert!(!send.is_sensitive());
+        subject.set_text("Subject");
+        assert!(send.is_sensitive());
+        send.emit_clicked();
+        draft.emit_clicked();
+        assert!(state.compose.widget.get_visible());
+        assert_eq!(receiver.text(), "edited@example.com");
+        cancel.emit_clicked();
+        assert!(!state.compose.widget.get_visible());
+        assert!(receiver.text().is_empty());
+        state.compose_button.emit_clicked();
+        assert_eq!(receiver.text(), "ada@example.com");
+        cancel.emit_clicked();
         assert_eq!(state.groups.borrow().len(), 2);
         assert!(state.preview_pending.borrow().contains(&first.uid));
         let preview = Message {
@@ -569,14 +679,12 @@ mod diagnostics {
                 .body_loaded
         );
         state.pending.borrow_mut().insert(2);
-        let title = state.content_title.title();
         state.filter_sender(None);
         assert!(!state.back.get_visible());
         assert_eq!(state.groups.borrow().len(), 1);
         assert_eq!(*state.selected.borrow(), vec![2]);
         assert_eq!(state.cards.borrow().get(&2).unwrap().widget, card);
         assert_eq!(state.viewer.first_child().unwrap(), card);
-        assert_eq!(state.content_title.title(), title);
         assert_eq!(state.selection.get(), selection);
         assert!(state.pending.borrow().contains(&2));
         state.event(Event::BodyError(generation, selection, 2, "Timeout".into()));

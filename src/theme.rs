@@ -3,6 +3,7 @@ pub const WINDOW_HEIGHT: i32 = 900;
 pub const SIDEBAR_WIDTH: i32 = 300;
 pub const LIST_WIDTH: i32 = 400;
 pub const SPACING: i32 = 12;
+pub const COMPOSE_HEIGHT: i32 = 200;
 pub const BODY_HEIGHT: i32 = 50;
 pub const SIDEBAR_HEADER_WIDTH: i32 = 350;
 pub const ROW_GAP: i32 = 5;

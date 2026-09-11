@@ -57,3 +57,7 @@ row:selected {
     color: var(--error-color);
     font-weight: bold;
 }
+
+.message-state {
+    padding: 24px;
+}

@@ -4,6 +4,7 @@ use adw::prelude::*;
 
 pub fn placeholder(text: &str, class: &str, icon: &str, loading: bool) -> gtk::Box {
     let content = column(class);
+    content.add_css_class("message-state");
     content.set_halign(gtk::Align::Center);
     content.set_valign(gtk::Align::Center);
     content.set_hexpand(true);
@@ -58,7 +59,7 @@ pub fn list_state(stack: &gtk::Stack, text: &str, loading: bool, error: bool) {
         if error {
             "dialog-error-symbolic"
         } else {
-            "mail-unread-symbolic"
+            "folder-symbolic"
         },
         loading,
     );

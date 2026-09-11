@@ -36,14 +36,12 @@ impl State {
         self.reset_list();
         *self.selected_sender.borrow_mut() = None;
         self.back.set_visible(false);
-        self.list_title.set_label(&folder);
         *self.folder.borrow_mut() = folder;
         self.selected.borrow_mut().clear();
         self.cards.borrow_mut().clear();
         self.messages.borrow_mut().clear();
         self.render_list();
         ui::states::select_message(&self.viewer);
-        self.content_title.set_title("Online Accounts");
         self.load();
     }
 
@@ -62,17 +60,10 @@ impl State {
             self.selected.borrow_mut().clear();
             self.cards.borrow_mut().clear();
             ui::states::select_message(&self.viewer);
-            self.content_title.set_title("Online Accounts");
         }
         self.reset_list();
         *self.selected_sender.borrow_mut() = message.as_ref().map(models::senders::key);
         self.back.set_visible(message.is_some());
-        self.list_title.set_label(
-            &message
-                .as_ref()
-                .map(ui::sender_name)
-                .unwrap_or_else(|| self.folder.borrow().clone()),
-        );
         self.render_list();
         self.list_scroll.vadjustment().set_value(0.0);
     }
@@ -83,9 +74,6 @@ impl State {
         self.viewer_scroll.vadjustment().set_value(0.0);
         self.cards.borrow_mut().clear();
         *self.selected.borrow_mut() = group.iter().map(|m| m.uid).collect();
-        if let Some(message) = group.first() {
-            self.content_title.set_title(&ui::subject(message));
-        }
         self.viewer.set_vexpand(false);
         let unread = group.iter().any(|message| !message.is_read);
         for (index, message) in group.iter().enumerate() {
@@ -103,6 +91,7 @@ impl State {
     pub(super) fn card(self: &Rc<Self>, message: &Message, expanded: bool) -> ui::viewer::Card {
         let weak = Rc::downgrade(self);
         let uid = message.uid;
+        let reply_state = Rc::downgrade(self);
         ui::viewer::card(
             message,
             expanded,
@@ -111,6 +100,13 @@ impl State {
             move || {
                 if let Some(state) = weak.upgrade() {
                     state.open(uid);
+                }
+            },
+            move |reply_message| {
+                if let Some(state) = reply_state.upgrade() {
+                    state.compose.reply(reply_message);
+                    let adjustment = state.viewer_scroll.vadjustment();
+                    adjustment.set_value(adjustment.lower());
                 }
             },
         )

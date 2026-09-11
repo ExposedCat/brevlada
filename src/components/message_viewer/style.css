@@ -33,3 +33,22 @@
     margin: 0 0 var(--spacing-sm);
     box-shadow: 0 2px 4px var(--card-shadow);
 }
+
+.compose-card {
+    padding: var(--spacing-md);
+    border-spacing: var(--spacing-sm);
+}
+
+.compose-body .boxed-list {
+    box-shadow: none;
+}
+
+.compose-send:not(:disabled) {
+    background: #3584e4;
+    color: white;
+}
+
+.compose-body textview,
+.compose-body textview text {
+    background: transparent;
+}

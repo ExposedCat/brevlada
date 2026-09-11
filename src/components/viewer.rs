@@ -9,6 +9,8 @@ struct Content {
     expanded: Cell<bool>,
     rendered: Cell<bool>,
     open: Rc<dyn Fn()>,
+    reply: Rc<dyn Fn(&Message)>,
+    reply_pending: Cell<bool>,
     signals: std::cell::RefCell<Vec<(gtk::Adjustment, gtk::glib::SignalHandlerId)>>,
 }
 
@@ -19,14 +21,22 @@ pub struct Card {
 }
 
 impl Card {
+    pub fn is_reply_pending(&self) -> bool {
+        self.content.reply_pending.get()
+    }
+
     pub fn is_expanded(&self) -> bool {
         self.content.expanded.get()
     }
     pub fn update(&self, message: &Message) {
         *self.content.message.borrow_mut() = message.clone();
         self.content.show();
+        if message.body_loaded && self.content.reply_pending.replace(false) {
+            (self.content.reply)(message);
+        }
     }
     pub fn error(&self, error: &str) {
+        self.content.reply_pending.set(false);
         if !self.content.message.borrow().body_loaded {
             self.content
                 .body
@@ -71,6 +81,7 @@ pub fn card(
     threaded: bool,
     avatars: &Avatars,
     open: impl Fn() + 'static,
+    reply: impl Fn(&Message) + 'static,
 ) -> Card {
     let widget = column("message-row-widget");
     widget.set_vexpand(false);
@@ -89,6 +100,8 @@ pub fn card(
         expanded: Cell::new(expanded || !threaded),
         rendered: Cell::new(false),
         open: Rc::new(open),
+        reply: Rc::new(reply),
+        reply_pending: Cell::new(false),
         signals: std::cell::RefCell::new(Vec::new()),
     });
     let weak = Rc::downgrade(&content);
@@ -165,6 +178,20 @@ pub fn card(
     if !name.is_empty() && !email.is_empty() {
         row.set_subtitle(&email);
     }
+    let reply_button = button("mail-reply-sender-symbolic", "Reply");
+    reply_button.set_valign(gtk::Align::Center);
+    let weak = Rc::downgrade(&content);
+    reply_button.connect_clicked(move |_| {
+        if let Some(content) = weak.upgrade() {
+            if content.message.borrow().body_loaded {
+                (content.reply)(&content.message.borrow());
+            } else {
+                content.reply_pending.set(true);
+                (content.open)();
+            }
+        }
+    });
+    row.add_suffix(&reply_button);
     let date = gtk::Label::builder()
         .label(display::date(message, true))
         .halign(gtk::Align::End)

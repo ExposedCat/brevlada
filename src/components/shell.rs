@@ -11,12 +11,12 @@ pub struct Shell {
     pub viewer_scroll: gtk::ScrolledWindow,
     pub list_stack: gtk::Stack,
     pub viewer: gtk::Box,
+    pub compose_button: gtk::Button,
+    pub compose: super::compose::Compose,
     pub refresh: gtk::Button,
     pub sync: gtk::Button,
     pub back: gtk::Button,
     pub search: gtk::SearchEntry,
-    pub list_title: gtk::Label,
-    pub content_title: adw::WindowTitle,
     pub toast: adw::ToastOverlay,
 }
 
@@ -54,13 +54,13 @@ impl Shell {
         sidebar_wrapper.append(&scroll(&sidebar));
         sidebar_column.append(&sidebar_wrapper);
         let middle = column("message-list-wrapper");
-        let list_title = gtk::Label::new(Some("Messages"));
         let list_header = adw::HeaderBar::builder()
-            .title_widget(&list_title)
+            .title_widget(&gtk::Box::new(gtk::Orientation::Horizontal, 0))
             .show_end_title_buttons(false)
             .width_request(theme::LIST_WIDTH)
             .css_classes(["message-list-header"])
             .build();
+        let compose_button = button("mail-message-new-symbolic", "Compose message");
         let back = button("go-previous-symbolic", "Back to senders");
         back.set_visible(false);
         list_header.pack_start(&back);
@@ -117,21 +117,29 @@ impl Shell {
         states::list_state(&list_stack, "No messages in this folder", false, false);
         middle.append(&list_stack);
         let right = column("content-wrapper");
-        let content_title = adw::WindowTitle::new("Online Accounts", "");
         let header = adw::HeaderBar::builder()
-            .title_widget(&content_title)
+            .title_widget(&gtk::Box::new(gtk::Orientation::Horizontal, 0))
             .centering_policy(adw::CenteringPolicy::Strict)
             .hexpand(true)
             .css_classes(["content-header"])
             .build();
+        header.pack_start(&compose_button);
+        let headers = gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical);
+        headers.add_widget(&sidebar_header);
+        headers.add_widget(&list_header);
+        headers.add_widget(&header);
         right.append(&header);
         let viewer = column("message-container");
         states::select_message(&viewer);
         let viewer_root = column("message-viewer-root");
         viewer_root.set_hexpand(true);
         viewer_root.set_vexpand(true);
+        let compose = super::compose::Compose::new(&compose_button);
+        let viewer_content = column("message-viewer-content");
+        viewer_content.append(&compose.widget);
+        viewer_content.append(&viewer);
         let viewer_viewport = gtk::Viewport::builder()
-            .child(&viewer)
+            .child(&viewer_content)
             .scroll_to_focus(false)
             .build();
         let viewer_scroll = scroll(&viewer_viewport);
@@ -156,12 +164,12 @@ impl Shell {
             viewer_scroll,
             list_stack,
             viewer,
+            compose_button,
+            compose,
             refresh,
             sync,
             back,
             search,
-            list_title,
-            content_title,
             toast,
         }
     }
@@ -196,10 +204,8 @@ mod diagnostics {
 
     fn check_shell(shell: &Shell) {
         let window = &shell.window;
-        for widget in [
-            shell.list_title.upcast_ref::<gtk::Widget>(),
-            shell.content_title.upcast_ref(),
-        ] {
+        {
+            let widget = shell.refresh.upcast_ref::<gtk::Widget>();
             let bounds = widget.compute_bounds(window).unwrap();
             assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0, "{bounds:?}");
             assert!(
@@ -225,6 +231,37 @@ mod diagnostics {
             picked.type_().name()
         );
         assert_eq!(gtk::Window::list_toplevels().len(), 1);
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session; presents an isolated shell without mail workers"]
+    fn empty_state_labels_align() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("org.example.BrevladaEmptyStateDiagnostic")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let shell = Shell::new(&app);
+        shell.window.present();
+        let context = gtk::glib::MainContext::default();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let list_state = shell.list_stack.child_by_name("state").unwrap();
+        let viewer_state = shell.viewer.first_child().unwrap();
+        let list_label = list_state.last_child().unwrap();
+        let viewer_label = viewer_state.last_child().unwrap();
+        let list_bounds = list_label.compute_bounds(&shell.window).unwrap();
+        let viewer_bounds = viewer_label.compute_bounds(&shell.window).unwrap();
+        assert!(
+            (list_bounds.y() - viewer_bounds.y()).abs() <= 1.0,
+            "Empty labels must align: list={list_bounds:?}, viewer={viewer_bounds:?}"
+        );
+        shell.window.destroy();
     }
 
     #[test]

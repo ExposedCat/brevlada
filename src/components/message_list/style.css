@@ -20,8 +20,6 @@ toolbarview > * {
 }
 
 .message-list-empty-state {
-    padding: 48px 24px;
-    min-height: 200px;
 }
 
 .message-list-empty-icon {
@@ -32,8 +30,6 @@ toolbarview > * {
 }
 
 .message-list-loading-state {
-    padding: 48px 24px;
-    min-height: 200px;
 }
 
 .message-list-loading-spinner {
@@ -44,8 +40,6 @@ toolbarview > * {
 }
 
 .message-list-error-state {
-    padding: 48px 24px;
-    min-height: 200px;
 }
 
 .message-list-error-icon {

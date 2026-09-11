@@ -1,0 +1,26 @@
+:root { color-scheme: light dark; }
+body {
+    font-family: sans-serif;
+    line-height: 1.5;
+    margin: 0;
+    padding: 12px;
+    min-height: calc(100vh - 24px);
+    overflow-wrap: anywhere;
+    outline: none;
+}
+body > blockquote {
+    margin: 0;
+    padding-left: 12px;
+    border-left: 2px solid GrayText;
+}
+img { max-width: 100%; }
+pre { white-space: pre-wrap; }
+
+html { overflow-anchor: none; }
+iframe {
+    display: block;
+    width: 100%;
+    border: 0;
+    color-scheme: light;
+    background: white;
+}
