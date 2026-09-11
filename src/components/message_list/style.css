@@ -89,6 +89,7 @@ toolbarview > * {
 }
 
 .message-row-subject-unread {
+    font-weight: bold;
     color: var(--color-text);
     opacity: 1;
 }

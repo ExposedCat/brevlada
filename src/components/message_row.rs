@@ -80,6 +80,7 @@ pub fn update(row: &gtk::ListBoxRow, group: &[Message]) {
 }
 
 pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::ListBoxRow {
+    let unread = group.iter().any(|m| !m.is_read);
     let message = group
         .iter()
         .max_by_key(|m| (m.timestamp, m.uid))
@@ -99,7 +100,7 @@ pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::ListBoxRow {
     content.set_spacing(theme::ROW_VERTICAL_GAP);
     let heading = horizontal("message-row-sender-container", theme::ROW_GAP);
     let sender = label(&name, "message-row-sender");
-    if group.iter().any(|m| !m.is_read) {
+    if unread {
         sender.add_css_class("message-row-sender-unread");
     }
     heading.append(&sender);
@@ -115,6 +116,9 @@ pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::ListBoxRow {
     };
     let subject = label(subject, "message-row-subject-label");
     subject.add_css_class("dim-label");
+    if unread {
+        subject.add_css_class("message-row-subject-unread");
+    }
     content.append(&subject);
     container.append(&content);
     row.set_tooltip_text(Some(&display::sender(message).1));
