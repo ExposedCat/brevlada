@@ -1,15 +1,7 @@
 use crate::models::Message;
 
 pub fn sender(message: &Message) -> (String, String) {
-    if let Ok(addresses) = mailparse::addrparse(&message.sender)
-        && let Some(mailparse::MailAddr::Single(address)) = addresses.first()
-    {
-        return (
-            address.display_name.clone().unwrap_or_default(),
-            address.addr.clone(),
-        );
-    }
-    (String::new(), message.sender.clone())
+    crate::models::senders::identity(message)
 }
 
 pub fn sender_name(message: &Message) -> String {

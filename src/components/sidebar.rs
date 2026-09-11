@@ -1,5 +1,8 @@
-use super::{button, column, horizontal, label};
-use crate::{models::Account, theme};
+use super::{avatars::Avatars, button, column, horizontal, label};
+use crate::{
+    models::{Account, senders},
+    theme,
+};
 use adw::prelude::*;
 use std::{
     cell::RefCell,
@@ -86,6 +89,7 @@ impl AccountRow {
         account: &Account,
         unread: &Unread,
         expansion: &super::expansion::Expansion,
+        avatars: &Avatars,
         selection: Selection,
         select: impl Fn() + 'static,
         discover: impl Fn() + 'static,
@@ -96,15 +100,16 @@ impl AccountRow {
         expand.add_css_class("account-expand");
         row.append(&expand);
         let content = horizontal("account-content", theme::SMALL_SPACING);
-        content.append(&gtk::Image::from_icon_name("mail-unread-symbolic"));
-        let name = label(
-            if account.name.is_empty() {
-                &account.email
-            } else {
-                &account.name
-            },
-            "account-text",
-        );
+        let title = if account.name.is_empty() {
+            &account.email
+        } else {
+            &account.name
+        };
+        let avatar = adw::Avatar::new(theme::ACCOUNT_AVATAR_SIZE, Some(title), true);
+        avatar.add_css_class("account-avatar");
+        avatars.attach(&avatar, &senders::address(&account.email));
+        content.append(&avatar);
+        let name = label(title, "account-text");
         unread.bind("", &name);
         content.append(&name);
         let account_button = gtk::Button::builder()

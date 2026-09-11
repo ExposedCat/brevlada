@@ -1,8 +1,17 @@
 pub mod accounts;
+mod avatar_queue;
+mod avatar_worker;
+pub mod avatars;
 mod body_queue;
 mod body_worker;
 mod connections;
+mod http;
 pub mod mail;
+mod mail_sync;
 pub mod parser;
+mod sender_domains;
 pub mod storage;
+mod sync_progress;
+mod sync_queue;
+mod sync_worker;
 pub mod worker;

@@ -85,10 +85,12 @@ pub fn view(message: &Message) -> gtk::Widget {
         }
     });
     view.connect_unrealize(|view| view.stop_loading());
-    view.load_html(&document, Some("about:blank"));
     view.connect_decide_policy(|_, decision, kind| {
-        if kind == webkit6::PolicyDecisionType::NavigationAction
-            && let Some(navigation) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
+        if matches!(
+            kind,
+            webkit6::PolicyDecisionType::NavigationAction
+                | webkit6::PolicyDecisionType::NewWindowAction
+        ) && let Some(navigation) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
             && let Some(action) = navigation.navigation_action()
             && action.navigation_type() == webkit6::NavigationType::LinkClicked
         {
@@ -97,18 +99,33 @@ pub fn view(message: &Message) -> gtk::Widget {
                     || uri.starts_with("http://")
                     || uri.starts_with("mailto:"))
             {
-                gtk::gio::AppInfo::launch_default_for_uri_async(
-                    &uri,
-                    None::<&gtk::gio::AppLaunchContext>,
-                    gtk::gio::Cancellable::NONE,
-                    |_| {},
-                );
+                // Distrobox forwards xdg-open to the host desktop. Looking up
+                // AppInfo directly can select a container-only browser instead.
+                match gtk::gio::Subprocess::newv(
+                    &[
+                        std::ffi::OsStr::new("xdg-open"),
+                        std::ffi::OsStr::new(uri.as_str()),
+                    ],
+                    gtk::gio::SubprocessFlags::NONE,
+                ) {
+                    Ok(process) => {
+                        process.wait_check_async(gtk::gio::Cancellable::NONE, |result| {
+                            if let Err(error) = result {
+                                gtk::glib::g_warning!("brevlada", "Unable to open link: {error}");
+                            }
+                        })
+                    }
+                    Err(error) => {
+                        gtk::glib::g_warning!("brevlada", "Unable to open link: {error}");
+                    }
+                }
             }
             decision.ignore();
             return true;
         }
         false
     });
+    view.load_html(&document, Some("about:blank"));
 
     let frame = gtk::Frame::builder()
         .vexpand(false)

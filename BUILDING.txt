@@ -1,7 +1,8 @@
 Brevlada
 
 Requires Rust 1.92 or newer, GTK 4.12 or newer, libadwaita 1.4 or newer,
-WebKitGTK 6.0, OpenSSL, pkg-config, and glib-compile-resources.
+WebKitGTK 6.0, OpenSSL, pkg-config, glib-compile-resources, and xdg-open
+(xdg-utils) for opening links in the desktop's default browser.
 
 Fedora development packages:
   gtk4-devel libadwaita-devel webkitgtk6.0-devel openssl-devel gcc
@@ -18,7 +19,93 @@ The SQLite cache remains at $XDG_DATA_HOME/brevlada/emails.db, defaulting to
 once into Rust tables and retained. New cache records use account, folder,
 and UID together; UIDVALIDITY changes invalidate the affected folder cache.
 
-Folder synchronization and cancellable message-body requests run on separate
-background workers. Message cards update in place, retain loading/error states,
-and create HTML views only as expanded cards enter the viewport. The selected folder and inboxes of visited accounts
-refresh every five minutes. Message bodies load when expanded. Scripts supplied by mail HTML and external resource loading are blocked; links open externally.
+Interactive folder/message loads and background caching run on separate workers.
+Background caching starts for all accounts at launch and checks again every five
+minutes. Four background workers allow up to two active requests per account.
+Background sync uses the persisted folder list in rust_sync_settings for each
+account. Existing and new accounts default to INBOX only. Other cached folders
+are retained and remain available for interactive browsing. Additional selected
+folders use the same scheduler. Inboxes across all accounts take priority over
+caching other folders. Within each tier, message lists come first, followed by
+recent messages for previews, older
+headers, and remaining bodies. Other folders' headers and bodies wait until all
+queued and running inbox work finishes. Folder discovery and message-count checks
+can use spare capacity meanwhile. After inboxes, expanded accounts' folders
+precede other folders. Expansion changes reprioritize queued work.
+Trash/Junk special-use folders and common Trash/Spam names are excluded.
+
+The sync header shows completed/total accounts, folders, and message-cache entries
+across all accounts, hiding totals until discovery is complete. A message present
+in multiple folders is cached and counted separately in each folder. The last-sync
+timestamp is saved at the start of a new sync and restored on startup; "Last synced"
+uses that start time, including when a sync was interrupted.
+
+Headers and bodies are saved incrementally in SQLite WAL transactions. Switching
+views does not cancel background caching; shutdown interrupts network requests,
+and restart resumes missing work from the cache. Completed bodies are not fetched
+again. Large folders use bounded batches; the UI shows the latest 50 messages.
+Preview fetches also cache the full text/HTML body without marking mail read.
+Opening a message marks it read. Attachments are listed by name, not cached as files.
+
+Sender avatars are resolved once per address and cached in rust_avatars, with
+"this sender has no avatar" cached too so misses are not retried on every launch.
+Sources are tried in order: a connected Google account's own photo from its
+OpenID profile; Gravatar; then the sender domain's icon from Google's favicon
+service. Contact photos are also requested from the Google People API, which
+Online Accounts' OAuth client is not authorized for, so the first refusal
+disables contact lookups for that account for the session.
+
+Domain icons are skipped for addresses at public mailbox providers, listed in
+sender_domains.rs, so correspondents do not all wear their provider's logo. The
+match is on the address's own host only, so a provider's own sending sub-domain
+still gets its brand icon. The same file maps bulk-mail domains to the brand
+they send for, because the icon service only knows the brand's main domain.
+Google resolves registrable domains, so a sub-domain falls back to its parent.
+Icons smaller than requested are the placeholder globe and are rejected.
+
+Brand icons come from whichever of two icon services holds the sharper one;
+neither wins consistently. An icon is scored by the detail it actually has
+rather than the size it claims: asked for a large icon, a service enlarges a
+small favicon by repeating pixels, and dividing out the resulting block size
+recovers the real resolution. A service that answers an unknown domain with a
+generated grey letter tile is rejected outright, since it would otherwise
+outrank a real but smaller icon. Domains whose best icon is still too coarse
+fall through to initials, which look better than a handful of enlarged pixels. Each icon is laid on an opaque plate of its own size
+before being cached, so a logo with a transparent background does not show the
+window behind it. Nothing is held back at the edges: a margin reads as a ring
+around the logo and makes a full-bleed square icon fight the round avatar, which
+crops to a circle anyway. The plate takes its colour from the ring where
+the circular crop falls. A logo that is one solid shape there lends the plate
+its own colour, so the shape's antialiased rim blends in instead of leaving a
+pale bezel around the avatar. Where the crop runs through several colours, as it
+does across the quadrants of the Windows logo, no colour matches and white is
+used, since picking one would flood the logo's transparent gaps with it. A logo
+whose rim is mostly empty carries its own padding and also sits on white.
+
+The plate is the icon's own size unless the circular crop would cut the logo.
+How far the icon's marks reach from its centre decides that: a round logo, or
+one whose edges match the plate, reaches no further than half the plate and is
+left edge to edge, while a square logo such as the Windows flag carries itself
+into the corners and the plate grows to fit them with 15% extra room so they sit clear of the rim. Measuring the
+reach separates the two exactly, instead of guessing from the icon's shape, and
+keeps the ring to the icons that need it.
+Avatars are resampled to twice the size they are drawn at before reaching the
+widget, because handing GTK a much larger image makes it minify in one step at
+draw time and the logo turns to mush. Senders with nothing anywhere keep the
+initials drawn by AdwAvatar. Changing a source or the plating clears the whole
+avatar cache once, via the avatar_sources key in rust_metadata.
+
+Contact photos are not fetched. Online Accounts' Google credential cannot reach
+the People API at all, which answers SERVICE_DISABLED for every endpoint because
+the API is not enabled for its OAuth client, and the legacy Contacts API is
+retired. Google's CardDAV does work with the same token: PROPFIND Depth:1 on
+/carddav/v1/principals/<address>/lists/default/ lists the contacts and each
+vCard carries its photo inline as base64, with addressbook-multiget available to
+batch the fetches. It would mean indexing the whole address book, because
+addressbook-query is rejected, so it is left unbuilt rather than unavailable.
+
+Avatar downloads need no IMAP connection and never block the mail workers.
+
+Message cards update in place, retain loading/error states, and create HTML views
+only as expanded cards enter the viewport. Scripts supplied by mail HTML and
+external resource loading are blocked; links open externally.

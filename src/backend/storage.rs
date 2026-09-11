@@ -3,6 +3,15 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::{collections::HashSet, path::Path};
 
+#[path = "avatar_storage.rs"]
+pub mod avatar;
+#[path = "sync_history.rs"]
+mod history;
+#[path = "sync_settings.rs"]
+mod settings;
+#[path = "sync_storage.rs"]
+mod sync;
+
 pub struct Storage(Connection);
 
 impl Storage {
@@ -15,7 +24,13 @@ impl Storage {
 
     fn initialize(mut connection: Connection) -> Result<Self> {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        let transaction = connection.transaction()?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        // Every worker opens its own connection at startup and this transaction
+        // writes, so take the write lock up front. A deferred transaction that
+        // upgrades later fails immediately with "database is locked" instead of
+        // waiting out the busy timeout.
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS rust_messages (
             account_id TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL,
@@ -24,10 +39,35 @@ impl Storage {
             account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER,
             PRIMARY KEY(account_id, folder));
             CREATE TABLE IF NOT EXISTS rust_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rust_sync_settings (
+            account_id TEXT PRIMARY KEY, folders TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rust_avatars (
+            email TEXT PRIMARY KEY, source TEXT NOT NULL, image BLOB,
+            fetched_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS rust_unread (
             account_id TEXT NOT NULL, folder TEXT NOT NULL, unread BOOLEAN NOT NULL,
-            PRIMARY KEY(account_id, folder));",
+            PRIMARY KEY(account_id, folder));
+            CREATE INDEX IF NOT EXISTS rust_messages_date ON rust_messages
+            (account_id, folder, json_extract(data, '$.timestamp') DESC, uid DESC);",
         )?;
+        use rusqlite::OptionalExtension;
+        let sources: Option<String> = transaction
+            .query_row(
+                "SELECT value FROM rust_metadata WHERE key='avatar_sources'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if sources.as_deref() != Some(super::avatars::SOURCES) {
+            // The avatars were produced by a pipeline that no longer exists, so
+            // both the images and the "this sender has none" records may be
+            // wrong. They are cheap to rebuild, so drop the lot.
+            transaction.execute("DELETE FROM rust_avatars", [])?;
+            transaction.execute(
+                "INSERT OR REPLACE INTO rust_metadata VALUES ('avatar_sources',?1)",
+                params![super::avatars::SOURCES],
+            )?;
+        }
         let legacy: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')",
             [],
@@ -101,14 +141,6 @@ impl Storage {
         Ok(Self(connection))
     }
 
-    pub fn messages(&self, account: &str, folder: &str) -> Result<Vec<Message>> {
-        let mut statement = self
-            .0
-            .prepare("SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2")?;
-        let rows = statement.query_map(params![account, folder], |r| r.get::<_, String>(0))?;
-        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
-    }
-
     pub fn message(&self, account: &str, folder: &str, uid: u32) -> Result<Option<Message>> {
         use rusqlite::OptionalExtension;
         let data: Option<String> = self
@@ -123,6 +155,7 @@ impl Storage {
             .transpose()
     }
 
+    #[cfg(test)]
     pub fn store(&self, account: &str, folder: &str, message: &Message) -> Result<()> {
         self.0.execute(
             "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",

@@ -29,12 +29,13 @@ impl State {
     }
 
     pub(super) fn select(self: &Rc<Self>, account: Account, folder: String) {
+        self.sender.focus(&account.email, &folder);
         self.generation.set(self.generation.get() + 1);
         self.new_selection();
-        self.visited
-            .borrow_mut()
-            .insert(account.email.clone(), account.clone());
         *self.account.borrow_mut() = Some(account);
+        self.reset_list();
+        *self.selected_sender.borrow_mut() = None;
+        self.back.set_visible(false);
         self.list_title.set_label(&folder);
         *self.folder.borrow_mut() = folder;
         self.selected.borrow_mut().clear();
@@ -44,6 +45,36 @@ impl State {
         ui::states::select_message(&self.viewer);
         self.content_title.set_title("Online Accounts");
         self.load();
+    }
+
+    fn reset_list(&self) {
+        self.rendering.set(true);
+        while let Some(row) = self.list.first_child() {
+            self.list.remove(&row);
+        }
+        self.groups.borrow_mut().clear();
+        self.rendering.set(false);
+    }
+
+    pub(super) fn filter_sender(&self, message: Option<Message>) {
+        if message.is_some() {
+            self.new_selection();
+            self.selected.borrow_mut().clear();
+            self.cards.borrow_mut().clear();
+            ui::states::select_message(&self.viewer);
+            self.content_title.set_title("Online Accounts");
+        }
+        self.reset_list();
+        *self.selected_sender.borrow_mut() = message.as_ref().map(models::senders::key);
+        self.back.set_visible(message.is_some());
+        self.list_title.set_label(
+            &message
+                .as_ref()
+                .map(ui::sender_name)
+                .unwrap_or_else(|| self.folder.borrow().clone()),
+        );
+        self.render_list();
+        self.list_scroll.vadjustment().set_value(0.0);
     }
 
     pub(super) fn show_thread(self: &Rc<Self>, group: Vec<Message>) {
@@ -66,6 +97,7 @@ impl State {
                 self.open(message.uid);
             }
         }
+        self.load_previews();
     }
 
     pub(super) fn card(self: &Rc<Self>, message: &Message, expanded: bool) -> ui::viewer::Card {
@@ -75,6 +107,7 @@ impl State {
             message,
             expanded,
             self.selected.borrow().len() > 1,
+            &self.avatars,
             move || {
                 if let Some(state) = weak.upgrade() {
                     state.open(uid);
@@ -88,6 +121,7 @@ impl State {
         self.selection.set(selection);
         self.sender.select(selection);
         self.pending.borrow_mut().clear();
+        self.preview_pending.borrow_mut().clear();
     }
 
     pub(super) fn load_expanded(&self) {
@@ -116,6 +150,9 @@ impl State {
         if message.body_loaded && message.is_read {
             return;
         }
+        if self.preview_pending.borrow().contains(&uid) {
+            return;
+        }
         if !self.pending.borrow_mut().insert(uid) {
             return;
         }
@@ -129,6 +166,7 @@ impl State {
                 uid,
                 generation: self.generation.get(),
                 selection: self.selection.get(),
+                mark_read: true,
             });
         }
     }

@@ -1,3 +1,4 @@
+pub mod avatars;
 mod body;
 mod body_layout;
 mod display;
@@ -6,14 +7,16 @@ pub mod folders;
 mod html;
 mod message_row;
 mod pane_state;
+mod preview;
 pub mod scroll_position;
 pub mod shell;
 pub mod sidebar;
 pub mod states;
+pub mod sync_status;
 pub mod viewer;
 use adw::prelude::*;
-pub use display::subject;
-pub use message_row::{message_row, update as update_message_row};
+pub use display::{sender_name, subject};
+pub use message_row::{message_row, sender_row, update as update_message_row, update_sender};
 
 pub fn column(class: &str) -> gtk::Box {
     let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);

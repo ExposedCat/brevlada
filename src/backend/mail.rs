@@ -10,7 +10,7 @@ use std::{
 };
 
 pub struct Mail {
-    session: Session<TlsStream<TcpStream>>,
+    pub(super) session: Session<TlsStream<TcpStream>>,
     socket: TcpStream,
 }
 
@@ -140,8 +140,17 @@ impl Mail {
         Ok((validity, messages, uids))
     }
 
-    pub fn body(&mut self, folder: &str, uid: u32) -> Result<Message> {
-        self.session.select(folder)?;
+    pub(super) fn body_with_validity(
+        &mut self,
+        folder: &str,
+        uid: u32,
+        validity: Option<u32>,
+    ) -> Result<Message> {
+        let mailbox = self.session.select(folder)?;
+        anyhow::ensure!(
+            validity.is_none() || mailbox.uid_validity == validity,
+            "Mailbox changed while loading message"
+        );
         let fetched = self
             .session
             .uid_fetch(uid.to_string(), "(UID FLAGS BODY.PEEK[])")?;
@@ -159,8 +168,12 @@ impl Mail {
         Ok(message)
     }
 
-    pub fn mark_read(&mut self, folder: &str, uid: u32) -> Result<()> {
-        self.session.select(folder)?;
+    pub fn mark_read(&mut self, folder: &str, uid: u32, validity: Option<u32>) -> Result<()> {
+        let mailbox = self.session.select(folder)?;
+        anyhow::ensure!(
+            validity.is_none() || mailbox.uid_validity == validity,
+            "Mailbox changed while marking message read"
+        );
         self.session
             .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Seen)")?;
         Ok(())

@@ -62,6 +62,10 @@ toolbarview > * {
     background: transparent;
 }
 
+.message-row-with-icon {
+    padding-left: 24px;
+}
+
 .message-row:hover {
     background-color: var(--message-row-hover-bg);
 }

@@ -35,7 +35,11 @@ impl BodyQueue {
     pub fn push(&self, request: BodyRequest) {
         let mut pending = self.0.0.lock().unwrap();
         if !pending.closed && pending.selection == request.selection {
-            pending.requests.push_back(request);
+            if request.mark_read {
+                pending.requests.push_front(request);
+            } else {
+                pending.requests.push_back(request);
+            }
             self.0.1.notify_one();
         }
     }
@@ -111,6 +115,7 @@ mod tests {
             uid,
             generation: 1,
             selection,
+            mark_read: false,
         }
     }
 
@@ -126,6 +131,22 @@ mod tests {
         assert_eq!(queue.pop().unwrap().uid, 20);
         queue.close();
         assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn opens_messages_before_queued_previews() {
+        let queue = BodyQueue::default();
+        queue.select(1);
+        queue.push(request(1, 10));
+        queue.push(request(1, 11));
+        queue.push(BodyRequest {
+            mark_read: true,
+            ..request(1, 12)
+        });
+        assert_eq!(queue.pop().unwrap().uid, 12);
+        assert_eq!(queue.pop().unwrap().uid, 10);
+        assert_eq!(queue.pop().unwrap().uid, 11);
+        queue.close();
     }
 
     #[test]

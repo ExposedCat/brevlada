@@ -1,5 +1,5 @@
-use super::{button, column, display, horizontal};
-use crate::{models::Message, theme};
+use super::{avatars::Avatars, button, column, display, horizontal};
+use crate::{models::Message, models::senders, theme};
 use adw::prelude::*;
 use std::{cell::Cell, rc::Rc};
 
@@ -65,7 +65,13 @@ impl Content {
     }
 }
 
-pub fn card(message: &Message, expanded: bool, threaded: bool, open: impl Fn() + 'static) -> Card {
+pub fn card(
+    message: &Message,
+    expanded: bool,
+    threaded: bool,
+    avatars: &Avatars,
+    open: impl Fn() + 'static,
+) -> Card {
     let widget = column("message-row-widget");
     widget.set_vexpand(false);
     widget.set_valign(gtk::Align::Start);
@@ -171,6 +177,7 @@ pub fn card(message: &Message, expanded: bool, threaded: bool, open: impl Fn() +
         true,
     );
     avatar.add_css_class("message-avatar");
+    avatars.attach(&avatar, &senders::key(message));
     row.add_prefix(&avatar);
     header.append(&row);
     widget.append(&header);

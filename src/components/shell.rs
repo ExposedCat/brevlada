@@ -5,12 +5,15 @@ use adw::prelude::*;
 pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub sidebar: gtk::Box,
+    pub sync_status: super::sync_status::SyncStatus,
     pub list: gtk::ListBox,
     pub list_scroll: gtk::ScrolledWindow,
     pub viewer_scroll: gtk::ScrolledWindow,
     pub list_stack: gtk::Stack,
     pub viewer: gtk::Box,
     pub refresh: gtk::Button,
+    pub sync: gtk::Button,
+    pub back: gtk::Button,
     pub search: gtk::SearchEntry,
     pub list_title: gtk::Label,
     pub content_title: adw::WindowTitle,
@@ -35,12 +38,16 @@ impl Shell {
         );
         gtk::IconTheme::for_display(&display).add_resource_path("/org/gtk/example/icons");
         let sidebar_column = column("sidebar-wrapper");
+        let sync_status = super::sync_status::SyncStatus::new();
         let sidebar_header = adw::HeaderBar::builder()
-            .title_widget(&gtk::Label::new(Some("Accounts")))
+            .title_widget(&sync_status.widget)
             .show_end_title_buttons(false)
             .width_request(theme::SIDEBAR_HEADER_WIDTH)
             .css_classes(["sidebar-header"])
             .build();
+        let sync = button("view-refresh-symbolic", "Sync accounts now");
+        sync.set_sensitive(false);
+        sidebar_header.pack_start(&sync);
         sidebar_column.append(&sidebar_header);
         let sidebar = column("navigation-list");
         let sidebar_wrapper = column("sidebar");
@@ -54,6 +61,9 @@ impl Shell {
             .width_request(theme::LIST_WIDTH)
             .css_classes(["message-list-header"])
             .build();
+        let back = button("go-previous-symbolic", "Back to senders");
+        back.set_visible(false);
+        list_header.pack_start(&back);
         let refresh = button("view-refresh-symbolic", "Refresh messages");
         refresh.set_sensitive(false);
         list_header.pack_start(&refresh);
@@ -140,12 +150,15 @@ impl Shell {
         Self {
             window,
             sidebar,
+            sync_status,
             list,
             list_scroll,
             viewer_scroll,
             list_stack,
             viewer,
             refresh,
+            sync,
+            back,
             search,
             list_title,
             content_title,

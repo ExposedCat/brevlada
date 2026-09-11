@@ -17,12 +17,17 @@ pub fn start(path: PathBuf, queue: BodyQueue, events: async_channel::Sender<Even
             if let Err(error) = load(&path, &request, &queue, &events, &mut connections)
                 && queue.current(request.selection)
             {
-                let _ = events.send_blocking(Event::BodyError(
-                    request.generation,
-                    request.selection,
-                    request.uid,
-                    error.to_string(),
-                ));
+                let event = if request.mark_read {
+                    Event::BodyError(
+                        request.generation,
+                        request.selection,
+                        request.uid,
+                        error.to_string(),
+                    )
+                } else {
+                    Event::PreviewError(request.generation, request.selection, request.uid)
+                };
+                let _ = events.send_blocking(event);
             }
         }
     });
@@ -35,14 +40,15 @@ fn load(
     events: &async_channel::Sender<Event>,
     connections: &mut Connections,
 ) -> Result<()> {
-    let storage = Storage::open(path)?;
+    let mut storage = Storage::open(path)?;
+    let validity = storage.validity(&request.account.email, &request.folder)?;
     let mut message = storage
         .message(&request.account.email, &request.folder, request.uid)?
         .context("Message is no longer in this folder")?;
     if !message.body_loaded {
         let fetched =
             connections.execute_body(&request.account, queue, request.selection, |mail| {
-                mail.body(&request.folder, request.uid)
+                mail.body_with_validity(&request.folder, request.uid, validity)
             })?;
         anyhow::ensure!(
             super::parser::normalize_message_id(&message.message_id).is_empty()
@@ -50,10 +56,19 @@ fn load(
                     == super::parser::normalize_message_id(&fetched.message_id),
             "The mailbox changed. Reload the folder."
         );
-        message = fetched;
-        storage.store(&request.account.email, &request.folder, &message)?;
+        message = storage
+            .store_body(&request.account.email, &request.folder, validity, &fetched)?
+            .context("Mailbox changed while loading message")?;
     }
     if !queue.current(request.selection) {
+        return Ok(());
+    }
+    if !request.mark_read {
+        events.send_blocking(Event::Preview(
+            request.generation,
+            request.selection,
+            message,
+        ))?;
         return Ok(());
     }
     events.send_blocking(Event::Body(
@@ -63,10 +78,16 @@ fn load(
     ))?;
     if !message.is_read {
         connections.execute_body(&request.account, queue, request.selection, |mail| {
-            mail.mark_read(&request.folder, request.uid)
+            mail.mark_read(&request.folder, request.uid, validity)
         })?;
-        message.is_read = true;
-        storage.store(&request.account.email, &request.folder, &message)?;
+        message = storage
+            .mark_read_cached(
+                &request.account.email,
+                &request.folder,
+                validity,
+                request.uid,
+            )?
+            .context("Mailbox changed while marking message read")?;
         if queue.current(request.selection) {
             events.send_blocking(Event::Body(request.generation, request.selection, message))?;
         }
@@ -115,6 +136,7 @@ mod tests {
             uid: 1,
             generation: 1,
             selection: 1,
+            mark_read: true,
         };
         storage
             .store(
@@ -154,6 +176,30 @@ mod tests {
             Event::Body(1, 1, message) => assert_eq!(message.body_text, "Already fetched"),
             _ => panic!("Expected cached body"),
         }
+        let mut unread = storage.message("a", "INBOX", 1).unwrap().unwrap();
+        unread.is_read = false;
+        storage.store("a", "INBOX", &unread).unwrap();
+        let preview = BodyRequest {
+            mark_read: false,
+            ..request.clone()
+        };
+        load(
+            &path,
+            &preview,
+            &queue,
+            &events,
+            &mut Connections::default(),
+        )
+        .unwrap();
+        match received.try_recv().unwrap() {
+            Event::Preview(1, 1, message) => {
+                assert_eq!(message.body_text, "Already fetched");
+                assert!(!message.is_read);
+            }
+            _ => panic!("Expected an unread preview"),
+        }
+        assert!(!storage.message("a", "INBOX", 1).unwrap().unwrap().is_read);
+        assert!(received.try_recv().is_err());
         queue.select(2);
         load(
             &path,

@@ -4,6 +4,7 @@ impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
         match event {
             Event::Accounts(accounts) => {
+                self.sync.set_sensitive(!accounts.is_empty());
                 ui::clear(&self.sidebar);
                 self.folder_boxes.borrow_mut().clear();
                 self.folder_names.borrow_mut().clear();
@@ -12,6 +13,10 @@ impl State {
                     ui::shell::no_accounts(&self.sidebar);
                 }
                 for account in accounts {
+                    self.sender.register(
+                        account.clone(),
+                        self.expansion.for_account(&account.email).is_expanded(""),
+                    );
                     let unread = ui::sidebar::Unread::default();
                     let weak = Rc::downgrade(self);
                     let selected = account.clone();
@@ -21,6 +26,7 @@ impl State {
                         &account,
                         &unread,
                         &self.expansion.for_account(&account.email),
+                        &self.avatars,
                         self.navigation_selection.clone(),
                         move || {
                             if let Some(state) = weak.upgrade() {
@@ -34,6 +40,13 @@ impl State {
                         },
                     );
                     self.sidebar.append(&row.widget);
+                    let weak = Rc::downgrade(self);
+                    let email = account.email.clone();
+                    row.folders.connect_visible_notify(move |folders| {
+                        if let Some(state) = weak.upgrade() {
+                            state.sender.expanded(&email, folders.get_visible());
+                        }
+                    });
                     self.unread
                         .borrow_mut()
                         .insert(account.email.clone(), unread);
@@ -43,9 +56,7 @@ impl State {
                 }
             }
             Event::SidebarReady => {
-                for (account, _) in self.folder_boxes.borrow().values() {
-                    self.send(Command::Unread(account.clone()));
-                }
+                self.sender.sync();
             }
             Event::Folders(email, folders) => {
                 if self.folder_names.borrow().get(&email) == Some(&folders) {
@@ -110,6 +121,45 @@ impl State {
                 self.render_list();
                 self.load_expanded();
             }
+            Event::CacheList(email, folder, messages)
+                if self
+                    .account
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|account| account.email == email)
+                    && *self.folder.borrow() == folder
+                    && !self.loading.get() =>
+            {
+                self.event(Event::Messages(self.generation.get(), messages, false));
+            }
+            Event::CacheBody(email, folder, message)
+                if self
+                    .account
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|account| account.email == email)
+                    && *self.folder.borrow() == folder =>
+            {
+                self.apply_cached_body(message);
+            }
+            Event::Preview(generation, selection, message)
+                if generation == self.generation.get() && selection == self.selection.get() =>
+            {
+                self.preview_loaded(message);
+            }
+            Event::PreviewError(generation, selection, uid)
+                if generation == self.generation.get() && selection == self.selection.get() =>
+            {
+                self.preview_pending.borrow_mut().remove(&uid);
+                if self
+                    .cards
+                    .borrow()
+                    .get(&uid)
+                    .is_some_and(|card| card.is_expanded())
+                {
+                    self.open(uid);
+                }
+            }
             Event::Body(generation, selection, message)
                 if generation == self.generation.get() && selection == self.selection.get() =>
             {
@@ -132,6 +182,7 @@ impl State {
                     self.toast.add_toast(adw::Toast::new(&error));
                 }
             }
+            Event::Avatar(email, image) => self.avatars.resolved(&email, image),
             Event::Error(generation, error)
                 if generation.is_none() || generation == Some(self.generation.get()) =>
             {

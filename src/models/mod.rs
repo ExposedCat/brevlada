@@ -1,3 +1,5 @@
+pub mod senders;
+pub mod sync;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -78,6 +80,7 @@ pub fn threads(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
         std::cmp::Reverse((
             g.iter().any(|m| !m.is_read),
             g.first().map(|m| m.timestamp).unwrap_or_default(),
+            g.first().map(|m| m.uid).unwrap_or_default(),
         ))
     });
     groups
