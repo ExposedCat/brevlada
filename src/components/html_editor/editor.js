@@ -29,7 +29,26 @@ function quoteDocument(html) {
     policy.after(defaults);
     return '<!doctype html>' + parsed.documentElement.outerHTML;
 }
-function report() {
+function selectAllContent() {
+    document.body.focus({preventScroll: true});
+    const range = document.createRange();
+    range.selectNodeContents(document.body);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+}
+function reportHeight(edited = false) {
+    const range = document.createRange();
+    range.selectNodeContents(document.body);
+    const quote = document.body.querySelector(':scope > blockquote');
+    if (quote) range.setEndBefore(quote);
+    const bounds = range.getBoundingClientRect();
+    const style = getComputedStyle(document.body);
+    const height = Math.ceil(bounds.bottom + window.scrollY + parseFloat(style.paddingBottom));
+    window.webkit.messageHandlers.composeHeight.postMessage(JSON.stringify([height, edited === true]));
+}
+function report(edited = false) {
+    reportHeight(edited);
     const quote = document.querySelector('iframe');
     let text = document.body.innerText;
     if (quote?.contentDocument?.body) {
@@ -72,7 +91,9 @@ function setContent(content) {
     requestAnimationFrame(() => window.scrollTo(0, 0));
     report();
 }
-document.body.addEventListener('input', report);
+document.body.addEventListener('input', () => report(true));
+new ResizeObserver(() => reportHeight()).observe(document.body);
+window.addEventListener('resize', () => reportHeight());
 document.body.addEventListener('click', event => {
     if (event.target.closest('a')) event.preventDefault();
 });
@@ -91,7 +112,6 @@ document.body.addEventListener('keydown', event => {
     if (event.key === '\\') command = 'removeFormat';
     if (command) {
         event.preventDefault();
-        document.execCommand(command);
-        report();
+        applyFormat(command);
     }
 });

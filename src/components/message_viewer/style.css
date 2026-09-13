@@ -43,6 +43,10 @@
     box-shadow: none;
 }
 
+.compose-editor {
+    border-radius: var(--spacing-md);
+}
+
 .compose-send:not(:disabled) {
     background: #3584e4;
     color: white;
@@ -51,4 +55,19 @@
 .compose-body textview,
 .compose-body textview text {
     background: transparent;
+}
+
+.compose-resize-handle {
+    min-height: var(--spacing-md);
+    border-radius: var(--spacing-sm);
+}
+.compose-resize-handle:hover,
+.compose-resize-handle:focus-visible {
+    background: var(--borders);
+}
+.compose-resize-grip {
+    min-width: 32px;
+    min-height: 4px;
+    border-radius: var(--spacing-sm);
+    background: var(--borders);
 }

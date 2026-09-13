@@ -64,7 +64,15 @@ impl Compose {
         modes.set_halign(gtk::Align::Start);
         let body_header = horizontal("compose-body-header", theme::SMALL_SPACING);
         body_header.append(&modes);
-        let html_editor = super::html_editor::Editor::new(&body.buffer(), &html_mode);
+        let size = super::editor_size::Size::new();
+        size.track_text(&body);
+        let html_size = std::rc::Rc::downgrade(&size);
+        let html_editor =
+            super::html_editor::Editor::new(&body.buffer(), &html_mode, move |height, edited| {
+                if let Some(size) = html_size.upgrade() {
+                    size.measure(1, height, edited);
+                }
+            });
         let formatting = super::html_editor::toolbar(&html_editor, &html_mode);
         body_header.append(&formatting);
         widget.append(&body_header);
@@ -88,7 +96,7 @@ impl Compose {
             .min_content_height(theme::COMPOSE_HEIGHT)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
-        let editors = gtk::Stack::builder().vhomogeneous(false).build();
+        let editors = &size.stack;
         editors.add_named(&body_scroll, Some("text"));
         editors.add_named(&html_editor.view, Some("html"));
         editors.set_visible_child_name("text");
@@ -123,13 +131,16 @@ impl Compose {
             }
         });
         let body_row = adw::PreferencesRow::builder()
-            .child(&editors)
+            .child(editors)
+            .css_classes(["compose-editor"])
+            .overflow(gtk::Overflow::Hidden)
             .activatable(false)
             .selectable(false)
             .focusable(false)
             .build();
         body_group.add(&body_row);
         widget.append(&body_group);
+        widget.append(&size.handle());
         let card = widget.downgrade();
         let trigger = trigger.downgrade();
         let receiver_input = receiver.clone();

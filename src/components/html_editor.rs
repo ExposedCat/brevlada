@@ -5,7 +5,7 @@ use std::{
 };
 use webkit6::prelude::*;
 
-const WORLD: &str = "brevlada-compose";
+pub(super) const WORLD: &str = "brevlada-compose";
 
 #[derive(Clone)]
 pub struct Editor {
@@ -15,7 +15,11 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(buffer: &gtk::TextBuffer, mode: &gtk::ToggleButton) -> Self {
+    pub fn new(
+        buffer: &gtk::TextBuffer,
+        mode: &gtk::ToggleButton,
+        height_changed: impl Fn(i32, bool) + 'static,
+    ) -> Self {
         let manager = webkit6::UserContentManager::new();
         let settings = webkit6::Settings::builder()
             .enable_javascript(true)
@@ -26,8 +30,50 @@ impl Editor {
             .settings(&settings)
             .user_content_manager(&manager)
             .height_request(crate::theme::COMPOSE_HEIGHT)
+            .vexpand(false)
             .hexpand(true)
             .build();
+        view.set_background_color(&gtk::gdk::RGBA::TRANSPARENT);
+        manager.register_script_message_handler("composeHeight", Some(WORLD));
+        manager.connect_script_message_received(Some("composeHeight"), move |_, value| {
+            if let Ok((height, edited)) = serde_json::from_str::<(i32, bool)>(&value.to_str()) {
+                height_changed(height, edited);
+            }
+        });
+        let keys = gtk::EventControllerKey::new();
+        keys.set_name(Some("compose-html-shortcuts"));
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let target = view.downgrade();
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            let modifiers = modifiers & gtk::accelerator_get_default_mod_mask();
+            let control = gtk::gdk::ModifierType::CONTROL_MASK;
+            let key = key.to_lower();
+            let script = if modifiers == control {
+                match key {
+                    gtk::gdk::Key::a => Some("selectAllContent()"),
+                    gtk::gdk::Key::b => Some("applyFormat('bold')"),
+                    gtk::gdk::Key::i => Some("applyFormat('italic')"),
+                    gtk::gdk::Key::u => Some("applyFormat('underline')"),
+                    gtk::gdk::Key::backslash => Some("applyFormat('removeFormat')"),
+                    _ => None,
+                }
+            } else if modifiers == control | gtk::gdk::ModifierType::SHIFT_MASK
+                && key == gtk::gdk::Key::x
+            {
+                Some("applyFormat('strikeThrough')")
+            } else {
+                None
+            };
+            if let Some(script) = script {
+                if let Some(view) = target.upgrade() {
+                    run(&view, script);
+                }
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        view.add_controller(keys);
         manager.register_script_message_handler("composeText", Some(WORLD));
         let target = buffer.downgrade();
         let mode = mode.downgrade();
@@ -53,7 +99,11 @@ impl Editor {
                     &format!(
                         "const quoteStyle = {};\n{}",
                         serde_json::to_string(include_str!("html_editor/quote.css")).unwrap(),
-                        include_str!("html_editor/editor.js")
+                        concat!(
+                            include_str!("html_editor/editor.js"),
+                            "\n",
+                            include_str!("html_editor/formatting.js")
+                        )
                     ),
                 );
                 set_content(view, &pending.borrow());
@@ -75,7 +125,8 @@ impl Editor {
             false
         });
         editor.view.load_html(&format!(
-            "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-src 'self';\"><style>{}</style></head><body contenteditable='true' aria-label='Message body'></body></html>",
+            "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-src 'self';\"><style>:root {{ --compose-min-height: {}px; }}{}</style></head><body contenteditable='true' aria-label='Message body'></body></html>",
+            crate::theme::COMPOSE_HEIGHT,
             include_str!("html_editor/style.css")
         ), Some("about:blank"));
         editor
@@ -113,7 +164,7 @@ fn set_content(view: &webkit6::WebView, content: &serde_json::Value) {
     );
 }
 
-fn run(view: &webkit6::WebView, script: &str) {
+pub(super) fn run(view: &webkit6::WebView, script: &str) {
     view.evaluate_javascript(
         script,
         Some(WORLD),
@@ -127,49 +178,7 @@ fn run(view: &webkit6::WebView, script: &str) {
     );
 }
 
-pub fn toolbar(editor: &Editor, mode: &gtk::ToggleButton) -> gtk::Box {
-    let toolbar = super::horizontal("compose-formatting", 0);
-    toolbar.add_css_class("linked");
-    toolbar.set_visible(mode.is_active());
-    for (icon, title, command) in [
-        ("format-text-bold-symbolic", "Bold (Ctrl+B)", "Bold"),
-        ("format-text-italic-symbolic", "Italic (Ctrl+I)", "Italic"),
-        (
-            "format-text-underline-symbolic",
-            "Underline (Ctrl+U)",
-            "Underline",
-        ),
-        (
-            "format-text-strikethrough-symbolic",
-            "Strikethrough (Ctrl+Shift+X)",
-            "Strikethrough",
-        ),
-        (
-            "edit-clear-symbolic",
-            "Clear formatting (Ctrl+\\)",
-            "RemoveFormat",
-        ),
-    ] {
-        let button = super::button(icon, title);
-        button.remove_css_class("flat");
-        button.set_focus_on_click(false);
-        let target = editor.view.downgrade();
-        button.connect_clicked(move |_| {
-            if let Some(view) = target.upgrade() {
-                view.execute_editing_command(command);
-                view.grab_focus();
-            }
-        });
-        toolbar.append(&button);
-    }
-    let target = toolbar.downgrade();
-    mode.connect_toggled(move |mode| {
-        if let Some(toolbar) = target.upgrade() {
-            toolbar.set_visible(mode.is_active());
-        }
-    });
-    toolbar
-}
+pub use super::html_formatting::toolbar;
 
 #[cfg(test)]
 mod tests {
@@ -182,9 +191,22 @@ mod tests {
         let buffer = gtk::TextBuffer::new(None);
         let mode = gtk::ToggleButton::new();
         mode.set_active(true);
-        let editor = Editor::new(&buffer, &mode);
+        let measured = Rc::new(Cell::new(0));
+        let grew = Rc::new(Cell::new(false));
+        let previous = measured.clone();
+        let growth = grew.clone();
+        let editor = Editor::new(&buffer, &mode, move |height, edited| {
+            let before = previous.replace(height);
+            if edited && height > before {
+                growth.set(true);
+            }
+        });
         editor.reply("<!doctype html><html><head><style>.heading { background: rgb(0, 120, 180); color: white; } td { height: 800px; }</style></head><body bgcolor='#f6f6f6'><p class='heading'><b>Original</b></p><table><tr><td style='color: rgb(255, 0, 0)'>Cell</td></tr></table><script>document.body.textContent='bad'</script></body></html>");
-        let window = gtk::Window::builder().child(&editor.view).build();
+        let strip = toolbar(&editor, &mode);
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column.append(&strip);
+        column.append(&editor.view);
+        let window = gtk::Window::builder().child(&column).build();
         window.present();
         let context = gtk::glib::MainContext::default();
         context.block_on(async {
@@ -197,7 +219,7 @@ mod tests {
             assert!(editor.ready.get(), "HTML editor did not load");
             gtk::glib::timeout_future(std::time::Duration::from_millis(300)).await;
             let result = editor.view.evaluate_javascript_future(
-                "const quoteDoc = document.querySelector('iframe').contentDocument; JSON.stringify({background: getComputedStyle(quoteDoc.querySelector('.heading')).backgroundColor, bodyBackground: getComputedStyle(quoteDoc.body).backgroundColor, scroll: window.scrollY, frameHeight: document.querySelector('iframe').height, quote: quoteDoc.querySelector('b').textContent, table: quoteDoc.querySelectorAll('td').length, color: getComputedStyle(quoteDoc.querySelector('td')).color, scripts: quoteDoc.querySelectorAll('script').length, top: getSelection().anchorNode === document.body.firstChild, offset: getSelection().anchorOffset})",
+                "const quoteDoc = document.querySelector('iframe').contentDocument; JSON.stringify({background: getComputedStyle(quoteDoc.querySelector('.heading')).backgroundColor, bodyBackground: getComputedStyle(quoteDoc.body).backgroundColor, scroll: window.scrollY, frameHeight: document.querySelector('iframe').height, quote: quoteDoc.querySelector('b').textContent, table: quoteDoc.querySelectorAll('td').length, color: getComputedStyle(quoteDoc.querySelector('td')).color, scripts: quoteDoc.querySelectorAll('script').length, top: document.body.firstChild.contains(getSelection().anchorNode) || (getSelection().anchorNode === document.body && getSelection().anchorOffset === 0), offset: getSelection().anchorOffset})",
                 Some(WORLD), None,
             ).await.unwrap();
             let result: serde_json::Value = serde_json::from_str(&result.to_str()).unwrap();
@@ -209,7 +231,7 @@ mod tests {
             assert_eq!(result["table"], 1);
             assert_eq!(result["color"], "rgb(255, 0, 0)");
             assert_eq!(result["scripts"], 0);
-            assert_eq!(result["top"], true);
+            assert_eq!(result["top"], true, "{result}");
             assert_eq!(result["offset"], 0);
             editor.view.evaluate_javascript_future(
                 "document.execCommand('insertText', false, 'My reply'); report()",
@@ -219,6 +241,45 @@ mod tests {
             let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
             assert!(text.starts_with("My reply\n\n"), "{text:?}");
             assert!(text.contains("Original"));
+            editor.view.evaluate_javascript_future("document.execCommand('insertParagraph'); document.execCommand('insertText', false, 'Another line')", Some(WORLD), None).await.unwrap();
+            gtk::glib::timeout_future(std::time::Duration::from_millis(30)).await;
+            assert!(grew.get(), "Typing a new HTML line must report content growth");
+            let controllers = editor.view.observe_controllers();
+            let keys = (0..controllers.n_items()).filter_map(|index| controllers.item(index)?.downcast::<gtk::EventControllerKey>().ok()).find(|keys| keys.name().as_deref() == Some("compose-html-shortcuts")).unwrap();
+            assert!(keys.emit_by_name::<bool>("key-pressed", &[&gtk::gdk::Key::a, &0u32, &gtk::gdk::ModifierType::CONTROL_MASK]));
+            let selection = editor.view.evaluate_javascript_future("JSON.stringify({collapsed: getSelection().isCollapsed, text: getSelection().toString()})", Some(WORLD), None).await.unwrap();
+            let selection: serde_json::Value = serde_json::from_str(&selection.to_str()).unwrap();
+            assert_eq!(selection["collapsed"], false);
+            assert!(selection["text"].as_str().unwrap().contains("My reply"));
+            let bold = strip.first_child().unwrap().downcast::<gtk::ToggleButton>().unwrap();
+            let italic = bold.next_sibling().unwrap().downcast::<gtk::ToggleButton>().unwrap();
+            let clear = strip.last_child().unwrap().downcast::<gtk::Button>().unwrap();
+            for newline in [false, true] {
+                editor.view.evaluate_javascript_future(
+                    "setContent({html: '<div><b><i>Styled</i></b></div>'}); { const range = document.createRange(); range.selectNodeContents(document.querySelector('i')); range.collapse(false); getSelection().removeAllRanges(); getSelection().addRange(range); } reportFormats()",
+                    Some(WORLD), None).await.unwrap();
+                if newline {
+                    editor.view.evaluate_javascript_future("document.execCommand('insertParagraph'); reportFormats()", Some(WORLD), None).await.unwrap();
+                }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(30)).await;
+                assert!(bold.is_active() && italic.is_active());
+                clear.emit_clicked();
+                editor.view.evaluate_javascript_future("document.execCommand('insertText', false, 'Plain'); reportFormats()", Some(WORLD), None).await.unwrap();
+                gtk::glib::timeout_future(std::time::Duration::from_millis(30)).await;
+                assert!(!bold.is_active() && !italic.is_active());
+                let style = editor.view.evaluate_javascript_future(
+                    "(() => { const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let styled; while (walker.nextNode()) if (walker.currentNode.data === 'Styled') styled = walker.currentNode; const typed = getComputedStyle(getSelection().anchorNode.parentElement); const original = getComputedStyle(styled.parentElement); return JSON.stringify({weight: typed.fontWeight, style: typed.fontStyle, originalWeight: original.fontWeight, originalStyle: original.fontStyle, html: document.body.innerHTML}); })()",
+                    Some(WORLD), None).await.unwrap();
+                let style: serde_json::Value = serde_json::from_str(&style.to_str()).unwrap();
+                assert_eq!(style["weight"], "400", "{style}");
+                assert_eq!(style["style"], "normal", "{style}");
+                assert_eq!(style["originalWeight"], "700", "{style}");
+                assert_eq!(style["originalStyle"], "italic", "{style}");
+                bold.emit_clicked();
+                editor.view.evaluate_javascript_future("reportFormats()", Some(WORLD), None).await.unwrap();
+                gtk::glib::timeout_future(std::time::Duration::from_millis(30)).await;
+                assert!(bold.is_active());
+            }
         });
         editor.view.stop_loading();
         window.destroy();

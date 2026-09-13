@@ -4,7 +4,8 @@ body {
     line-height: 1.5;
     margin: 0;
     padding: 12px;
-    min-height: calc(100vh - 24px);
+    background: transparent;
+    min-height: calc(var(--compose-min-height) - 24px);
     overflow-wrap: anywhere;
     outline: none;
 }
@@ -16,7 +17,7 @@ body > blockquote {
 img { max-width: 100%; }
 pre { white-space: pre-wrap; }
 
-html { overflow-anchor: none; }
+html { overflow-anchor: none; background: transparent; }
 iframe {
     display: block;
     width: 100%;
