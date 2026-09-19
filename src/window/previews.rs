@@ -9,7 +9,7 @@ impl State {
             return;
         };
         for message in self
-            .groups
+            .thread_groups
             .borrow()
             .iter()
             .filter_map(|group| group.first())

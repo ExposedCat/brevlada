@@ -7,8 +7,7 @@ pub enum Command {
     SenderAction {
         account: Account,
         folder: String,
-        generation: u64,
-        sender: String,
+        sender: crate::models::action_target::ActionTarget,
         action: crate::models::sender_action::SenderAction,
     },
     Discover,
@@ -22,7 +21,13 @@ pub enum Command {
 }
 
 pub enum Event {
-    SenderActionDone(u64, String, crate::models::sender_action::SenderAction),
+    SenderActionFinished {
+        account: String,
+        folder: String,
+        sender: crate::models::action_target::ActionTarget,
+        messages: Option<Vec<Message>>,
+        error: Option<String>,
+    },
     Accounts(Vec<Account>),
     SidebarReady,
     Folders(String, Vec<String>),
@@ -59,13 +64,21 @@ pub struct Worker {
 impl Worker {
     #[cfg(test)]
     pub fn disconnected() -> Self {
-        let (commands, _) = mpsc::channel();
-        Self {
-            background: super::sync_queue::SyncQueue::default(),
-            commands,
-            bodies: super::body_queue::BodyQueue::default(),
-            avatars: AvatarQueue::default(),
-        }
+        Self::recording().0
+    }
+
+    #[cfg(test)]
+    pub fn recording() -> (Self, mpsc::Receiver<Command>) {
+        let (commands, receiver) = mpsc::channel();
+        (
+            Self {
+                background: super::sync_queue::SyncQueue::default(),
+                commands,
+                bodies: super::body_queue::BodyQueue::default(),
+                avatars: AvatarQueue::default(),
+            },
+            receiver,
+        )
     }
 
     pub fn send(&self, command: Command) -> Result<()> {
@@ -184,13 +197,22 @@ fn execute(
         Command::SenderAction {
             account,
             folder,
-            generation,
             sender,
             action,
         } => {
-            super::sender_actions::execute(
-                &account, &folder, generation, &sender, action, storage, events,
-            )?;
+            let outcome =
+                super::sender_actions::execute(&account, &folder, &sender, action, storage, events);
+            let (messages, error) = match outcome {
+                Ok(outcome) => outcome,
+                Err(error) => (None, Some(error.to_string())),
+            };
+            events.send_blocking(Event::SenderActionFinished {
+                account: account.email,
+                folder,
+                sender,
+                messages,
+                error,
+            })?;
             background.refresh();
         }
         Command::Discover => {

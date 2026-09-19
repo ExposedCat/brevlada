@@ -7,35 +7,45 @@ use std::io::{Read, Write};
 pub fn execute(
     account: &Account,
     folder: &str,
-    generation: u64,
-    sender: &str,
+    target: &crate::models::action_target::ActionTarget,
     action: SenderAction,
     storage: &mut Storage,
     events: &async_channel::Sender<Event>,
-) -> Result<()> {
+) -> Result<(Option<Vec<Message>>, Option<String>)> {
     let mut mail = Mail::connect(account)?;
-    let result = apply(&mut mail.session, folder, sender, action);
-    if result.is_ok() {
-        events.send_blocking(Event::SenderActionDone(generation, sender.into(), action))?;
-    }
-    let refresh = (|| -> Result<()> {
+    let result = match target {
+        crate::models::action_target::ActionTarget::Sender(sender) => {
+            apply(&mut mail.session, folder, sender, action)
+        }
+        crate::models::action_target::ActionTarget::Messages(messages) => apply_messages(
+            &mut mail,
+            folder,
+            storage.validity(&account.email, folder)?,
+            messages,
+            action,
+        ),
+    };
+    let refresh = (|| -> Result<Vec<Message>> {
         let (validity, flags) = mail.inventory(folder)?;
         storage.inventory(&account.email, folder, validity, &flags)?;
         let (validity, headers, uids) = mail.headers(folder)?;
         storage.reconcile(&account.email, folder, validity, headers, &uids)?;
-        events.send_blocking(Event::Messages(
-            generation,
-            storage.messages(&account.email, folder)?,
-            false,
-        ))?;
         events.send_blocking(Event::Unread(
             account.email.clone(),
             vec![(folder.into(), flags.iter().any(|flag| !flag.read))],
         ))?;
-        Ok(())
+        storage.messages(&account.email, folder)
     })();
-    result?;
-    refresh
+    let error = result
+        .err()
+        .or_else(|| {
+            refresh
+                .as_ref()
+                .err()
+                .map(|error| anyhow::anyhow!(error.to_string()))
+        })
+        .map(|error| error.to_string());
+    Ok((refresh.ok(), error))
 }
 
 fn apply<T: Read + Write>(
@@ -74,6 +84,42 @@ fn apply<T: Read + Write>(
             }
         }
     }
+    apply_uids(session, folder, validity, &uids, action)
+}
+
+fn apply_messages(
+    mail: &mut Mail,
+    folder: &str,
+    validity: Option<u32>,
+    messages: &[(u32, String)],
+    action: SenderAction,
+) -> Result<()> {
+    let validity = validity.context("Mailbox is not ready; refresh and retry")?;
+    let uids: Vec<_> = messages.iter().map(|(uid, _)| *uid).collect();
+    if uids.is_empty() {
+        return Ok(());
+    }
+    for chunk in uids.chunks(200) {
+        let headers = mail.header_batch(folder, validity, chunk)?;
+        for header in headers {
+            ensure!(
+                messages
+                    .iter()
+                    .any(|(uid, id)| *uid == header.uid && *id == header.message_id),
+                "Message changed on the server; refresh and retry"
+            );
+        }
+    }
+    apply_uids(&mut mail.session, folder, validity, &uids, action)
+}
+
+fn apply_uids<T: Read + Write>(
+    session: &mut Session<T>,
+    folder: &str,
+    validity: u32,
+    uids: &[u32],
+    action: SenderAction,
+) -> Result<()> {
     if uids.is_empty() {
         return Ok(());
     }

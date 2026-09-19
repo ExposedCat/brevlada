@@ -3,32 +3,34 @@ use super::*;
 impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
         match event {
-            Event::SenderActionDone(generation, sender, action)
-                if generation == self.generation.get() =>
-            {
-                self.new_selection();
-                if action == models::sender_action::SenderAction::MarkRead {
-                    let messages: Vec<_> = self
-                        .messages
-                        .borrow()
-                        .iter()
-                        .filter(|message| models::senders::key(message) == sender)
-                        .cloned()
-                        .collect();
-                    for mut message in messages {
-                        message.is_read = true;
-                        self.update_body(&message);
+            Event::SenderActionFinished {
+                account,
+                folder,
+                sender,
+                messages,
+                error,
+            } => {
+                self.sender_actions
+                    .borrow_mut()
+                    .finish(&account, &folder, &sender);
+                if self
+                    .account
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| current.email == account)
+                    && *self.folder.borrow() == folder
+                {
+                    if let Some(messages) = messages {
+                        *self.messages.borrow_mut() = messages;
                     }
-                } else {
-                    let affected = self.messages.borrow().iter().any(|message| {
-                        self.selected.borrow().contains(&message.uid)
-                            && models::senders::key(message) == sender
-                    });
-                    if affected {
-                        self.selected.borrow_mut().clear();
-                        self.cards.borrow_mut().clear();
-                        ui::states::select_message(&self.viewer);
-                    }
+                    self.refresh_sender_view();
+                    self.load_expanded();
+                }
+                if let Some(error) = error {
+                    self.toast.add_toast(adw::Toast::new(&format!(
+                        "Could not complete action for {}: {error}",
+                        sender.label()
+                    )));
                 }
             }
             Event::Accounts(accounts) => {

@@ -9,6 +9,8 @@ pub mod folders;
 mod html;
 mod html_editor;
 mod html_formatting;
+mod mail_shortcuts;
+mod menu_item;
 mod message_row;
 mod pane_state;
 mod preview;
@@ -77,7 +79,7 @@ pub fn pane(
         .start_child(left)
         .end_child(right)
         .position(position)
-        .resize_start_child(true)
+        .resize_start_child(false)
         .resize_end_child(true)
         .shrink_start_child(false)
         .shrink_end_child(false)

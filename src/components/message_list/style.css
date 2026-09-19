@@ -142,3 +142,16 @@ toolbarview > * {
 .message-list-root {
     margin: var(--spacing-sm);
 }
+
+popover.mail-actions .mail-action-shortcut {
+    color: var(--menu-shortcut-color);
+}
+
+popover.mail-actions .mail-action {
+    font-weight: normal;
+    padding: var(--spacing-sm) var(--spacing-md);
+}
+
+popover.mail-actions .mail-action-shortcut {
+    margin-left: var(--spacing-lg);
+}

@@ -2,50 +2,89 @@ use crate::theme;
 use adw::prelude::*;
 use gtk::glib;
 use serde::{Deserialize, Serialize};
-use std::{io::ErrorKind, path::Path};
+use std::{cell::Cell, io::ErrorKind, path::Path, rc::Rc};
 
 #[derive(Deserialize, Serialize)]
 struct PaneState {
-    sidebar_fraction: f64,
-    messages_fraction: f64,
+    sidebar_width: i32,
+    sender_width: i32,
+    thread_width: i32,
     #[serde(default)]
     maximized: bool,
+    #[serde(default)]
+    sidebar_collapsed: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum SavedState {
-    Proportions(PaneState),
-    Pixels { sidebar: i32, messages: i32 },
+    Widths(PaneState),
+    Proportions {
+        sidebar_fraction: f64,
+        messages_fraction: f64,
+        threads_fraction: Option<f64>,
+        #[serde(default)]
+        maximized: bool,
+        #[serde(default)]
+        sidebar_collapsed: bool,
+    },
+    Pixels {
+        sidebar: i32,
+        messages: i32,
+    },
 }
 
 impl Default for PaneState {
     fn default() -> Self {
-        Self::from_pixels(theme::SIDEBAR_WIDTH, theme::LIST_WIDTH)
+        Self {
+            sidebar_width: theme::SIDEBAR_WIDTH,
+            sender_width: theme::LIST_WIDTH,
+            thread_width: theme::LIST_WIDTH,
+            maximized: false,
+            sidebar_collapsed: false,
+        }
     }
 }
 
 impl PaneState {
-    fn from_pixels(sidebar: i32, messages: i32) -> Self {
-        Self {
-            sidebar_fraction: f64::from(sidebar) / f64::from(theme::WINDOW_WIDTH),
-            messages_fraction: f64::from(messages)
-                / f64::from((theme::WINDOW_WIDTH - sidebar).max(1)),
-            maximized: false,
-        }
-    }
-
     fn load(path: &Path) -> anyhow::Result<Self> {
-        match std::fs::read(path) {
-            Ok(data) => match serde_json::from_slice(&data)? {
-                SavedState::Proportions(state) => Ok(state),
-                SavedState::Pixels { sidebar, messages } => {
-                    Ok(Self::from_pixels(sidebar, messages))
-                }
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(match serde_json::from_slice(&data)? {
+            SavedState::Widths(state) => state,
+            SavedState::Pixels { sidebar, messages } => Self {
+                sidebar_width: sidebar,
+                sender_width: messages,
+                ..Self::default()
             },
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error.into()),
-        }
+            SavedState::Proportions {
+                sidebar_fraction,
+                messages_fraction,
+                threads_fraction,
+                maximized,
+                sidebar_collapsed,
+            } => {
+                // Legacy layouts only recorded fractions, not the window size.
+                let sidebar_width =
+                    (sidebar_fraction * f64::from(theme::WINDOW_WIDTH)).round() as i32;
+                let remaining =
+                    theme::WINDOW_WIDTH - if sidebar_collapsed { 0 } else { sidebar_width };
+                let sender_width = (messages_fraction * f64::from(remaining)).round() as i32;
+                let thread_width = threads_fraction
+                    .map(|fraction| (fraction * f64::from(remaining - sender_width)).round() as i32)
+                    .unwrap_or(theme::LIST_WIDTH);
+                Self {
+                    sidebar_width,
+                    sender_width,
+                    thread_width,
+                    maximized,
+                    sidebar_collapsed,
+                }
+            }
+        })
     }
 
     fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -57,38 +96,42 @@ impl PaneState {
     }
 }
 
-fn available_width(pane: &gtk::Paned) -> i32 {
-    [pane.start_child(), pane.end_child()]
-        .into_iter()
-        .flatten()
-        .filter_map(|child| child.compute_bounds(pane))
-        .map(|bounds| bounds.width().round() as i32)
-        .sum()
-}
-
-fn restore(pane: &gtk::Paned, fraction: f64) {
-    if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
-        return;
+// Keep logical pixel widths: only the viewer absorbs changes in available space.
+// Restoring a fraction of a newly enlarged parent would grow a reopened sidebar.
+fn remember_width(pane: &gtk::Paned, initial: i32) -> Rc<Cell<i32>> {
+    let width = Rc::new(Cell::new(initial.max(1)));
+    pane.set_position(width.get());
+    if let Some(child) = pane.start_child() {
+        let weak = pane.downgrade();
+        let saved = width.clone();
+        child.connect_visible_notify(move |child| {
+            if let Some(pane) = weak.upgrade() {
+                if child.get_visible() {
+                    pane.set_position(saved.get());
+                } else {
+                    // Capture the allocated width before the hidden layout is applied.
+                    saved.set(pane.position().max(1));
+                }
+            }
+        });
     }
-    pane.add_tick_callback(move |pane, _| {
-        if apply_fraction(pane, fraction) {
-            glib::ControlFlow::Break
-        } else {
-            glib::ControlFlow::Continue
-        }
-    });
+    width
 }
 
-fn apply_fraction(pane: &gtk::Paned, fraction: f64) -> bool {
-    let width = available_width(pane);
-    if width <= 0 {
-        return false;
+fn current_width(pane: &gtk::Paned, saved: i32) -> i32 {
+    if pane.start_child().is_some_and(|child| child.get_visible()) {
+        pane.position().max(1)
+    } else {
+        saved
     }
-    pane.set_position((fraction * f64::from(width)).round() as i32);
-    true
 }
 
-pub fn remember(window: &adw::ApplicationWindow, sidebar: &gtk::Paned, messages: &gtk::Paned) {
+pub fn remember(
+    window: &adw::ApplicationWindow,
+    sidebar: &gtk::Paned,
+    messages: &gtk::Paned,
+    threads: &gtk::Paned,
+) {
     let path = glib::user_config_dir().join("brevlada/layout.json");
     let state = PaneState::load(&path).unwrap_or_else(|error| {
         eprintln!("Could not restore window layout: {error}");
@@ -97,23 +140,30 @@ pub fn remember(window: &adw::ApplicationWindow, sidebar: &gtk::Paned, messages:
     if state.maximized {
         window.maximize();
     }
-    restore(sidebar, state.sidebar_fraction);
-    restore(messages, state.messages_fraction);
+    if let Some(child) = sidebar.start_child() {
+        child.set_visible(!state.sidebar_collapsed);
+    }
+    let sidebar_width = remember_width(sidebar, state.sidebar_width);
+    let sender_width = remember_width(messages, state.sender_width);
+    let thread_width = remember_width(threads, state.thread_width);
     let sidebar = sidebar.downgrade();
     let messages = messages.downgrade();
+    let threads = threads.downgrade();
     window.connect_close_request(move |window| {
-        if let (Some(sidebar), Some(messages)) = (sidebar.upgrade(), messages.upgrade()) {
-            let sidebar_width = available_width(&sidebar);
-            let messages_width = available_width(&messages);
-            if sidebar_width > 0 && messages_width > 0 {
-                let state = PaneState {
-                    sidebar_fraction: f64::from(sidebar.position()) / f64::from(sidebar_width),
-                    messages_fraction: f64::from(messages.position()) / f64::from(messages_width),
-                    maximized: window.is_maximized(),
-                };
-                if let Err(error) = state.save(&path) {
-                    eprintln!("Could not save window layout: {error}");
-                }
+        if let (Some(sidebar), Some(messages), Some(threads)) =
+            (sidebar.upgrade(), messages.upgrade(), threads.upgrade())
+        {
+            let state = PaneState {
+                sidebar_width: current_width(&sidebar, sidebar_width.get()),
+                sender_width: current_width(&messages, sender_width.get()),
+                thread_width: current_width(&threads, thread_width.get()),
+                maximized: window.is_maximized(),
+                sidebar_collapsed: sidebar
+                    .start_child()
+                    .is_some_and(|child| !child.get_visible()),
+            };
+            if let Err(error) = state.save(&path) {
+                eprintln!("Could not save window layout: {error}");
             }
         }
         glib::Propagation::Proceed
@@ -127,21 +177,53 @@ mod diagnostics {
 
     #[test]
     #[ignore = "Requires a graphical session; allocates widgets without presenting a window"]
-    fn restores_proportions_at_different_sizes_and_keeps_them_on_resize() {
+    fn toggling_sidebars_preserves_widths_and_gives_space_to_viewer() {
         gtk::init().unwrap();
-        for initial_width in [1400, 1920] {
-            let messages = pane(&column("diagnostic"), &column("diagnostic"), 400);
-            let sidebar = pane(&column("diagnostic"), &messages, 300);
-            sidebar.allocate(initial_width, 900, -1, None);
-            assert!(apply_fraction(&sidebar, 0.25));
-            assert!(apply_fraction(&messages, 0.45));
-            for width in [initial_width, 1920, 1200, 1400] {
-                sidebar.allocate(width, 900, -1, None);
-                for (pane, fraction) in [(&sidebar, 0.25), (&messages, 0.45)] {
-                    let expected = f64::from(available_width(pane)) * fraction;
-                    assert!((f64::from(pane.position()) - expected).abs() <= 2.0);
-                }
-            }
+        let accounts = column("diagnostic");
+        let senders = column("diagnostic");
+        let messages = column("diagnostic");
+        let viewer = column("diagnostic");
+        let threads = pane(&messages, &viewer, 350);
+        let content = pane(&senders, &threads, 300);
+        let main = pane(&accounts, &content, 250);
+        let account_width = remember_width(&main, 250);
+        let thread_width = remember_width(&threads, 350);
+        remember_width(&content, 300);
+        main.allocate(1600, 900, -1, None);
+        let initial_viewer = viewer.width();
+        for _ in 0..20 {
+            accounts.set_visible(false);
+            main.allocate(1600, 900, -1, None);
+            assert_eq!(senders.width(), 300);
+            assert_eq!(messages.width(), 350);
+            assert!(viewer.width() >= initial_viewer + 250);
+            assert_eq!(current_width(&main, account_width.get()), 250);
+            accounts.set_visible(true);
+            main.allocate(1600, 900, -1, None);
+            assert_eq!(accounts.width(), 250);
+            assert_eq!(senders.width(), 300);
+            assert_eq!(messages.width(), 350);
+            assert_eq!(viewer.width(), initial_viewer);
+            messages.set_visible(false);
+            main.allocate(1600, 900, -1, None);
+            assert_eq!(senders.width(), 300);
+            assert_eq!(current_width(&threads, thread_width.get()), 350);
+            messages.set_visible(true);
+            main.allocate(1600, 900, -1, None);
+            assert_eq!(messages.width(), 350);
+            assert_eq!(viewer.width(), initial_viewer);
         }
+        main.set_position(280);
+        threads.set_position(370);
+        main.allocate(1600, 900, -1, None);
+        accounts.set_visible(false);
+        messages.set_visible(false);
+        main.allocate(1900, 900, -1, None);
+        accounts.set_visible(true);
+        messages.set_visible(true);
+        main.allocate(1900, 900, -1, None);
+        assert_eq!(accounts.width(), 280);
+        assert_eq!(senders.width(), 300);
+        assert_eq!(messages.width(), 370);
     }
 }

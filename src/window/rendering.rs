@@ -3,20 +3,46 @@ use super::*;
 impl State {
     pub(super) fn render_list(&self) {
         self.rendering.set(true);
-        let old = self.groups.borrow().clone();
-        let sender = self.selected_sender.borrow().clone();
+        self.render_pane(false);
+        if self.selected_sender.borrow().is_some() {
+            self.render_pane(true);
+        }
+        self.rendering.set(false);
+        self.load_previews();
+    }
+
+    fn render_pane(&self, threads: bool) {
+        let (list, list_scroll, list_stack, stored_groups) = if threads {
+            (
+                &self.thread_list,
+                &self.thread_scroll,
+                &self.thread_stack,
+                &self.thread_groups,
+            )
+        } else {
+            (
+                &self.list,
+                &self.list_scroll,
+                &self.list_stack,
+                &self.groups,
+            )
+        };
+        let old = stored_groups.borrow().clone();
+        let sender = if threads {
+            self.selected_sender.borrow().clone()
+        } else {
+            None
+        };
         let query = self.search.text().trim().to_lowercase();
+        let messages = self.visible_messages();
         let groups = if let Some(sender) = &sender {
-            let messages: Vec<_> = self
-                .messages
-                .borrow()
-                .iter()
+            let messages: Vec<_> = messages
+                .into_iter()
                 .filter(|message| models::senders::key(message) == *sender)
-                .cloned()
                 .collect();
             models::threads(&messages, &query)
         } else {
-            models::senders::groups(&self.messages.borrow(), &query)
+            models::senders::groups(&messages, &query)
         };
         let related = |left: &[Message], right: &[Message]| {
             if sender.is_some() {
@@ -25,12 +51,12 @@ impl State {
                 models::senders::key(&left[0]) == models::senders::key(&right[0])
             }
         };
-        let selected_row = self.list.selected_row();
+        let selected_row = list.selected_row();
         let rows: Vec<_> = (0..old.len())
-            .filter_map(|i| self.list.row_at_index(i as i32))
+            .filter_map(|i| list.row_at_index(i as i32))
             .collect();
         let mut used = HashSet::new();
-        ui::scroll_position::preserve(&self.list_scroll, &self.list, || {
+        ui::scroll_position::preserve(list_scroll, list, || {
             for (index, group) in groups.iter().enumerate() {
                 let previous = old
                     .iter()
@@ -52,29 +78,29 @@ impl State {
                 } else {
                     ui::sender_row(group, &self.avatars)
                 };
-                if self.list.row_at_index(index as i32).as_ref() != Some(&row) {
+                if list.row_at_index(index as i32).as_ref() != Some(&row) {
                     if row.parent().is_some() {
-                        self.list.unselect_row(&row);
-                        self.list.remove(&row);
+                        list.unselect_row(&row);
+                        list.remove(&row);
                     }
-                    self.list.insert(&row, index as i32);
+                    list.insert(&row, index as i32);
                 }
             }
             for (index, row) in rows.iter().enumerate() {
                 if !used.contains(&index) && row.parent().is_some() {
-                    self.list.remove(row);
+                    list.remove(row);
                 }
             }
             if let Some(row) = selected_row
                 && row.parent().is_some()
-                && self.list.selected_row().as_ref() != Some(&row)
+                && list.selected_row().as_ref() != Some(&row)
             {
-                self.list.select_row(Some(&row));
+                list.select_row(Some(&row));
             }
         });
         if groups.is_empty() {
             ui::states::list_state(
-                &self.list_stack,
+                list_stack,
                 if self.loading.get() {
                     "Loading messages..."
                 } else if !query.is_empty() {
@@ -88,48 +114,25 @@ impl State {
                 false,
             );
         } else {
-            self.list_stack.set_visible_child_name("list");
+            list_stack.set_visible_child_name("list");
         }
-        *self.groups.borrow_mut() = groups;
-        self.rendering.set(false);
-        self.load_previews();
+        *stored_groups.borrow_mut() = groups;
     }
 
     pub(super) fn update_body(&self, message: &Message) {
-        let mut read_changed = false;
         if let Some(existing) = self
             .messages
             .borrow_mut()
             .iter_mut()
             .find(|m| m.uid == message.uid)
         {
-            read_changed = existing.is_read != message.is_read;
             *existing = message.clone();
         }
-        let mut groups = self.groups.borrow_mut();
-        for (index, group) in groups.iter_mut().enumerate() {
-            if let Some(existing) = group.iter_mut().find(|m| m.uid == message.uid) {
-                let flags_changed = existing.is_read != message.is_read
-                    || existing.is_flagged != message.is_flagged;
-                let body_changed = existing.body_text != message.body_text
-                    || existing.body_html != message.body_html;
-                *existing = message.clone();
-                if (flags_changed || body_changed)
-                    && let Some(row) = self.list.row_at_index(index as i32)
-                {
-                    if self.selected_sender.borrow().is_some() {
-                        ui::update_message_row(&row, group);
-                    } else {
-                        ui::update_sender(&row, group, &self.avatars);
-                    }
-                }
-                break;
-            }
-        }
-        drop(groups);
-        if read_changed {
-            self.render_list();
-        }
+        let Some(visible) = self.visible_message(message) else {
+            return;
+        };
+        let message = &visible;
+        self.render_list();
         if let Some(card) = self.cards.borrow().get(&message.uid) {
             ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
                 card.update(message)

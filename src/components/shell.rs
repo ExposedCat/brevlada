@@ -5,6 +5,11 @@ use adw::prelude::*;
 pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub sidebar: gtk::Box,
+    pub account_sidebar: gtk::Box,
+    pub thread_sidebar: gtk::Box,
+    pub thread_list: gtk::ListBox,
+    pub thread_scroll: gtk::ScrolledWindow,
+    pub thread_stack: gtk::Stack,
     pub sync_status: super::sync_status::SyncStatus,
     pub list: gtk::ListBox,
     pub list_scroll: gtk::ScrolledWindow,
@@ -48,6 +53,8 @@ impl Shell {
         let sync = button("view-refresh-symbolic", "Sync accounts now");
         sync.set_sensitive(false);
         sidebar_header.pack_start(&sync);
+        let collapse_sidebar = button("sidebar-show-symbolic", "Collapse sidebar");
+        sidebar_header.pack_end(&collapse_sidebar);
         sidebar_column.append(&sidebar_header);
         let sidebar = column("navigation-list");
         let sidebar_wrapper = column("sidebar");
@@ -63,7 +70,30 @@ impl Shell {
         let compose_button = button("mail-message-new-symbolic", "Compose message");
         let back = button("go-previous-symbolic", "Back to senders");
         back.set_visible(false);
-        list_header.pack_start(&back);
+
+        let expand_sidebar = button("sidebar-show-symbolic", "Expand sidebar");
+        list_header.pack_start(&expand_sidebar);
+        sidebar_column
+            .bind_property("visible", &expand_sidebar, "visible")
+            .invert_boolean()
+            .sync_create()
+            .build();
+        let target = sidebar_column.downgrade();
+        let expand = expand_sidebar.downgrade();
+        collapse_sidebar.connect_clicked(move |_| {
+            if let (Some(target), Some(expand)) = (target.upgrade(), expand.upgrade()) {
+                target.set_visible(false);
+                expand.grab_focus();
+            }
+        });
+        let target = sidebar_column.downgrade();
+        let collapse = collapse_sidebar.downgrade();
+        expand_sidebar.connect_clicked(move |_| {
+            if let (Some(target), Some(collapse)) = (target.upgrade(), collapse.upgrade()) {
+                target.set_visible(true);
+                collapse.grab_focus();
+            }
+        });
         let refresh = button("view-refresh-symbolic", "Refresh messages");
         refresh.set_sensitive(false);
         list_header.pack_start(&refresh);
@@ -114,9 +144,35 @@ impl Shell {
         list_root.add(&list);
         let list_stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
         let list_scroll = scroll(&list_root);
-        list_stack.add_named(&list_scroll, Some("list"));
+        list_stack.add_named(&super::sender_menu::container(&list_scroll), Some("list"));
         states::list_state(&list_stack, "No messages in this folder", false, false);
         middle.append(&list_stack);
+        let thread_sidebar = column("message-list-wrapper");
+        thread_sidebar.set_visible(false);
+        let thread_header = adw::HeaderBar::builder()
+            .title_widget(&gtk::Label::new(Some("Messages")))
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .width_request(theme::LIST_WIDTH)
+            .css_classes(["message-list-header"])
+            .build();
+        thread_header.pack_start(&back);
+        thread_sidebar.append(&thread_header);
+        let thread_list = gtk::ListBox::builder()
+            .activate_on_single_click(true)
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(["boxed-list"])
+            .build();
+        let thread_root = adw::PreferencesGroup::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .css_classes(["message-list-root"])
+            .build();
+        thread_root.add(&thread_list);
+        let thread_scroll = scroll(&thread_root);
+        let thread_stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
+        thread_stack.add_named(&super::sender_menu::container(&thread_scroll), Some("list"));
+        thread_sidebar.append(&thread_stack);
         let right = column("content-wrapper");
         let header = adw::HeaderBar::builder()
             .title_widget(&gtk::Box::new(gtk::Orientation::Horizontal, 0))
@@ -129,6 +185,7 @@ impl Shell {
         headers.add_widget(&sidebar_header);
         headers.add_widget(&list_header);
         headers.add_widget(&header);
+        headers.add_widget(&thread_header);
         right.append(&header);
         let viewer = column("message-container");
         states::select_message(&viewer);
@@ -146,9 +203,10 @@ impl Shell {
         let viewer_scroll = scroll(&viewer_viewport);
         viewer_root.append(&viewer_scroll);
         right.append(&viewer_root);
-        let content = pane(&middle, &right, theme::LIST_WIDTH);
+        let thread_content = pane(&thread_sidebar, &right, theme::LIST_WIDTH);
+        let content = pane(&middle, &thread_content, theme::LIST_WIDTH);
         let main = pane(&sidebar_column, &content, theme::SIDEBAR_WIDTH);
-        super::pane_state::remember(&window, &main, &content);
+        super::pane_state::remember(&window, &main, &content, &thread_content);
         let toolbar = adw::ToolbarView::builder()
             .content(&main)
             .top_bar_style(adw::ToolbarStyle::Flat)
@@ -159,6 +217,11 @@ impl Shell {
         Self {
             window,
             sidebar,
+            account_sidebar: sidebar_column,
+            thread_sidebar,
+            thread_list,
+            thread_scroll,
+            thread_stack,
             sync_status,
             list,
             list_scroll,

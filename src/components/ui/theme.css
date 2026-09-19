@@ -1,4 +1,5 @@
 :root {
+  --menu-shortcut-color: alpha(@window_fg_color, 0.55);
   --spacing-xs: 4px;
   --spacing-sm: 6px;
   --spacing-md: 12px;

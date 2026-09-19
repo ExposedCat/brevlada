@@ -36,6 +36,9 @@ impl State {
         self.reset_list();
         *self.selected_sender.borrow_mut() = None;
         self.back.set_visible(false);
+        self.thread_sidebar.set_visible(false);
+        self.restore_accounts_on_back.set(false);
+        self.reset_threads();
         *self.folder.borrow_mut() = folder;
         self.selected.borrow_mut().clear();
         self.cards.borrow_mut().clear();
@@ -54,12 +57,30 @@ impl State {
         self.rendering.set(false);
     }
 
+    fn reset_threads(&self) {
+        self.rendering.set(true);
+        while let Some(row) = self.thread_list.first_child() {
+            self.thread_list.remove(&row);
+        }
+        self.thread_groups.borrow_mut().clear();
+        self.rendering.set(false);
+    }
+
     pub(super) fn filter_sender(&self, message: Option<Message>) {
-        self.reset_list();
+        let opening = message.is_some() && !self.thread_sidebar.get_visible();
+        self.reset_threads();
         *self.selected_sender.borrow_mut() = message.as_ref().map(models::senders::key);
+        if opening {
+            let was_expanded = self.account_sidebar.get_visible();
+            self.account_sidebar.set_visible(false);
+            self.restore_accounts_on_back.set(was_expanded);
+        } else if message.is_none() && self.restore_accounts_on_back.replace(false) {
+            self.account_sidebar.set_visible(true);
+        }
+        self.thread_sidebar.set_visible(message.is_some());
         self.back.set_visible(message.is_some());
         self.render_list();
-        self.list_scroll.vadjustment().set_value(0.0);
+        self.thread_scroll.vadjustment().set_value(0.0);
     }
 
     pub(super) fn show_thread(self: &Rc<Self>, group: Vec<Message>) {

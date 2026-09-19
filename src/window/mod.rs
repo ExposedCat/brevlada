@@ -2,6 +2,7 @@ mod actions;
 mod events;
 mod previews;
 mod rendering;
+mod sender_actions;
 use crate::{
     backend::worker::{self, BodyRequest, Command, Event},
     components as ui,
@@ -19,6 +20,7 @@ use std::{
 
 struct State {
     sender: worker::Worker,
+    sender_actions: RefCell<models::pending_actions::PendingActions>,
     account: RefCell<Option<Account>>,
     folder: RefCell<String>,
     generation: Cell<u64>,
@@ -33,6 +35,13 @@ struct State {
     selected: RefCell<Vec<u32>>,
     cards: RefCell<HashMap<u32, ui::viewer::Card>>,
     sidebar: gtk::Box,
+    account_sidebar: gtk::Box,
+    restore_accounts_on_back: Cell<bool>,
+    thread_sidebar: gtk::Box,
+    thread_list: gtk::ListBox,
+    thread_scroll: gtk::ScrolledWindow,
+    thread_stack: gtk::Stack,
+    thread_groups: RefCell<Vec<Vec<Message>>>,
     sync_status: ui::sync_status::SyncStatus,
     folder_boxes: RefCell<HashMap<String, (Account, gtk::Box)>>,
     folder_names: RefCell<HashMap<String, Vec<String>>>,
@@ -61,36 +70,53 @@ pub fn create(app: &adw::Application) {
     let queue = sender.avatars();
     let avatars = ui::avatars::Avatars::new(move |email| queue.push(email.to_owned()));
     let state = State::new(shell, sender, ui::expansion::Expansion::load(), avatars);
-    let lookup = Rc::downgrade(&state);
-    let activate = Rc::downgrade(&state);
-    ui::sender_menu::attach(
-        &state.list,
-        move |index| {
-            let state = lookup.upgrade()?;
-            if state.selected_sender.borrow().is_some() || state.loading.get() {
-                return None;
-            }
-            state
-                .groups
-                .borrow()
-                .get(index as usize)
-                .and_then(|group| group.first())
-                .map(models::senders::key)
-        },
-        move |sender, action| {
-            if let Some(state) = activate.upgrade()
-                && let Some(account) = state.account.borrow().clone()
-            {
-                state.send(Command::SenderAction {
-                    account,
-                    folder: state.folder.borrow().clone(),
-                    generation: state.generation.get(),
-                    sender,
-                    action,
-                });
-            }
-        },
-    );
+    for threads in [false, true] {
+        let lookup = Rc::downgrade(&state);
+        let activate = Rc::downgrade(&state);
+        ui::sender_menu::attach(
+            if threads {
+                &state.thread_list
+            } else {
+                &state.list
+            },
+            if threads {
+                &state.thread_scroll
+            } else {
+                &state.list_scroll
+            },
+            move |index| {
+                let state = lookup.upgrade()?;
+                if state.loading.get() {
+                    return None;
+                }
+                let groups = if threads {
+                    state.thread_groups.borrow()
+                } else {
+                    state.groups.borrow()
+                };
+                let group = groups.get(index as usize)?;
+                let bulk = !threads;
+                let target = if bulk {
+                    models::action_target::ActionTarget::Sender(models::senders::key(
+                        group.first()?,
+                    ))
+                } else {
+                    models::action_target::ActionTarget::Messages(
+                        group
+                            .iter()
+                            .map(|message| (message.uid, message.message_id.clone()))
+                            .collect(),
+                    )
+                };
+                Some((target, bulk))
+            },
+            move |sender, action| {
+                if let Some(state) = activate.upgrade() {
+                    state.sender_action(sender, action);
+                }
+            },
+        );
+    }
     let weak = Rc::downgrade(&state);
     state.back.connect_clicked(move |_| {
         if let Some(state) = weak.upgrade() {
@@ -124,11 +150,23 @@ pub fn create(app: &adw::Application) {
             }
             let group = state.groups.borrow().get(row.index() as usize).cloned();
             if let Some(group) = group {
-                if state.selected_sender.borrow().is_none() {
-                    state.filter_sender(group.first().cloned());
-                } else {
-                    state.show_thread(group);
-                }
+                state.filter_sender(group.first().cloned());
+            }
+        }
+    });
+    let weak = Rc::downgrade(&state);
+    state.thread_list.connect_row_activated(move |_, row| {
+        if let Some(state) = weak.upgrade() {
+            if state.rendering.get() {
+                return;
+            }
+            let group = state
+                .thread_groups
+                .borrow()
+                .get(row.index() as usize)
+                .cloned();
+            if let Some(group) = group {
+                state.show_thread(group);
             }
         }
     });
@@ -192,6 +230,11 @@ impl State {
         let ui::shell::Shell {
             window: _,
             sidebar,
+            account_sidebar,
+            thread_sidebar,
+            thread_list,
+            thread_scroll,
+            thread_stack,
             sync_status,
             list,
             list_scroll,
@@ -214,14 +257,22 @@ impl State {
             selection: Cell::new(0),
             pending: RefCell::new(HashSet::new()),
             preview_pending: RefCell::new(HashSet::new()),
+            sender_actions: RefCell::default(),
             loading: Cell::new(false),
             rendering: Cell::new(false),
             messages: RefCell::new(Vec::new()),
             groups: RefCell::new(Vec::new()),
+            thread_groups: RefCell::new(Vec::new()),
+            restore_accounts_on_back: Cell::new(false),
             selected_sender: RefCell::new(None),
             selected: RefCell::new(Vec::new()),
             cards: RefCell::new(HashMap::new()),
             sidebar,
+            account_sidebar,
+            thread_sidebar,
+            thread_list,
+            thread_scroll,
+            thread_stack,
             sync_status,
             folder_boxes: RefCell::new(HashMap::new()),
             folder_names: RefCell::new(HashMap::new()),
@@ -241,6 +292,13 @@ impl State {
             sync,
             back,
             search,
+        });
+        let weak = Rc::downgrade(&state);
+        state.account_sidebar.connect_visible_notify(move |_| {
+            if let Some(state) = weak.upgrade() {
+                // A later manual visibility change overrides the automatic collapse.
+                state.restore_accounts_on_back.set(false);
+            }
         });
         let weak = Rc::downgrade(&state);
         state.compose_button.connect_clicked(move |_| {
@@ -526,7 +584,35 @@ mod diagnostics {
             Some(ui::avatars::PIXEL.to_vec()),
         ));
         assert!(account_avatar.custom_image().is_some());
+        let sender_row = state.list.row_at_index(0).unwrap();
+        state.account_sidebar.set_visible(true);
         state.filter_sender(Some(first.clone()));
+        assert!(state.thread_sidebar.get_visible());
+        assert!(!state.account_sidebar.get_visible());
+        assert_eq!(state.list.row_at_index(0).unwrap(), sender_row);
+        assert_eq!(state.groups.borrow().len(), 1);
+        state.filter_sender(None);
+        assert!(state.account_sidebar.get_visible());
+        state.account_sidebar.set_visible(false);
+        state.filter_sender(Some(first.clone()));
+        state.filter_sender(None);
+        assert!(!state.account_sidebar.get_visible());
+        state.account_sidebar.set_visible(true);
+        state.filter_sender(Some(first.clone()));
+        state.account_sidebar.set_visible(true);
+        state.account_sidebar.set_visible(false);
+        state.filter_sender(None);
+        assert!(!state.account_sidebar.get_visible());
+        state.account_sidebar.set_visible(true);
+        state.filter_sender(Some(first.clone()));
+        state.account_sidebar.set_visible(true);
+        state.filter_sender(Some(second.clone()));
+        assert!(state.account_sidebar.get_visible());
+        state.filter_sender(None);
+        assert!(!state.thread_sidebar.get_visible());
+        assert!(state.account_sidebar.get_visible());
+        state.filter_sender(Some(first.clone()));
+        assert!(!state.account_sidebar.get_visible());
         let compose_header = state
             .compose_button
             .ancestor(adw::HeaderBar::static_type())
@@ -622,7 +708,7 @@ mod diagnostics {
         state.compose_button.emit_clicked();
         assert_eq!(receiver.text(), "ada@example.com");
         cancel.emit_clicked();
-        assert_eq!(state.groups.borrow().len(), 2);
+        assert_eq!(state.thread_groups.borrow().len(), 2);
         assert!(state.preview_pending.borrow().contains(&first.uid));
         let preview = Message {
             body_loaded: true,
@@ -645,7 +731,8 @@ mod diagnostics {
         );
         assert!(!state.preview_pending.borrow().contains(&first.uid));
         assert!(
-            labels(state.list.row_at_index(0).unwrap().upcast()).contains(&"Unread preview".into())
+            labels(state.thread_list.row_at_index(0).unwrap().upcast())
+                .contains(&"Unread preview".into())
         );
         let mut refreshed = state.messages.borrow().clone();
         refreshed
@@ -659,19 +746,19 @@ mod diagnostics {
             .unwrap()
             .is_read = false;
         state.event(Event::Messages(state.generation.get(), refreshed, false));
-        assert_eq!(state.groups.borrow()[0][0].uid, second.uid);
+        assert_eq!(state.thread_groups.borrow()[0][0].uid, second.uid);
         assert!(state.back.get_visible());
         state.filter_sender(None);
         assert_eq!(state.groups.borrow().len(), 1);
         assert!(state.selected.borrow().is_empty());
         assert!(state.cards.borrow().is_empty());
         state.filter_sender(Some(first.clone()));
-        let row = state.list.row_at_index(1).unwrap();
-        state.list.select_row(Some(&row));
+        let row = state.thread_list.row_at_index(1).unwrap();
+        state.thread_list.select_row(Some(&row));
         state.show_thread(vec![second.clone()]);
         let card = state.cards.borrow().get(&2).unwrap().widget.clone();
         state
-            .list_scroll
+            .thread_scroll
             .vadjustment()
             .configure(200.0, 0.0, 1500.0, 10.0, 100.0, 400.0);
         let generation = state.generation.get();
@@ -694,11 +781,11 @@ mod diagnostics {
             },
         ));
         assert_eq!(state.cards.borrow().get(&2).unwrap().widget, card);
-        assert_eq!(state.list.selected_row().unwrap(), row);
-        assert_eq!(state.list_scroll.vadjustment().value(), 200.0);
+        assert_eq!(state.thread_list.selected_row().unwrap(), row);
+        assert_eq!(state.thread_scroll.vadjustment().value(), 200.0);
         state.event(Event::Messages(generation, vec![first, second], false));
         assert_eq!(state.cards.borrow().get(&2).unwrap().widget, card);
-        assert_eq!(state.list.selected_row().unwrap(), row);
+        assert_eq!(state.thread_list.selected_row().unwrap(), row);
         assert!(
             state
                 .messages
