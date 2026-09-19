@@ -55,12 +55,6 @@ impl State {
     }
 
     pub(super) fn filter_sender(&self, message: Option<Message>) {
-        if message.is_some() {
-            self.new_selection();
-            self.selected.borrow_mut().clear();
-            self.cards.borrow_mut().clear();
-            ui::states::select_message(&self.viewer);
-        }
         self.reset_list();
         *self.selected_sender.borrow_mut() = message.as_ref().map(models::senders::key);
         self.back.set_visible(message.is_some());

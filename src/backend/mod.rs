@@ -9,6 +9,7 @@ mod http;
 pub mod mail;
 mod mail_sync;
 pub mod parser;
+mod sender_actions;
 mod sender_domains;
 pub mod storage;
 mod sync_progress;

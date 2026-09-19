@@ -14,6 +14,7 @@ mod pane_state;
 mod preview;
 mod reply_quote;
 pub mod scroll_position;
+pub mod sender_menu;
 pub mod shell;
 pub mod sidebar;
 pub mod states;

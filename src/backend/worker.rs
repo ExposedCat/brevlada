@@ -4,6 +4,13 @@ use anyhow::Result;
 use std::{path::PathBuf, sync::mpsc};
 
 pub enum Command {
+    SenderAction {
+        account: Account,
+        folder: String,
+        generation: u64,
+        sender: String,
+        action: crate::models::sender_action::SenderAction,
+    },
     Discover,
     Sync,
     Folders(Account),
@@ -15,6 +22,7 @@ pub enum Command {
 }
 
 pub enum Event {
+    SenderActionDone(u64, String, crate::models::sender_action::SenderAction),
     Accounts(Vec<Account>),
     SidebarReady,
     Folders(String, Vec<String>),
@@ -173,6 +181,18 @@ fn execute(
     background: &super::sync_queue::SyncQueue,
 ) -> Result<()> {
     match command {
+        Command::SenderAction {
+            account,
+            folder,
+            generation,
+            sender,
+            action,
+        } => {
+            super::sender_actions::execute(
+                &account, &folder, generation, &sender, action, storage, events,
+            )?;
+            background.refresh();
+        }
         Command::Discover => {
             background.restore_started(storage.last_sync_started()?);
             let accounts = accounts::discover()?;

@@ -61,6 +61,36 @@ pub fn create(app: &adw::Application) {
     let queue = sender.avatars();
     let avatars = ui::avatars::Avatars::new(move |email| queue.push(email.to_owned()));
     let state = State::new(shell, sender, ui::expansion::Expansion::load(), avatars);
+    let lookup = Rc::downgrade(&state);
+    let activate = Rc::downgrade(&state);
+    ui::sender_menu::attach(
+        &state.list,
+        move |index| {
+            let state = lookup.upgrade()?;
+            if state.selected_sender.borrow().is_some() || state.loading.get() {
+                return None;
+            }
+            state
+                .groups
+                .borrow()
+                .get(index as usize)
+                .and_then(|group| group.first())
+                .map(models::senders::key)
+        },
+        move |sender, action| {
+            if let Some(state) = activate.upgrade()
+                && let Some(account) = state.account.borrow().clone()
+            {
+                state.send(Command::SenderAction {
+                    account,
+                    folder: state.folder.borrow().clone(),
+                    generation: state.generation.get(),
+                    sender,
+                    action,
+                });
+            }
+        },
+    );
     let weak = Rc::downgrade(&state);
     state.back.connect_clicked(move |_| {
         if let Some(state) = weak.upgrade() {
@@ -87,8 +117,8 @@ pub fn create(app: &adw::Application) {
         }
     });
     let weak = Rc::downgrade(&state);
-    state.list.connect_row_selected(move |_, row| {
-        if let (Some(state), Some(row)) = (weak.upgrade(), row) {
+    state.list.connect_row_activated(move |_, row| {
+        if let Some(state) = weak.upgrade() {
             if state.rendering.get() {
                 return;
             }

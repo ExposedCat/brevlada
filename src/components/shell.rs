@@ -102,6 +102,7 @@ impl Shell {
         });
         middle.append(&search_bar);
         let list = gtk::ListBox::builder()
+            .activate_on_single_click(true)
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(["boxed-list"])
             .build();

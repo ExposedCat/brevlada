@@ -3,6 +3,34 @@ use super::*;
 impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
         match event {
+            Event::SenderActionDone(generation, sender, action)
+                if generation == self.generation.get() =>
+            {
+                self.new_selection();
+                if action == models::sender_action::SenderAction::MarkRead {
+                    let messages: Vec<_> = self
+                        .messages
+                        .borrow()
+                        .iter()
+                        .filter(|message| models::senders::key(message) == sender)
+                        .cloned()
+                        .collect();
+                    for mut message in messages {
+                        message.is_read = true;
+                        self.update_body(&message);
+                    }
+                } else {
+                    let affected = self.messages.borrow().iter().any(|message| {
+                        self.selected.borrow().contains(&message.uid)
+                            && models::senders::key(message) == sender
+                    });
+                    if affected {
+                        self.selected.borrow_mut().clear();
+                        self.cards.borrow_mut().clear();
+                        ui::states::select_message(&self.viewer);
+                    }
+                }
+            }
             Event::Accounts(accounts) => {
                 self.sync.set_sensitive(!accounts.is_empty());
                 ui::clear(&self.sidebar);
