@@ -65,7 +65,7 @@ pub fn attach<T: Clone + 'static>(
             let entry = gtk::gio::MenuItem::new(None, None);
             entry.set_attribute_value("custom", Some(&name.to_variant()));
             let icon = match action {
-                SenderAction::MarkRead => "mail-read-symbolic",
+                SenderAction::MarkRead => "brevlada-mail-read-symbolic",
                 SenderAction::Spam => "mail-mark-junk-symbolic",
                 SenderAction::Archive => "package-x-generic-symbolic",
                 SenderAction::Delete => "user-trash-symbolic",
@@ -197,6 +197,9 @@ mod diagnostics {
     #[ignore = "Requires a graphical session; presents an isolated sender menu without mail workers"]
     fn menu_actions_and_dismissal_preserve_selection_and_scroll() {
         gtk::init().unwrap();
+        gtk::gio::resources_register_include!("brevlada.gresource").unwrap();
+        gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap())
+            .add_resource_path("/org/gtk/example/icons");
         adw::init().unwrap();
         let css = gtk::CssProvider::new();
         css.load_from_string(crate::theme::CSS);
@@ -288,7 +291,10 @@ mod diagnostics {
             let shortcut: Option<&str> = None;
             assert!(menu_shortcuts(&popover).is_none());
             if *action == SenderAction::MarkRead {
-                assert_eq!(icon.icon_name().as_deref(), Some("mail-read-symbolic"));
+                assert_eq!(
+                    icon.icon_name().as_deref(),
+                    Some("brevlada-mail-read-symbolic")
+                );
             }
             let theme = gtk::IconTheme::for_display(&icon.display());
             let paintable = theme.lookup_icon(

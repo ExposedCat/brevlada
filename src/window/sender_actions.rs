@@ -3,7 +3,7 @@ use models::sender_action::SenderAction;
 
 impl State {
     pub(super) fn sender_action(
-        &self,
+        self: &Rc<Self>,
         sender: models::action_target::ActionTarget,
         action: SenderAction,
     ) {
@@ -31,16 +31,45 @@ impl State {
             return;
         }
         self.new_selection();
-        if action != SenderAction::MarkRead
+        let replace_open_message = action != SenderAction::MarkRead
             && self.messages.borrow().iter().any(|message| {
                 sender.matches(message) && self.selected.borrow().contains(&message.uid)
-            })
-        {
+            });
+        if replace_open_message {
+            self.deferred_read_sort.borrow_mut().clear();
             self.selected.borrow_mut().clear();
             self.cards.borrow_mut().clear();
             ui::states::select_message(&self.viewer);
         }
         self.refresh_sender_view();
+        if replace_open_message {
+            self.open_first_remaining();
+        }
+    }
+
+    fn open_first_remaining(self: &Rc<Self>) {
+        if self.thread_groups.borrow().is_empty() || self.selected_sender.borrow().is_none() {
+            let first = self
+                .groups
+                .borrow()
+                .first()
+                .and_then(|group| group.first())
+                .cloned();
+            let Some(first) = first else {
+                return;
+            };
+            if let Some(row) = self.list.row_at_index(0) {
+                self.list.select_row(Some(&row));
+            }
+            self.filter_sender(Some(first));
+        }
+        let group = self.thread_groups.borrow().first().cloned();
+        if let Some(group) = group {
+            if let Some(row) = self.thread_list.row_at_index(0) {
+                self.thread_list.select_row(Some(&row));
+            }
+            self.show_thread(group);
+        }
     }
 
     pub(super) fn visible_message(&self, message: &Message) -> Option<Message> {
@@ -209,6 +238,85 @@ mod diagnostics {
                 state.visible_messages(),
                 vec![message.clone(), other.clone()]
             );
+        }
+        // Reading updates the styling immediately but defers unread-first sorting
+        // until another conversation is opened, including across list refreshes.
+        let unread = Message {
+            uid: 10,
+            timestamp: 1,
+            subject: "Unread".into(),
+            body_loaded: true,
+            ..message.clone()
+        };
+        let newer = Message {
+            uid: 11,
+            timestamp: 2,
+            subject: "Newer read".into(),
+            is_read: true,
+            ..unread.clone()
+        };
+        let elsewhere = Message {
+            uid: 12,
+            timestamp: 3,
+            sender: "elsewhere@example.com".into(),
+            ..newer.clone()
+        };
+        *state.messages.borrow_mut() = vec![unread.clone(), newer.clone(), elsewhere.clone()];
+        state.filter_sender(Some(unread.clone()));
+        let row = state.thread_list.row_at_index(0).unwrap();
+        state.thread_list.select_row(Some(&row));
+        state.show_thread(vec![unread.clone()]);
+        let read = Message {
+            is_read: true,
+            ..unread.clone()
+        };
+        state.update_body(&read);
+        assert_eq!(state.thread_list.row_at_index(0).unwrap(), row);
+        assert!(state.thread_groups.borrow()[0][0].is_read);
+        assert_eq!(state.groups.borrow()[0][0].sender, unread.sender);
+        let snapshot = state.messages.borrow().clone();
+        state.event(Event::Messages(state.generation.get(), snapshot, false));
+        state.show_thread(vec![read.clone()]);
+        assert_eq!(state.thread_list.row_at_index(0).unwrap(), row);
+        state.show_thread(vec![newer.clone()]);
+        assert_eq!(state.thread_list.row_at_index(1).unwrap(), row);
+        assert_eq!(state.groups.borrow()[0][0].uid, elsewhere.uid);
+
+        // Removing the open conversation selects AND opens its replacement.
+        // Removing the last conversation from a sender moves to the next sender.
+        for (removed, action, expected) in [
+            (newer, SenderAction::Archive, Some(read.clone())),
+            (read, SenderAction::Delete, Some(elsewhere.clone())),
+            (elsewhere, SenderAction::Delete, None),
+        ] {
+            assert_eq!(*state.selected.borrow(), vec![removed.uid]);
+            state.compose_button.grab_focus();
+            let keys = window
+                .observe_controllers()
+                .iter::<gtk::glib::Object>()
+                .filter_map(Result::ok)
+                .filter_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+                .find(|controller| controller.name().as_deref() == Some("open-message-shortcuts"))
+                .unwrap();
+            let key = if action == SenderAction::Archive {
+                gtk::gdk::Key::BackSpace
+            } else {
+                gtk::gdk::Key::Delete
+            };
+            assert!(keys.emit_by_name::<bool>(
+                "key-pressed",
+                &[&key, &0u32, &gtk::gdk::ModifierType::empty(),]
+            ));
+            if let Some(expected) = expected {
+                assert_eq!(*state.selected.borrow(), vec![expected.uid]);
+                assert!(state.cards.borrow()[&expected.uid].is_expanded());
+                assert_eq!(state.thread_list.selected_row().unwrap().index(), 0);
+                assert_eq!(state.thread_groups.borrow()[0][0].uid, expected.uid);
+            } else {
+                assert!(state.selected.borrow().is_empty());
+                assert!(state.cards.borrow().is_empty());
+                assert!(state.groups.borrow().is_empty());
+            }
         }
         window.close();
     }

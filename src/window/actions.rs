@@ -17,7 +17,7 @@ impl State {
         self.loading.set(true);
         self.refresh.set_sensitive(false);
         ui::states::refreshing(&self.refresh, true);
-        if self.messages.borrow().is_empty() {
+        if self.messages.borrow().is_empty() && !self.has_cached_folder() {
             ui::states::list_state(&self.list_stack, "Loading messages...", true, false);
         }
         self.send(Command::Load {
@@ -29,6 +29,21 @@ impl State {
     }
 
     pub(super) fn select(self: &Rc<Self>, account: Account, folder: String) {
+        // Preserve body/read updates made since the last list response.
+        if self.has_cached_folder() {
+            let current = self.account.borrow();
+            let current = current.as_ref().unwrap();
+            self.folder_cache.borrow_mut().insert(
+                (current.email.clone(), self.folder.borrow().clone()),
+                self.messages.borrow().clone(),
+            );
+        }
+        let cached = self
+            .folder_cache
+            .borrow()
+            .get(&(account.email.clone(), folder.clone()))
+            .cloned()
+            .unwrap_or_default();
         self.sender.focus(&account.email, &folder);
         self.generation.set(self.generation.get() + 1);
         self.new_selection();
@@ -41,11 +56,21 @@ impl State {
         self.reset_threads();
         *self.folder.borrow_mut() = folder;
         self.selected.borrow_mut().clear();
+        self.deferred_read_sort.borrow_mut().clear();
         self.cards.borrow_mut().clear();
-        self.messages.borrow_mut().clear();
+        *self.messages.borrow_mut() = cached;
+        self.loading.set(true);
         self.render_list();
         ui::states::select_message(&self.viewer);
         self.load();
+    }
+
+    pub(super) fn has_cached_folder(&self) -> bool {
+        self.account.borrow().as_ref().is_some_and(|account| {
+            self.folder_cache
+                .borrow()
+                .contains_key(&(account.email.clone(), self.folder.borrow().clone()))
+        })
     }
 
     fn reset_list(&self) {
@@ -68,7 +93,9 @@ impl State {
 
     pub(super) fn filter_sender(&self, message: Option<Message>) {
         let opening = message.is_some() && !self.thread_sidebar.get_visible();
-        self.reset_threads();
+        if message.is_some() {
+            self.reset_threads();
+        }
         *self.selected_sender.borrow_mut() = message.as_ref().map(models::senders::key);
         if opening {
             let was_expanded = self.account_sidebar.get_visible();
@@ -85,10 +112,18 @@ impl State {
 
     pub(super) fn show_thread(self: &Rc<Self>, group: Vec<Message>) {
         self.new_selection();
+        let selected: Vec<_> = group.iter().map(|message| message.uid).collect();
+        if *self.selected.borrow() != selected {
+            *self.deferred_read_sort.borrow_mut() = group
+                .iter()
+                .filter(|message| !message.is_read)
+                .map(|message| message.uid)
+                .collect();
+        }
         ui::clear(&self.viewer);
         self.viewer_scroll.vadjustment().set_value(0.0);
         self.cards.borrow_mut().clear();
-        *self.selected.borrow_mut() = group.iter().map(|m| m.uid).collect();
+        *self.selected.borrow_mut() = selected;
         self.viewer.set_vexpand(false);
         let unread = group.iter().any(|message| !message.is_read);
         for (index, message) in group.iter().enumerate() {
@@ -100,7 +135,8 @@ impl State {
                 self.open(message.uid);
             }
         }
-        self.load_previews();
+        self.render_list();
+        self.viewer_reveal.play();
     }
 
     pub(super) fn card(self: &Rc<Self>, message: &Message, expanded: bool) -> ui::viewer::Card {

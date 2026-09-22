@@ -5,8 +5,8 @@ use adw::prelude::*;
 pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub sidebar: gtk::Box,
-    pub account_sidebar: gtk::Box,
-    pub thread_sidebar: gtk::Box,
+    pub account_sidebar: super::motion::Sidebar,
+    pub thread_sidebar: super::motion::Sidebar,
     pub thread_list: gtk::ListBox,
     pub thread_scroll: gtk::ScrolledWindow,
     pub thread_stack: gtk::Stack,
@@ -16,6 +16,7 @@ pub struct Shell {
     pub viewer_scroll: gtk::ScrolledWindow,
     pub list_stack: gtk::Stack,
     pub viewer: gtk::Box,
+    pub viewer_reveal: super::reveal::Reveal,
     pub compose_button: gtk::Button,
     pub compose: super::compose::Compose,
     pub refresh: gtk::Button,
@@ -73,27 +74,6 @@ impl Shell {
 
         let expand_sidebar = button("sidebar-show-symbolic", "Expand sidebar");
         list_header.pack_start(&expand_sidebar);
-        sidebar_column
-            .bind_property("visible", &expand_sidebar, "visible")
-            .invert_boolean()
-            .sync_create()
-            .build();
-        let target = sidebar_column.downgrade();
-        let expand = expand_sidebar.downgrade();
-        collapse_sidebar.connect_clicked(move |_| {
-            if let (Some(target), Some(expand)) = (target.upgrade(), expand.upgrade()) {
-                target.set_visible(false);
-                expand.grab_focus();
-            }
-        });
-        let target = sidebar_column.downgrade();
-        let collapse = collapse_sidebar.downgrade();
-        expand_sidebar.connect_clicked(move |_| {
-            if let (Some(target), Some(collapse)) = (target.upgrade(), collapse.upgrade()) {
-                target.set_visible(true);
-                collapse.grab_focus();
-            }
-        });
         let refresh = button("view-refresh-symbolic", "Refresh messages");
         refresh.set_sensitive(false);
         list_header.pack_start(&refresh);
@@ -148,7 +128,6 @@ impl Shell {
         states::list_state(&list_stack, "No messages in this folder", false, false);
         middle.append(&list_stack);
         let thread_sidebar = column("message-list-wrapper");
-        thread_sidebar.set_visible(false);
         let thread_header = adw::HeaderBar::builder()
             .title_widget(&gtk::Label::new(Some("Messages")))
             .show_start_title_buttons(false)
@@ -201,14 +180,45 @@ impl Shell {
             .scroll_to_focus(false)
             .build();
         let viewer_scroll = scroll(&viewer_viewport);
-        viewer_root.append(&viewer_scroll);
+        let viewer_reveal = super::reveal::Reveal::new(&viewer_scroll);
+        viewer_root.append(&viewer_reveal);
         right.append(&viewer_root);
-        let thread_content = pane(&thread_sidebar, &right, theme::LIST_WIDTH);
-        let content = pane(&middle, &thread_content, theme::LIST_WIDTH);
-        let main = pane(&sidebar_column, &content, theme::SIDEBAR_WIDTH);
-        super::pane_state::remember(&window, &main, &content, &thread_content);
+        let thread_sidebar =
+            super::motion::Sidebar::new(&thread_sidebar, &right, theme::LIST_WIDTH, false);
+        let content = pane(&middle, thread_sidebar.pane(), theme::LIST_WIDTH);
+        let account_sidebar =
+            super::motion::Sidebar::new(&sidebar_column, &content, theme::SIDEBAR_WIDTH, true);
+        let main = account_sidebar.pane();
+        super::pane_state::remember(&window, &account_sidebar, &content, &thread_sidebar);
+        expand_sidebar.set_visible(!account_sidebar.get_visible());
+        let expand = expand_sidebar.downgrade();
+        account_sidebar.connect_visible_notify(move |sidebar| {
+            if let Some(expand) = expand.upgrade() {
+                expand.set_visible(!sidebar.get_visible());
+            }
+        });
+        let target = account_sidebar.downgrade();
+        let expand = expand_sidebar.downgrade();
+        collapse_sidebar.connect_clicked(move |_| {
+            if let Some(target) = target.upgrade() {
+                target.set_visible(false);
+            }
+            if let Some(expand) = expand.upgrade() {
+                expand.grab_focus();
+            }
+        });
+        let target = account_sidebar.downgrade();
+        let collapse = collapse_sidebar.downgrade();
+        expand_sidebar.connect_clicked(move |_| {
+            if let Some(target) = target.upgrade() {
+                target.set_visible(true);
+            }
+            if let Some(collapse) = collapse.upgrade() {
+                collapse.grab_focus();
+            }
+        });
         let toolbar = adw::ToolbarView::builder()
-            .content(&main)
+            .content(main)
             .top_bar_style(adw::ToolbarStyle::Flat)
             .build();
         let toast = adw::ToastOverlay::new();
@@ -217,7 +227,7 @@ impl Shell {
         Self {
             window,
             sidebar,
-            account_sidebar: sidebar_column,
+            account_sidebar,
             thread_sidebar,
             thread_list,
             thread_scroll,
@@ -228,6 +238,7 @@ impl Shell {
             viewer_scroll,
             list_stack,
             viewer,
+            viewer_reveal,
             compose_button,
             compose,
             refresh,

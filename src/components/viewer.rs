@@ -89,9 +89,9 @@ pub fn card(
     let header = horizontal("message-header", theme::SMALL_SPACING);
     let body = gtk::Revealer::builder()
         .vexpand(false)
-        .visible(expanded || !threaded)
         .reveal_child(expanded || !threaded)
-        .transition_type(gtk::RevealerTransitionType::None)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(160)
         .build();
     body.set_child(Some(&super::body::loading()));
     let content = Rc::new(Content {
@@ -155,7 +155,6 @@ pub fn card(
                 let active = !content.expanded.get();
                 content.expanded.set(active);
                 content.body.set_reveal_child(active);
-                content.body.set_visible(active);
                 button.set_icon_name(if active {
                     "pan-down-symbolic"
                 } else {

@@ -10,6 +10,11 @@ impl State {
                 messages,
                 error,
             } => {
+                if let Some(messages) = &messages {
+                    self.folder_cache
+                        .borrow_mut()
+                        .insert((account.clone(), folder.clone()), messages.clone());
+                }
                 self.sender_actions
                     .borrow_mut()
                     .finish(&account, &folder, &sender);
@@ -147,20 +152,34 @@ impl State {
                         message.attachments = existing.attachments.clone();
                     }
                 }
+                if (!pending || !messages.is_empty())
+                    && let Some(account) = self.account.borrow().as_ref()
+                {
+                    self.folder_cache.borrow_mut().insert(
+                        (account.email.clone(), self.folder.borrow().clone()),
+                        messages.clone(),
+                    );
+                }
                 *self.messages.borrow_mut() = messages;
                 self.render_list();
                 self.load_expanded();
             }
-            Event::CacheList(email, folder, messages)
-                if self
+            Event::CacheList(email, folder, messages) => {
+                let current = self
                     .account
                     .borrow()
                     .as_ref()
                     .is_some_and(|account| account.email == email)
-                    && *self.folder.borrow() == folder
-                    && !self.loading.get() =>
-            {
-                self.event(Event::Messages(self.generation.get(), messages, false));
+                    && *self.folder.borrow() == folder;
+                if current {
+                    if !self.loading.get() {
+                        self.event(Event::Messages(self.generation.get(), messages, false));
+                    }
+                } else {
+                    self.folder_cache
+                        .borrow_mut()
+                        .insert((email, folder), messages);
+                }
             }
             Event::CacheBody(email, folder, message)
                 if self

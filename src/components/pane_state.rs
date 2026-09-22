@@ -2,7 +2,7 @@ use crate::theme;
 use adw::prelude::*;
 use gtk::glib;
 use serde::{Deserialize, Serialize};
-use std::{cell::Cell, io::ErrorKind, path::Path, rc::Rc};
+use std::{io::ErrorKind, path::Path};
 
 #[derive(Deserialize, Serialize)]
 struct PaneState {
@@ -11,8 +11,6 @@ struct PaneState {
     thread_width: i32,
     #[serde(default)]
     maximized: bool,
-    #[serde(default)]
-    sidebar_collapsed: bool,
 }
 
 #[derive(Deserialize)]
@@ -41,7 +39,6 @@ impl Default for PaneState {
             sender_width: theme::LIST_WIDTH,
             thread_width: theme::LIST_WIDTH,
             maximized: false,
-            sidebar_collapsed: false,
         }
     }
 }
@@ -81,7 +78,6 @@ impl PaneState {
                     sender_width,
                     thread_width,
                     maximized,
-                    sidebar_collapsed,
                 }
             }
         })
@@ -96,41 +92,11 @@ impl PaneState {
     }
 }
 
-// Keep logical pixel widths: only the viewer absorbs changes in available space.
-// Restoring a fraction of a newly enlarged parent would grow a reopened sidebar.
-fn remember_width(pane: &gtk::Paned, initial: i32) -> Rc<Cell<i32>> {
-    let width = Rc::new(Cell::new(initial.max(1)));
-    pane.set_position(width.get());
-    if let Some(child) = pane.start_child() {
-        let weak = pane.downgrade();
-        let saved = width.clone();
-        child.connect_visible_notify(move |child| {
-            if let Some(pane) = weak.upgrade() {
-                if child.get_visible() {
-                    pane.set_position(saved.get());
-                } else {
-                    // Capture the allocated width before the hidden layout is applied.
-                    saved.set(pane.position().max(1));
-                }
-            }
-        });
-    }
-    width
-}
-
-fn current_width(pane: &gtk::Paned, saved: i32) -> i32 {
-    if pane.start_child().is_some_and(|child| child.get_visible()) {
-        pane.position().max(1)
-    } else {
-        saved
-    }
-}
-
 pub fn remember(
     window: &adw::ApplicationWindow,
-    sidebar: &gtk::Paned,
+    sidebar: &super::motion::Sidebar,
     messages: &gtk::Paned,
-    threads: &gtk::Paned,
+    threads: &super::motion::Sidebar,
 ) {
     let path = glib::user_config_dir().join("brevlada/layout.json");
     let state = PaneState::load(&path).unwrap_or_else(|error| {
@@ -140,27 +106,19 @@ pub fn remember(
     if state.maximized {
         window.maximize();
     }
-    if let Some(child) = sidebar.start_child() {
-        child.set_visible(!state.sidebar_collapsed);
-    }
-    let sidebar_width = remember_width(sidebar, state.sidebar_width);
-    let sender_width = remember_width(messages, state.sender_width);
-    let thread_width = remember_width(threads, state.thread_width);
-    let sidebar = sidebar.downgrade();
+    sidebar.restore_width(state.sidebar_width);
+    messages.set_position(state.sender_width.max(1));
+    threads.restore_width(state.thread_width);
+    let sidebar = sidebar.clone();
     let messages = messages.downgrade();
-    let threads = threads.downgrade();
+    let threads = threads.clone();
     window.connect_close_request(move |window| {
-        if let (Some(sidebar), Some(messages), Some(threads)) =
-            (sidebar.upgrade(), messages.upgrade(), threads.upgrade())
-        {
+        if let Some(messages) = messages.upgrade() {
             let state = PaneState {
-                sidebar_width: current_width(&sidebar, sidebar_width.get()),
-                sender_width: current_width(&messages, sender_width.get()),
-                thread_width: current_width(&threads, thread_width.get()),
+                sidebar_width: sidebar.width(),
+                sender_width: messages.position().max(1),
+                thread_width: threads.width(),
                 maximized: window.is_maximized(),
-                sidebar_collapsed: sidebar
-                    .start_child()
-                    .is_some_and(|child| !child.get_visible()),
             };
             if let Err(error) = state.save(&path) {
                 eprintln!("Could not save window layout: {error}");
@@ -179,48 +137,47 @@ mod diagnostics {
     #[ignore = "Requires a graphical session; allocates widgets without presenting a window"]
     fn toggling_sidebars_preserves_widths_and_gives_space_to_viewer() {
         gtk::init().unwrap();
+        adw::init().unwrap();
         let accounts = column("diagnostic");
         let senders = column("diagnostic");
         let messages = column("diagnostic");
         let viewer = column("diagnostic");
-        let threads = pane(&messages, &viewer, 350);
-        let content = pane(&senders, &threads, 300);
-        let main = pane(&accounts, &content, 250);
-        let account_width = remember_width(&main, 250);
-        let thread_width = remember_width(&threads, 350);
-        remember_width(&content, 300);
+        let threads = super::super::motion::Sidebar::new(&messages, &viewer, 350, true);
+        let content = pane(&senders, threads.pane(), 300);
+        let account_pane = super::super::motion::Sidebar::new(&accounts, &content, 250, true);
+        let main = account_pane.pane();
         main.allocate(1600, 900, -1, None);
         let initial_viewer = viewer.width();
         for _ in 0..20 {
-            accounts.set_visible(false);
+            account_pane.set_visible(false);
             main.allocate(1600, 900, -1, None);
             assert_eq!(senders.width(), 300);
             assert_eq!(messages.width(), 350);
             assert!(viewer.width() >= initial_viewer + 250);
-            assert_eq!(current_width(&main, account_width.get()), 250);
-            accounts.set_visible(true);
+            assert_eq!(account_pane.width(), 250);
+            account_pane.set_visible(true);
             main.allocate(1600, 900, -1, None);
             assert_eq!(accounts.width(), 250);
             assert_eq!(senders.width(), 300);
             assert_eq!(messages.width(), 350);
             assert_eq!(viewer.width(), initial_viewer);
-            messages.set_visible(false);
+            threads.set_visible(false);
             main.allocate(1600, 900, -1, None);
             assert_eq!(senders.width(), 300);
-            assert_eq!(current_width(&threads, thread_width.get()), 350);
-            messages.set_visible(true);
+            assert_eq!(threads.width(), 350);
+            threads.set_visible(true);
             main.allocate(1600, 900, -1, None);
             assert_eq!(messages.width(), 350);
             assert_eq!(viewer.width(), initial_viewer);
         }
         main.set_position(280);
-        threads.set_position(370);
+        threads.pane().set_position(370);
         main.allocate(1600, 900, -1, None);
-        accounts.set_visible(false);
-        messages.set_visible(false);
+        account_pane.set_visible(false);
+        threads.set_visible(false);
         main.allocate(1900, 900, -1, None);
-        accounts.set_visible(true);
-        messages.set_visible(true);
+        account_pane.set_visible(true);
+        threads.set_visible(true);
         main.allocate(1900, 900, -1, None);
         assert_eq!(accounts.width(), 280);
         assert_eq!(senders.width(), 300);

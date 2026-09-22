@@ -30,14 +30,16 @@ struct State {
     loading: Cell<bool>,
     rendering: Cell<bool>,
     messages: RefCell<Vec<Message>>,
+    folder_cache: RefCell<HashMap<(String, String), Vec<Message>>>,
     groups: RefCell<Vec<Vec<Message>>>,
     selected_sender: RefCell<Option<String>>,
     selected: RefCell<Vec<u32>>,
+    deferred_read_sort: RefCell<HashSet<u32>>,
     cards: RefCell<HashMap<u32, ui::viewer::Card>>,
     sidebar: gtk::Box,
-    account_sidebar: gtk::Box,
+    account_sidebar: ui::motion::Sidebar,
     restore_accounts_on_back: Cell<bool>,
-    thread_sidebar: gtk::Box,
+    thread_sidebar: ui::motion::Sidebar,
     thread_list: gtk::ListBox,
     thread_scroll: gtk::ScrolledWindow,
     thread_stack: gtk::Stack,
@@ -50,6 +52,7 @@ struct State {
     list_scroll: gtk::ScrolledWindow,
     viewer_scroll: gtk::ScrolledWindow,
     viewer: gtk::Box,
+    viewer_reveal: ui::reveal::Reveal,
     list_stack: gtk::Stack,
     toast: adw::ToastOverlay,
     navigation_selection: ui::sidebar::Selection,
@@ -228,7 +231,7 @@ impl State {
         avatars: Rc<ui::avatars::Avatars>,
     ) -> Rc<Self> {
         let ui::shell::Shell {
-            window: _,
+            window,
             sidebar,
             account_sidebar,
             thread_sidebar,
@@ -241,6 +244,7 @@ impl State {
             viewer_scroll,
             list_stack,
             viewer,
+            viewer_reveal,
             compose_button,
             compose,
             refresh,
@@ -261,11 +265,13 @@ impl State {
             loading: Cell::new(false),
             rendering: Cell::new(false),
             messages: RefCell::new(Vec::new()),
+            folder_cache: RefCell::default(),
             groups: RefCell::new(Vec::new()),
             thread_groups: RefCell::new(Vec::new()),
             restore_accounts_on_back: Cell::new(false),
             selected_sender: RefCell::new(None),
             selected: RefCell::new(Vec::new()),
+            deferred_read_sort: RefCell::default(),
             cards: RefCell::new(HashMap::new()),
             sidebar,
             account_sidebar,
@@ -281,6 +287,7 @@ impl State {
             list_scroll,
             viewer_scroll,
             viewer,
+            viewer_reveal,
             list_stack,
             toast,
             navigation_selection: ui::sidebar::Selection::default(),
@@ -293,6 +300,34 @@ impl State {
             back,
             search,
         });
+        let weak = Rc::downgrade(&state);
+        ui::mail_shortcuts::attach_open_message(
+            &window,
+            &state.thread_list,
+            &state.compose.widget,
+            move |action| {
+                let Some(state) = weak.upgrade() else {
+                    return false;
+                };
+                if state.loading.get() {
+                    return false;
+                }
+                let messages: Vec<_> = state
+                    .visible_messages()
+                    .iter()
+                    .filter(|message| state.selected.borrow().contains(&message.uid))
+                    .map(|message| (message.uid, message.message_id.clone()))
+                    .collect();
+                if messages.is_empty() {
+                    return false;
+                }
+                state.sender_action(
+                    models::action_target::ActionTarget::Messages(messages),
+                    action,
+                );
+                true
+            },
+        );
         let weak = Rc::downgrade(&state);
         state.account_sidebar.connect_visible_notify(move |_| {
             if let Some(state) = weak.upgrade() {
@@ -855,6 +890,50 @@ mod diagnostics {
         assert_eq!(message.body_text, "Background cache");
         assert_eq!(message.is_read, was_read);
         drop(messages);
+        // Returning to a folder renders its snapshot before the worker responds.
+        let account = state.account.borrow().clone().unwrap();
+        let folder = state.folder.borrow().clone();
+        let snapshot = state.messages.borrow().clone();
+        state.event(Event::Messages(
+            state.generation.get(),
+            snapshot.clone(),
+            false,
+        ));
+        state.select(account.clone(), "Archive".into());
+        state.event(Event::Messages(state.generation.get(), Vec::new(), false));
+        state.select(account.clone(), folder.clone());
+        assert_eq!(*state.messages.borrow(), snapshot);
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("list")
+        );
+        assert!(state.loading.get());
+        assert!(!state.refresh.is_sensitive());
+        let stale_generation = state.generation.get();
+        state.select(account.clone(), "Archive".into());
+        assert!(state.messages.borrow().is_empty());
+        assert!(state.loading.get());
+        assert!(
+            labels(state.list_stack.clone().upcast())
+                .contains(&"No messages in this folder".into())
+        );
+        state.event(Event::Messages(stale_generation, snapshot.clone(), false));
+        assert!(state.messages.borrow().is_empty());
+        // Background updates to an inactive folder are available on return.
+        state.event(Event::CacheList(
+            account.email.clone(),
+            folder.clone(),
+            Vec::new(),
+        ));
+        state.select(account.clone(), folder.clone());
+        assert!(state.messages.borrow().is_empty());
+        state.event(Event::Messages(state.generation.get(), snapshot, false));
+        assert!(!state.messages.borrow().is_empty());
+        let mut other_account = account;
+        other_account.email = "other-fixture".into();
+        state.select(other_account, folder);
+        assert!(!state.has_cached_folder());
+        assert!(state.messages.borrow().is_empty());
         assert!(!window.is_visible());
         window.close();
     }

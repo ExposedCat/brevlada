@@ -35,7 +35,7 @@ impl State {
         };
         let query = self.search.text().trim().to_lowercase();
         let messages = self.visible_messages();
-        let groups = if let Some(sender) = &sender {
+        let mut groups = if let Some(sender) = &sender {
             let messages: Vec<_> = messages
                 .into_iter()
                 .filter(|message| models::senders::key(message) == *sender)
@@ -44,6 +44,18 @@ impl State {
         } else {
             models::senders::groups(&messages, &query)
         };
+        // Keep the active unread conversation in its unread sort position until
+        // another conversation opens, while still displaying its real read state.
+        let deferred = self.deferred_read_sort.borrow();
+        groups.sort_by_key(|group| {
+            std::cmp::Reverse((
+                group
+                    .iter()
+                    .any(|message| !message.is_read || deferred.contains(&message.uid)),
+                group[0].timestamp,
+                group[0].uid,
+            ))
+        });
         let related = |left: &[Message], right: &[Message]| {
             if sender.is_some() {
                 overlaps(left, right)
@@ -56,7 +68,7 @@ impl State {
             .filter_map(|i| list.row_at_index(i as i32))
             .collect();
         let mut used = HashSet::new();
-        ui::scroll_position::preserve(list_scroll, list, || {
+        ui::scroll_position::preserve_offset(list_scroll, || {
             for (index, group) in groups.iter().enumerate() {
                 let previous = old
                     .iter()
@@ -99,9 +111,10 @@ impl State {
             }
         });
         if groups.is_empty() {
+            let loading = self.loading.get() && !self.has_cached_folder();
             ui::states::list_state(
                 list_stack,
-                if self.loading.get() {
+                if loading {
                     "Loading messages..."
                 } else if !query.is_empty() {
                     "No matching messages"
@@ -110,7 +123,7 @@ impl State {
                 } else {
                     "No messages in this folder"
                 },
-                self.loading.get(),
+                loading,
                 false,
             );
         } else {
