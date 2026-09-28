@@ -11,8 +11,19 @@ pub struct Flags {
 }
 
 impl Mail {
-    pub fn sync_folders(&mut self) -> Result<(Vec<String>, Vec<String>)> {
+    pub fn sync_folders(&mut self) -> Result<(Vec<String>, Vec<String>, Option<String>)> {
         let listed = self.session.list(None, Some("*"))?;
+        let sent = listed.iter()
+            .filter(|folder| !folder.attributes().contains(&NameAttribute::NoSelect))
+            .find(|folder| folder.attributes().iter().any(|attribute| {
+                matches!(attribute, NameAttribute::Custom(value) if value.eq_ignore_ascii_case("\\Sent"))
+            }))
+            .or_else(|| listed.iter()
+                .filter(|folder| !folder.attributes().contains(&NameAttribute::NoSelect))
+                .find(|folder| {
+                    matches!(folder.name().rsplit(['/', '.']).next().unwrap_or_default().to_ascii_lowercase().as_str(), "sent" | "sent mail" | "sent items" | "sent messages")
+                }))
+            .map(|folder| folder.name().to_owned());
         let excluded: Vec<_> = listed
             .iter()
             .filter(|folder| excluded_folder(folder.name(), folder.attributes()))
@@ -36,7 +47,7 @@ impl Mail {
         }
         all.sort();
         sync.sort();
-        Ok((all, sync))
+        Ok((all, sync, sent))
     }
 
     pub fn inventory(&mut self, folder: &str) -> Result<(u32, Vec<Flags>)> {

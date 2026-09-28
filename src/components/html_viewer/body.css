@@ -86,3 +86,9 @@ html, body {
     min-height: 0 !important;
     max-height: none !important;
 }
+#brevlada-content > :first-child {
+    margin-top: 0;
+}
+#brevlada-content > :last-child {
+    margin-bottom: 0;
+}

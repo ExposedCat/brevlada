@@ -42,6 +42,17 @@ pub fn select_message(viewer: &gtk::Box) {
     ));
 }
 
+pub fn loading_thread(viewer: &gtk::Box) {
+    super::clear(viewer);
+    viewer.set_vexpand(true);
+    viewer.append(&placeholder(
+        "Loading conversation...",
+        "message-viewer-empty-state",
+        "mail-unread-symbolic",
+        true,
+    ));
+}
+
 pub fn list_state(stack: &gtk::Stack, text: &str, loading: bool, error: bool) {
     if let Some(previous) = stack.child_by_name("state") {
         stack.remove(&previous);

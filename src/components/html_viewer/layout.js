@@ -1,6 +1,33 @@
 (() => {
     const root = document.getElementById('brevlada-content');
     if (!root || window.brevladaLayout) return;
+    const trimTrailing = node => {
+        while (node.lastChild) {
+            const child = node.lastChild;
+            if (child.nodeType === Node.TEXT_NODE) {
+                const value = child.textContent.replace(/\s+$/u, '');
+                if (value) {
+                    child.textContent = value;
+                    return true;
+                }
+                child.remove();
+                continue;
+            }
+            if (child.nodeType !== Node.ELEMENT_NODE) {
+                child.remove();
+                continue;
+            }
+            if (child.matches('img, svg, video, audio, iframe, object, canvas, hr, input, details')
+                || getComputedStyle(child).backgroundImage !== 'none') return true;
+            if (child.matches('br') || !trimTrailing(child)) {
+                child.remove();
+                continue;
+            }
+            return true;
+        }
+        return false;
+    };
+    trimTrailing(root);
     let frame = 0;
     let previous = -1;
     const measure = () => {

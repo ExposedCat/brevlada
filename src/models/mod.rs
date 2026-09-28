@@ -1,4 +1,5 @@
 pub mod action_target;
+pub mod conversation;
 pub mod pending_actions;
 pub mod sender_action;
 pub mod senders;
@@ -16,6 +17,37 @@ pub struct Account {
     pub ssl: bool,
     pub tls: bool,
     pub oauth2: bool,
+    pub smtp: Option<SmtpSettings>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SmtpSettings {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub ssl: bool,
+    pub tls: bool,
+    pub auth: bool,
+    pub login: bool,
+    pub plain: bool,
+    pub xoauth2: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Draft {
+    pub to: String,
+    pub cc: String,
+    pub subject: String,
+    pub text: String,
+    pub html: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SentMessage {
+    pub folder: String,
+    pub message: Message,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
@@ -47,11 +79,7 @@ impl Message {
 }
 
 pub fn threads(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
-    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)^(?:(?:re|fw|fwd|aw|antw|回复|转发):\s*)+").unwrap()
-    });
-    let prefix = &*PREFIX;
-    let subject = |m: &Message| prefix.replace_all(&m.subject, "").trim().to_lowercase();
+    let subject = |m: &Message| subject_key(&m.subject);
     let mut groups: Vec<Vec<Message>> = Vec::new();
     for message in messages.iter().filter(|m| m.matches(query)) {
         let normalized = subject(message);
@@ -87,6 +115,13 @@ pub fn threads(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
         ))
     });
     groups
+}
+
+pub fn subject_key(subject: &str) -> String {
+    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^(?:(?:re|fw|fwd|aw|antw|回复|转发):\s*)+").unwrap()
+    });
+    PREFIX.replace_all(subject, "").trim().to_lowercase()
 }
 
 #[cfg(test)]

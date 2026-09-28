@@ -3,6 +3,77 @@ use super::*;
 impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
         match event {
+            Event::Sent(result) => {
+                let success = result.is_ok();
+                self.compose.finish_send(success);
+                self.toast.add_toast(adw::Toast::new(&match result {
+                    Ok(()) => "Message sent".to_owned(),
+                    Err(error) => format!("Could not send message: {error}"),
+                }));
+            }
+            Event::SentCacheChanged(account) => {
+                if self
+                    .account
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| current.email == account)
+                {
+                    self.request_related_sent();
+                }
+            }
+            Event::RelatedSent(generation, selection, mut messages)
+                if generation == self.generation.get() && selection == self.selection.get() =>
+            {
+                for item in &mut messages {
+                    if !item.message.body_loaded
+                        && let Some(loaded) = self.related_sent.borrow().iter().find(|old| {
+                            old.message.message_id == item.message.message_id
+                                && old.message.body_loaded
+                        })
+                    {
+                        item.message = loaded.message.clone();
+                    }
+                }
+                if *self.related_sent.borrow() != messages || self.cards.borrow().is_empty() {
+                    *self.related_sent.borrow_mut() = messages;
+                    ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
+                        self.render_conversation();
+                    });
+                }
+            }
+            Event::SentBody(generation, selection, folder, uid, result)
+                if generation == self.generation.get() && selection == self.selection.get() =>
+            {
+                let id = self
+                    .related_sent
+                    .borrow()
+                    .iter()
+                    .find(|item| item.folder == folder && item.message.uid == uid)
+                    .map(|item| item.message.message_id.clone());
+                if let Some(id) = id {
+                    self.sent_pending.borrow_mut().remove(&id);
+                    match result {
+                        Ok(message) => {
+                            if let Some(item) = self
+                                .related_sent
+                                .borrow_mut()
+                                .iter_mut()
+                                .find(|item| item.folder == folder && item.message.uid == uid)
+                            {
+                                item.message = message.clone();
+                            }
+                            if let Some(card) = self.sent_cards.borrow().get(&id) {
+                                card.update(&message);
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(card) = self.sent_cards.borrow().get(&id) {
+                                card.error(&error);
+                            }
+                        }
+                    }
+                }
+            }
             Event::SenderActionFinished {
                 account,
                 folder,

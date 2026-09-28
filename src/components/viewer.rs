@@ -11,6 +11,7 @@ struct Content {
     rendered: Cell<bool>,
     media: Cell<bool>,
     trusted: Cell<bool>,
+    hide_quotes: bool,
     media_button: gtk::Button,
     on_media: Rc<dyn Fn()>,
     open: Rc<dyn Fn()>,
@@ -31,9 +32,7 @@ impl Card {
         if trusted && self.content.rendered.get() {
             self.content.download_media();
         }
-        self.content
-            .media_button
-            .set_visible(!trusted && !self.content.media.get());
+        self.content.update_media_button();
     }
 
     pub fn is_reply_pending(&self) -> bool {
@@ -45,9 +44,7 @@ impl Card {
     }
     pub fn update(&self, message: &Message) {
         *self.content.message.borrow_mut() = message.clone();
-        self.content
-            .media_button
-            .set_visible(!self.content.media.get() && !self.content.trusted.get());
+        self.content.update_media_button();
         self.content.show();
         if message.body_loaded && self.content.reply_pending.replace(false) {
             (self.content.reply)(message);
@@ -71,6 +68,14 @@ impl Card {
 }
 
 impl Content {
+    fn update_media_button(&self) {
+        self.media_button.set_visible(
+            !self.trusted.get()
+                && !self.media.get()
+                && super::html::has_remote_media(&self.message.borrow()),
+        );
+    }
+
     fn download_media(&self) {
         if self.media.replace(true) {
             return;
@@ -105,7 +110,8 @@ impl Content {
                 self.media_button.set_visible(false);
                 (self.on_media)();
             }
-            let (body, view) = super::body::view(&self.message.borrow(), self.media.get());
+            let (body, view) =
+                super::body::view(&self.message.borrow(), self.media.get(), self.hide_quotes);
             self.body.set_child(Some(&body));
             *self.webview.borrow_mut() = Some(view);
         }
@@ -116,6 +122,8 @@ pub fn card(
     message: &Message,
     expanded: bool,
     threaded: bool,
+    sent: bool,
+    hide_quotes: bool,
     avatars: &Avatars,
     media_downloaded: bool,
     trusted: bool,
@@ -136,7 +144,8 @@ pub fn card(
     body.set_child(Some(&super::body::loading()));
     let media_button = button("image-x-generic-symbolic", "Download media");
     media_button.set_valign(gtk::Align::Center);
-    media_button.set_visible(!media_downloaded && !trusted);
+    media_button
+        .set_visible(!media_downloaded && !trusted && super::html::has_remote_media(message));
     let content = Rc::new(Content {
         message: std::cell::RefCell::new(message.clone()),
         body: body.clone(),
@@ -145,6 +154,7 @@ pub fn card(
         rendered: Cell::new(false),
         media: Cell::new(media_downloaded),
         trusted: Cell::new(trusted),
+        hide_quotes,
         media_button: media_button.clone(),
         on_media: Rc::new(download_media),
         open: Rc::new(open),
@@ -218,11 +228,17 @@ pub fn card(
     }
     let (name, email) = display::sender(message);
     let row = adw::ActionRow::builder()
-        .title(display::sender_name(message))
+        .title(if sent {
+            format!("To: {}", message.recipients)
+        } else {
+            display::sender_name(message)
+        })
         .use_markup(false)
         .hexpand(true)
         .build();
-    if !name.is_empty() && !email.is_empty() {
+    if sent {
+        row.set_subtitle("Sent");
+    } else if !name.is_empty() && !email.is_empty() {
         row.set_subtitle(&email);
     }
     let reply_button = button("mail-reply-sender-symbolic", "Reply");

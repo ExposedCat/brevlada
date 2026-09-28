@@ -674,6 +674,7 @@ mod tests {
             ssl: true,
             tls: false,
             oauth2,
+            smtp: None,
         }
     }
 

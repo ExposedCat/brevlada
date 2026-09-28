@@ -1,4 +1,4 @@
-use crate::models::Account;
+use crate::models::{Account, SmtpSettings};
 use anyhow::{Context, Result};
 use gtk::{gio, glib};
 use std::collections::HashMap;
@@ -63,6 +63,23 @@ pub fn discover() -> Result<Vec<Account>> {
         let email = string(mail, "EmailAddress");
         let username = string(mail, "ImapUserName");
         let ssl = boolean("ImapUseSsl");
+        let smtp_ssl = boolean("SmtpUseSsl");
+        let smtp = if boolean("SmtpSupported") {
+            let (host, port) = smtp_endpoint(&string(mail, "SmtpHost"), smtp_ssl);
+            Some(SmtpSettings {
+                host,
+                port,
+                username: string(mail, "SmtpUserName"),
+                ssl: smtp_ssl,
+                tls: boolean("SmtpUseTls"),
+                auth: boolean("SmtpUseAuth"),
+                login: boolean("SmtpAuthLogin"),
+                plain: boolean("SmtpAuthPlain"),
+                xoauth2: boolean("SmtpAuthXoauth2"),
+            })
+        } else {
+            None
+        };
         result.push(Account {
             path: path.to_string(),
             name: string(account, "PresentationIdentity"),
@@ -81,10 +98,22 @@ pub fn discover() -> Result<Vec<Account>> {
             ssl,
             tls: boolean("ImapUseTls"),
             oauth2: interfaces.contains_key(OAUTH),
+            smtp,
         });
     }
     result.sort_by(|a, b| a.email.cmp(&b.email));
     Ok(result)
+}
+
+fn smtp_endpoint(value: &str, ssl: bool) -> (String, u16) {
+    let default_port = if ssl { 465 } else { 587 };
+    if let Some((host, port)) = value.rsplit_once(':')
+        && let Ok(port) = port.parse::<u16>()
+        && (!host.contains(':') || host.starts_with('['))
+    {
+        return (host.trim_matches(['[', ']']).to_owned(), port);
+    }
+    (value.trim_matches(['[', ']']).to_owned(), default_port)
 }
 
 pub fn token(account: &Account) -> Result<String> {
@@ -96,12 +125,20 @@ pub fn token(account: &Account) -> Result<String> {
 }
 
 pub fn password(account: &Account) -> Result<String> {
+    password_for(account, "imap-password")
+}
+
+pub fn smtp_password(account: &Account) -> Result<String> {
+    password_for(account, "smtp-password")
+}
+
+fn password_for(account: &Account, kind: &str) -> Result<String> {
     use glib::variant::ToVariant;
     let reply = call(
         &account.path,
         "org.gnome.OnlineAccounts.PasswordBased",
         "GetPassword",
-        Some(&("imap-password",).to_variant()),
+        Some(&(kind,).to_variant()),
     )?;
     let (password,) = reply
         .get::<(String,)>()

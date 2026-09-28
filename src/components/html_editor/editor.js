@@ -56,6 +56,16 @@ function report(edited = false) {
     }
     window.webkit.messageHandlers.composeText.postMessage(text);
 }
+function getMessageHtml() {
+    const body = document.body.cloneNode(true);
+    const quote = body.querySelector('blockquote iframe');
+    if (quote) {
+        const original = document.querySelector('blockquote iframe');
+        const source = original?.contentDocument?.body;
+        quote.replaceWith(...(source ? [...source.childNodes].map(node => node.cloneNode(true)) : []));
+    }
+    return body.innerHTML;
+}
 function setContent(content) {
     document.body.innerHTML = cleanHTML(content.html) || '<div><br></div>';
     if (content.quote !== undefined) {

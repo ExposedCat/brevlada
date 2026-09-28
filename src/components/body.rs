@@ -2,7 +2,7 @@ use crate::{models::Message, theme};
 use adw::prelude::*;
 use webkit6::prelude::*;
 
-pub fn view(message: &Message, media: bool) -> (gtk::Widget, webkit6::WebView) {
+pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, webkit6::WebView) {
     let settings = webkit6::Settings::builder()
         .enable_javascript(true)
         .enable_javascript_markup(false)
@@ -43,7 +43,7 @@ pub fn view(message: &Message, media: bool) -> (gtk::Widget, webkit6::WebView) {
             super::body_layout::observe(view);
         }
     });
-    let document = std::rc::Rc::new(super::html::document(message));
+    let document = std::rc::Rc::new(super::html::document(message, hide_quotes));
     let target = stack.downgrade();
     let html = document.clone();
     view.connect_load_failed(move |view, _, _, failure| {

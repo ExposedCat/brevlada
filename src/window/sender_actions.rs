@@ -39,6 +39,9 @@ impl State {
             self.deferred_read_sort.borrow_mut().clear();
             self.selected.borrow_mut().clear();
             self.cards.borrow_mut().clear();
+            self.sent_cards.borrow_mut().clear();
+            self.related_sent.borrow_mut().clear();
+            self.open_group.borrow_mut().clear();
             ui::states::select_message(&self.viewer);
         }
         self.refresh_sender_view();
@@ -133,6 +136,7 @@ mod diagnostics {
             ssl: true,
             tls: false,
             oauth2: false,
+            smtp: None,
         });
         *state.folder.borrow_mut() = "INBOX".into();
         let message = Message {

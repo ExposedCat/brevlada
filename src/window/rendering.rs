@@ -36,11 +36,25 @@ impl State {
         let query = self.search.text().trim().to_lowercase();
         let messages = self.visible_messages();
         let mut groups = if let Some(sender) = &sender {
+            let own = self
+                .account
+                .borrow()
+                .as_ref()
+                .map(|account| account.email.to_lowercase());
             let messages: Vec<_> = messages
                 .into_iter()
-                .filter(|message| models::senders::key(message) == *sender)
+                .filter(|message| {
+                    let key = models::senders::key(message);
+                    key == *sender || own.as_deref() == Some(key.as_str())
+                })
                 .collect();
-            models::threads(&messages, &query)
+            let mut groups = models::threads(&messages, &query);
+            groups.retain(|group| {
+                group
+                    .iter()
+                    .any(|message| models::senders::key(message) == *sender)
+            });
+            groups
         } else {
             models::senders::groups(&messages, &query)
         };

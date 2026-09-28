@@ -11,6 +11,7 @@ mod mail_sync;
 pub mod parser;
 mod sender_actions;
 mod sender_domains;
+mod smtp;
 pub mod storage;
 mod sync_progress;
 mod sync_queue;

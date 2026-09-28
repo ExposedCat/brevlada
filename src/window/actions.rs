@@ -58,6 +58,10 @@ impl State {
         self.selected.borrow_mut().clear();
         self.deferred_read_sort.borrow_mut().clear();
         self.cards.borrow_mut().clear();
+        self.sent_cards.borrow_mut().clear();
+        self.related_sent.borrow_mut().clear();
+        self.sent_pending.borrow_mut().clear();
+        self.open_group.borrow_mut().clear();
         *self.messages.borrow_mut() = cached;
         self.loading.set(true);
         self.render_list();
@@ -120,48 +124,161 @@ impl State {
                 .map(|message| message.uid)
                 .collect();
         }
-        ui::clear(&self.viewer);
-        self.viewer_scroll.vadjustment().set_value(0.0);
-        self.cards.borrow_mut().clear();
         *self.selected.borrow_mut() = selected;
-        self.viewer.set_vexpand(false);
-        let unread = group.iter().any(|message| !message.is_read);
-        for (index, message) in group.iter().enumerate() {
-            let expanded = !message.is_read || (!unread && index == 0);
-            let card = self.card(message, expanded);
-            self.viewer.append(&card.widget);
-            self.cards.borrow_mut().insert(message.uid, card);
-            if expanded {
-                self.open(message.uid);
-            }
-        }
+        *self.open_group.borrow_mut() = group.clone();
+        self.related_sent.borrow_mut().clear();
+        self.sent_pending.borrow_mut().clear();
+        self.cards.borrow_mut().clear();
+        self.sent_cards.borrow_mut().clear();
+        ui::states::loading_thread(&self.viewer);
+        self.viewer_scroll.vadjustment().set_value(0.0);
+        self.request_related_sent();
         self.render_list();
         self.viewer_reveal.play();
     }
 
-    pub(super) fn card(self: &Rc<Self>, message: &Message, expanded: bool) -> ui::viewer::Card {
+    pub(super) fn request_related_sent(self: &Rc<Self>) {
+        if self.open_group.borrow().is_empty() {
+            return;
+        }
+        if let Some(account) = self.account.borrow().clone() {
+            if let Err(error) = self.sender.send(Command::RelatedSent {
+                account,
+                folder: self.folder.borrow().clone(),
+                messages: self.open_group.borrow().clone(),
+                generation: self.generation.get(),
+                selection: self.selection.get(),
+            }) {
+                self.toast.add_toast(adw::Toast::new(&error.to_string()));
+                self.render_conversation();
+            }
+        }
+    }
+
+    pub(super) fn render_conversation(self: &Rc<Self>) {
+        let group: Vec<_> = self
+            .open_group
+            .borrow()
+            .iter()
+            .map(|original| {
+                self.messages
+                    .borrow()
+                    .iter()
+                    .find(|current| {
+                        current.uid == original.uid && current.message_id == original.message_id
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| original.clone())
+            })
+            .collect();
+        let mut messages: Vec<_> = group
+            .iter()
+            .cloned()
+            .map(|message| (false, String::new(), message))
+            .collect();
+        messages.extend(
+            self.related_sent
+                .borrow()
+                .iter()
+                .map(|item| (true, item.folder.clone(), item.message.clone())),
+        );
+        messages.sort_by_key(|(_, _, message)| std::cmp::Reverse((message.timestamp, message.uid)));
+        let previous = self.cards.borrow().clone();
+        let previous_sent = self.sent_cards.borrow().clone();
+        ui::clear(&self.viewer);
+        self.cards.borrow_mut().clear();
+        self.sent_cards.borrow_mut().clear();
+        self.viewer.set_vexpand(false);
+        let unread = group.iter().any(|message| !message.is_read);
+        for (index, (sent, folder, message)) in messages.iter().enumerate() {
+            let hide_quotes = models::conversation::quoted_message_visible(
+                message,
+                messages[index + 1..].iter().map(|(_, _, older)| older),
+            );
+            let expanded = if *sent {
+                previous_sent
+                    .get(&message.message_id)
+                    .map(|card| card.is_expanded())
+            } else {
+                previous.get(&message.uid).map(|card| card.is_expanded())
+            }
+            .unwrap_or((!*sent && !message.is_read) || (!unread && index == 0));
+            let card = self.card(
+                message,
+                expanded,
+                if *sent { Some(folder) } else { None },
+                messages.len() > 1,
+                hide_quotes,
+            );
+            self.viewer.append(&card.widget);
+            if *sent {
+                self.sent_cards
+                    .borrow_mut()
+                    .insert(message.message_id.clone(), card);
+                if expanded && !message.body_loaded {
+                    self.open_sent(folder, message.uid, &message.message_id);
+                }
+            } else {
+                self.cards.borrow_mut().insert(message.uid, card);
+            }
+            if expanded && !sent {
+                self.open(message.uid);
+            }
+        }
+    }
+
+    pub(super) fn card(
+        self: &Rc<Self>,
+        message: &Message,
+        expanded: bool,
+        sent_folder: Option<&str>,
+        threaded: bool,
+        hide_quotes: bool,
+    ) -> ui::viewer::Card {
         let weak = Rc::downgrade(self);
         let uid = message.uid;
+        let sent_folder = sent_folder.map(str::to_owned);
+        let sent_id = message.message_id.clone();
         let reply_state = Rc::downgrade(self);
         let media_state = Rc::downgrade(self);
-        let media_key = self.media_key(message);
+        let mut media_key = self.media_key(message);
+        if let Some(folder) = &sent_folder {
+            media_key.1 = folder.clone();
+        }
         let downloaded = self.downloaded_media.borrow().contains(&media_key);
-        let trusted = self.is_trusted(&models::senders::key(message));
+        let sender = models::senders::key(message);
+        let own = self
+            .account
+            .borrow()
+            .as_ref()
+            .is_some_and(|account| sender == models::senders::address(&account.email));
+        let trusted = own || self.is_trusted(&sender);
         ui::viewer::card(
             message,
             expanded,
-            self.selected.borrow().len() > 1,
+            threaded,
+            sent_folder.is_some(),
+            hide_quotes,
             &self.avatars,
             downloaded,
             trusted,
             move || {
                 if let Some(state) = weak.upgrade() {
-                    state.open(uid);
+                    if let Some(folder) = &sent_folder {
+                        state.open_sent(folder, uid, &sent_id);
+                    } else {
+                        state.open(uid);
+                    }
                 }
             },
             move |reply_message| {
                 if let Some(state) = reply_state.upgrade() {
-                    state.compose.reply(reply_message);
+                    let recipient = if own {
+                        reply_message.recipients.clone()
+                    } else {
+                        models::senders::identity(reply_message).1
+                    };
+                    state.compose.reply(reply_message, &recipient);
                     let adjustment = state.viewer_scroll.vadjustment();
                     adjustment.set_value(adjustment.lower());
                 }
@@ -174,12 +291,40 @@ impl State {
         )
     }
 
+    pub(super) fn open_sent(&self, folder: &str, uid: u32, id: &str) {
+        let Some(item) = self
+            .related_sent
+            .borrow()
+            .iter()
+            .find(|item| item.message.message_id == id)
+            .cloned()
+        else {
+            return;
+        };
+        if item.message.body_loaded
+            || folder.is_empty()
+            || !self.sent_pending.borrow_mut().insert(id.to_owned())
+        {
+            return;
+        }
+        if let Some(account) = self.account.borrow().clone() {
+            self.send(Command::SentBody {
+                account,
+                folder: folder.to_owned(),
+                uid,
+                generation: self.generation.get(),
+                selection: self.selection.get(),
+            });
+        }
+    }
+
     pub(super) fn new_selection(&self) {
         let selection = self.selection.get() + 1;
         self.selection.set(selection);
         self.sender.select(selection);
         self.pending.borrow_mut().clear();
         self.preview_pending.borrow_mut().clear();
+        self.sent_pending.borrow_mut().clear();
     }
 
     pub(super) fn load_expanded(&self) {

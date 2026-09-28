@@ -36,6 +36,10 @@ struct State {
     selected: RefCell<Vec<u32>>,
     deferred_read_sort: RefCell<HashSet<u32>>,
     cards: RefCell<HashMap<u32, ui::viewer::Card>>,
+    sent_cards: RefCell<HashMap<String, ui::viewer::Card>>,
+    related_sent: RefCell<Vec<models::SentMessage>>,
+    sent_pending: RefCell<HashSet<String>>,
+    open_group: RefCell<Vec<Message>>,
     trusted_senders: RefCell<HashMap<String, HashSet<String>>>,
     downloaded_media: RefCell<HashSet<(String, String, u32, String)>>,
     sidebar: gtk::Box,
@@ -324,6 +328,7 @@ impl State {
         else {
             return;
         };
+        let own = models::senders::address(&account) == sender;
         let trusted = {
             let mut accounts = self.trusted_senders.borrow_mut();
             let senders = accounts.entry(account).or_default();
@@ -352,7 +357,7 @@ impl State {
             .filter(|message| models::senders::key(message) == sender)
         {
             if let Some(card) = self.cards.borrow().get(&message.uid) {
-                card.set_trusted(trusted);
+                card.set_trusted(trusted || own);
             }
         }
     }
@@ -406,6 +411,10 @@ impl State {
             selected: RefCell::new(Vec::new()),
             deferred_read_sort: RefCell::default(),
             cards: RefCell::new(HashMap::new()),
+            sent_cards: RefCell::new(HashMap::new()),
+            related_sent: RefCell::new(Vec::new()),
+            sent_pending: RefCell::new(HashSet::new()),
+            open_group: RefCell::new(Vec::new()),
             trusted_senders: RefCell::new(load_trusted_senders()),
             downloaded_media: RefCell::new(load_downloaded_media()),
             sidebar,
@@ -468,6 +477,25 @@ impl State {
             if let Some(state) = weak.upgrade() {
                 // A later manual visibility change overrides the automatic collapse.
                 state.restore_accounts_on_back.set(false);
+            }
+        });
+        let weak = Rc::downgrade(&state);
+        state.compose.connect_send(move |draft| {
+            if let Some(state) = weak.upgrade() {
+                let result = draft.and_then(|draft| {
+                    let account = state
+                        .account
+                        .borrow()
+                        .clone()
+                        .ok_or("Select an account before sending")?;
+                    state
+                        .sender
+                        .send(Command::Send { account, draft })
+                        .map_err(|error| error.to_string())
+                });
+                if let Err(error) = result {
+                    state.event(Event::Sent(Err(error)));
+                }
             }
         });
         let weak = Rc::downgrade(&state);
@@ -617,6 +645,7 @@ mod diagnostics {
             ssl: true,
             tls: false,
             oauth2: true,
+            smtp: None,
         });
         let account = state.account.borrow().clone().unwrap();
         state.event(Event::Accounts(vec![account]));

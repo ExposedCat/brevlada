@@ -60,6 +60,10 @@
     const range = document.createRange();
     range.setStart(...first);
     range.setEnd(...last);
+    if (root.dataset.hideQuotes === 'true') {
+        range.deleteContents();
+        return;
+    }
     const details = document.createElement('details');
     const summary = document.createElement('summary');
     summary.textContent = 'Quoted reply';

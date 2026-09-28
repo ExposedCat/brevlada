@@ -1,4 +1,4 @@
-use crate::models::Message;
+use crate::models::{Message, SentMessage};
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::{collections::HashSet, path::Path};
@@ -47,6 +47,9 @@ impl Storage {
             CREATE TABLE IF NOT EXISTS rust_unread (
             account_id TEXT NOT NULL, folder TEXT NOT NULL, unread BOOLEAN NOT NULL,
             PRIMARY KEY(account_id, folder));
+            CREATE TABLE IF NOT EXISTS rust_sent_local (
+            account_id TEXT NOT NULL, message_id TEXT NOT NULL, data TEXT NOT NULL,
+            PRIMARY KEY(account_id, message_id));
             CREATE INDEX IF NOT EXISTS rust_messages_date ON rust_messages
             (account_id, folder, json_extract(data, '$.timestamp') DESC, uid DESC);",
         )?;
@@ -153,6 +156,45 @@ impl Storage {
             .optional()?;
         data.map(|json| Ok(serde_json::from_str(&json)?))
             .transpose()
+    }
+
+    pub fn store_sent(&self, account: &str, message: &Message) -> Result<()> {
+        self.0.execute(
+            "INSERT OR REPLACE INTO rust_sent_local VALUES (?1,?2,?3)",
+            params![account, message.message_id, serde_json::to_string(message)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn related_sent(
+        &self,
+        account: &str,
+        folder: &str,
+        received: &[Message],
+    ) -> Result<Vec<SentMessage>> {
+        let mut candidates = Vec::new();
+        let mut local = self
+            .0
+            .prepare("SELECT data FROM rust_sent_local WHERE account_id=?1")?;
+        for row in local.query_map([account], |row| row.get::<_, String>(0))? {
+            candidates.push(SentMessage {
+                folder: String::new(),
+                message: serde_json::from_str(&row?)?,
+            });
+        }
+        let mut cached = self.0.prepare(
+            "SELECT folder, data FROM rust_messages WHERE account_id=?1 AND folder<>?2 ORDER BY json_extract(data, '$.timestamp') DESC",
+        )?;
+        for row in cached.query_map(params![account, folder], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (folder, data) = row?;
+            let message: Message = serde_json::from_str(&data)?;
+            if crate::models::senders::key(&message).eq_ignore_ascii_case(account) {
+                candidates.push(SentMessage { folder, message });
+            }
+        }
+        Ok(crate::models::conversation::related(received, &candidates))
     }
 
     #[cfg(test)]
@@ -359,6 +401,32 @@ mod tests {
             "Original"
         );
         assert_eq!(storage.messages("b", "INBOX").unwrap()[0].subject, "Other");
+    }
+
+    #[test]
+    fn finds_locally_sent_reply_in_received_thread() {
+        let storage = storage();
+        let received = Message {
+            uid: 7,
+            message_id: "incoming".into(),
+            sender: "other@example.com".into(),
+            ..Default::default()
+        };
+        let sent = Message {
+            message_id: "outgoing".into(),
+            sender: "Me <me@example.com>".into(),
+            references: vec!["incoming".into()],
+            body_text: "Hello".into(),
+            body_loaded: true,
+            ..Default::default()
+        };
+        storage.store_sent("me@example.com", &sent).unwrap();
+        let related = storage
+            .related_sent("me@example.com", "INBOX", &[received])
+            .unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].message, sent);
+        assert!(related[0].folder.is_empty());
     }
 
     #[test]

@@ -1,9 +1,27 @@
 use super::{accounts, avatar_queue::AvatarQueue, connections::Connections, storage::Storage};
-use crate::models::{Account, Message};
+use crate::models::{Account, Draft, Message, SentMessage};
 use anyhow::Result;
-use std::{path::PathBuf, sync::mpsc};
+use std::{collections::HashSet, path::PathBuf, sync::mpsc};
 
 pub enum Command {
+    Send {
+        account: Account,
+        draft: Draft,
+    },
+    RelatedSent {
+        account: Account,
+        folder: String,
+        messages: Vec<Message>,
+        generation: u64,
+        selection: u64,
+    },
+    SentBody {
+        account: Account,
+        folder: String,
+        uid: u32,
+        generation: u64,
+        selection: u64,
+    },
     SenderAction {
         account: Account,
         folder: String,
@@ -21,6 +39,10 @@ pub enum Command {
 }
 
 pub enum Event {
+    Sent(Result<(), String>),
+    SentCacheChanged(String),
+    RelatedSent(u64, u64, Vec<SentMessage>),
+    SentBody(u64, u64, String, u32, Result<Message, String>),
     SenderActionFinished {
         account: String,
         folder: String,
@@ -165,6 +187,7 @@ fn start_commands(
             }
         };
         let mut connections = Connections::default();
+        let mut sent_loaded = HashSet::new();
         while let Ok(command) = receiver.recv() {
             let generation = match &command {
                 Command::Load { generation, .. } => Some(*generation),
@@ -176,6 +199,7 @@ fn start_commands(
                 &mut connections,
                 &events,
                 &background,
+                &mut sent_loaded,
             ) && events
                 .send_blocking(Event::Error(generation, error.to_string()))
                 .is_err()
@@ -192,8 +216,91 @@ fn execute(
     connections: &mut Connections,
     events: &async_channel::Sender<Event>,
     background: &super::sync_queue::SyncQueue,
+    sent_loaded: &mut HashSet<String>,
 ) -> Result<()> {
     match command {
+        Command::Send { account, draft } => {
+            let result = super::smtp::send(&account, &draft).map_err(|error| error.to_string());
+            match result {
+                Ok(message) => {
+                    if let Err(error) = storage.store_sent(&account.email, &message) {
+                        eprintln!("Could not cache sent message: {error}");
+                    }
+                    events.send_blocking(Event::Sent(Ok(())))?;
+                    events.send_blocking(Event::SentCacheChanged(account.email))?;
+                    background.refresh();
+                }
+                Err(error) => events.send_blocking(Event::Sent(Err(error)))?,
+            }
+        }
+        Command::RelatedSent {
+            account,
+            folder,
+            messages,
+            generation,
+            selection,
+        } => {
+            if !sent_loaded.contains(&account.email) {
+                let fresh = connections.execute(&account, |mail| {
+                    let (_, _, sent) = mail.sync_folders()?;
+                    sent.map(|folder| {
+                        mail.headers(&folder)
+                            .map(|(validity, messages, uids)| (folder, validity, messages, uids))
+                    })
+                    .transpose()
+                });
+                match fresh {
+                    Ok(Some((sent, validity, headers, uids))) => {
+                        match storage.reconcile(&account.email, &sent, validity, headers, &uids) {
+                            Ok(()) => {
+                                sent_loaded.insert(account.email.clone());
+                            }
+                            Err(error) => eprintln!("Could not cache sent headers: {error}"),
+                        }
+                    }
+                    Ok(None) => {
+                        sent_loaded.insert(account.email.clone());
+                    }
+                    Err(error) => eprintln!("Could not load sent headers: {error}"),
+                }
+            }
+            let related = match storage.related_sent(&account.email, &folder, &messages) {
+                Ok(related) => related,
+                Err(error) => {
+                    events.send_blocking(Event::Error(
+                        None,
+                        format!("Could not load sent messages: {error}"),
+                    ))?;
+                    Vec::new()
+                }
+            };
+            events.send_blocking(Event::RelatedSent(generation, selection, related))?;
+        }
+        Command::SentBody {
+            account,
+            folder,
+            uid,
+            generation,
+            selection,
+        } => {
+            let result = (|| {
+                let validity = storage.validity(&account.email, &folder)?;
+                let cached = storage
+                    .message(&account.email, &folder, uid)?
+                    .ok_or_else(|| anyhow::anyhow!("Sent message is no longer cached"))?;
+                if cached.body_loaded {
+                    return Ok(cached);
+                }
+                let message = connections.execute(&account, |mail| {
+                    mail.body_with_validity(&folder, uid, validity)
+                })?;
+                storage
+                    .store_body(&account.email, &folder, validity, &message)?
+                    .ok_or_else(|| anyhow::anyhow!("Sent mailbox changed while loading"))
+            })()
+            .map_err(|error: anyhow::Error| error.to_string());
+            events.send_blocking(Event::SentBody(generation, selection, folder, uid, result))?;
+        }
         Command::SenderAction {
             account,
             folder,

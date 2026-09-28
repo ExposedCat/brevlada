@@ -155,6 +155,14 @@ impl Editor {
             run(&self.view, "document.body.focus({preventScroll: true})");
         }
     }
+
+    pub async fn message_html(&self) -> Result<String, gtk::glib::Error> {
+        let value = self
+            .view
+            .evaluate_javascript_future("getMessageHtml()", Some(WORLD), None)
+            .await?;
+        Ok(value.to_str().to_string())
+    }
 }
 
 fn set_content(view: &webkit6::WebView, content: &serde_json::Value) {

@@ -50,11 +50,11 @@ fn execute(
     let (account, folder) = (&job.account, &job.folder);
     match &job.task {
         Task::Discover => {
-            let (all, folders) =
+            let (all, folders, sent) =
                 connections
                     .execute_body(account, &queue.cancellation, 0, |mail| mail.sync_folders())?;
             storage.store_folders(&account.email, &all)?;
-            let folders = queue.discovered(&account.email, &folders);
+            let folders = queue.discovered(&account.email, &folders, sent.as_deref());
             events.send_blocking(Event::Folders(account.email.clone(), all))?;
             for folder in folders
                 .into_iter()
@@ -91,7 +91,9 @@ fn execute(
             ))?;
             publish_list(storage, queue, events, job)?;
             if missing.is_empty() {
-                enqueue_bodies(storage, queue, job, validity, None)?;
+                if !queue.headers_only(&account.email, folder) {
+                    enqueue_bodies(storage, queue, job, validity, None)?;
+                }
             } else {
                 queue.push(Job {
                     task: Task::Headers {
@@ -115,10 +117,15 @@ fn execute(
             storage.store_headers(&account.email, folder, *validity, &messages)?;
             if end == uids.len() {
                 queue.headers_cached(&account.email, folder, *validity);
+                if queue.is_sent(&account.email, folder) {
+                    events.send_blocking(Event::SentCacheChanged(account.email.clone()))?;
+                }
             }
             if *offset == 0 || end == uids.len() {
                 publish_list(storage, queue, events, job)?;
-                enqueue_bodies(storage, queue, job, *validity, None)?;
+                if !queue.headers_only(&account.email, folder) {
+                    enqueue_bodies(storage, queue, job, *validity, None)?;
+                }
             }
             if end < uids.len() {
                 queue.push(Job {
@@ -239,6 +246,7 @@ mod tests {
                 ssl: true,
                 tls: false,
                 oauth2: false,
+                smtp: None,
             },
             folder: "INBOX".into(),
             task: Task::Scan,
