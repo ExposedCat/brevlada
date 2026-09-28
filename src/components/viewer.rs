@@ -6,8 +6,13 @@ use std::{cell::Cell, rc::Rc};
 struct Content {
     message: std::cell::RefCell<Message>,
     body: gtk::Revealer,
+    webview: std::cell::RefCell<Option<webkit6::WebView>>,
     expanded: Cell<bool>,
     rendered: Cell<bool>,
+    media: Cell<bool>,
+    trusted: Cell<bool>,
+    media_button: gtk::Button,
+    on_media: Rc<dyn Fn()>,
     open: Rc<dyn Fn()>,
     reply: Rc<dyn Fn(&Message)>,
     reply_pending: Cell<bool>,
@@ -21,6 +26,16 @@ pub struct Card {
 }
 
 impl Card {
+    pub fn set_trusted(&self, trusted: bool) {
+        self.content.trusted.set(trusted);
+        if trusted && self.content.rendered.get() {
+            self.content.download_media();
+        }
+        self.content
+            .media_button
+            .set_visible(!trusted && !self.content.media.get());
+    }
+
     pub fn is_reply_pending(&self) -> bool {
         self.content.reply_pending.get()
     }
@@ -30,6 +45,9 @@ impl Card {
     }
     pub fn update(&self, message: &Message) {
         *self.content.message.borrow_mut() = message.clone();
+        self.content
+            .media_button
+            .set_visible(!self.content.media.get() && !self.content.trusted.get());
         self.content.show();
         if message.body_loaded && self.content.reply_pending.replace(false) {
             (self.content.reply)(message);
@@ -38,6 +56,7 @@ impl Card {
     pub fn error(&self, error: &str) {
         self.content.reply_pending.set(false);
         if !self.content.message.borrow().body_loaded {
+            self.content.webview.borrow_mut().take();
             self.content
                 .body
                 .set_child(Some(&super::body::error(error, self.content.open.clone())));
@@ -45,12 +64,24 @@ impl Card {
     }
     pub fn loading(&self) {
         if !self.content.message.borrow().body_loaded {
+            self.content.webview.borrow_mut().take();
             self.content.body.set_child(Some(&super::body::loading()));
         }
     }
 }
 
 impl Content {
+    fn download_media(&self) {
+        if self.media.replace(true) {
+            return;
+        }
+        self.media_button.set_visible(false);
+        (self.on_media)();
+        if let Some(view) = self.webview.borrow().as_ref() {
+            super::body::enable_media(view);
+        }
+    }
+
     fn show(&self) {
         if !self.body.is_mapped() {
             return;
@@ -69,8 +100,14 @@ impl Content {
         }
         if self.expanded.get() && self.message.borrow().body_loaded && !self.rendered.replace(true)
         {
-            self.body
-                .set_child(Some(&super::body::view(&self.message.borrow())));
+            if self.trusted.get() {
+                self.media.set(true);
+                self.media_button.set_visible(false);
+                (self.on_media)();
+            }
+            let (body, view) = super::body::view(&self.message.borrow(), self.media.get());
+            self.body.set_child(Some(&body));
+            *self.webview.borrow_mut() = Some(view);
         }
     }
 }
@@ -80,8 +117,11 @@ pub fn card(
     expanded: bool,
     threaded: bool,
     avatars: &Avatars,
+    media_downloaded: bool,
+    trusted: bool,
     open: impl Fn() + 'static,
     reply: impl Fn(&Message) + 'static,
+    download_media: impl Fn() + 'static,
 ) -> Card {
     let widget = column("message-row-widget");
     widget.set_vexpand(false);
@@ -94,11 +134,19 @@ pub fn card(
         .transition_duration(160)
         .build();
     body.set_child(Some(&super::body::loading()));
+    let media_button = button("image-x-generic-symbolic", "Download media");
+    media_button.set_valign(gtk::Align::Center);
+    media_button.set_visible(!media_downloaded && !trusted);
     let content = Rc::new(Content {
         message: std::cell::RefCell::new(message.clone()),
         body: body.clone(),
+        webview: std::cell::RefCell::new(None),
         expanded: Cell::new(expanded || !threaded),
         rendered: Cell::new(false),
+        media: Cell::new(media_downloaded),
+        trusted: Cell::new(trusted),
+        media_button: media_button.clone(),
+        on_media: Rc::new(download_media),
         open: Rc::new(open),
         reply: Rc::new(reply),
         reply_pending: Cell::new(false),
@@ -191,6 +239,13 @@ pub fn card(
         }
     });
     row.add_suffix(&reply_button);
+    let weak = Rc::downgrade(&content);
+    media_button.connect_clicked(move |_| {
+        if let Some(content) = weak.upgrade() {
+            content.download_media();
+        }
+    });
+    row.add_suffix(&media_button);
     let date = gtk::Label::builder()
         .label(display::date(message, true))
         .halign(gtk::Align::End)

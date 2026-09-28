@@ -16,9 +16,13 @@ pub fn attach<T: Clone + 'static>(
     scroll: &gtk::ScrolledWindow,
     sender_at: impl Fn(i32) -> Option<(T, bool)> + 'static,
     activate: impl Fn(T, SenderAction) + 'static,
+    is_trusted: impl Fn(&T) -> bool + 'static,
+    toggle_trust: impl Fn(T) + 'static,
 ) {
     let activate = Rc::new(activate);
     let sender_at = Rc::new(sender_at);
+    let is_trusted = Rc::new(is_trusted);
+    let toggle_trust = Rc::new(toggle_trust);
     let lookup = sender_at.clone();
     let shortcut_activate = activate.clone();
     super::mail_shortcuts::attach(list, move |index, action| {
@@ -98,6 +102,33 @@ pub fn attach<T: Clone + 'static>(
                     Some(gtk::NamedAction::new(&detailed_name)),
                 ));
             }
+        }
+        if bulk {
+            let section = gtk::gio::Menu::new();
+            let name = "trust";
+            let entry = gtk::gio::MenuItem::new(None, None);
+            entry.set_attribute_value("custom", Some(&name.to_variant()));
+            section.append_item(&entry);
+            menu.append_section(None, &section);
+            let trusted = is_trusted(&sender);
+            let action = gtk::gio::SimpleAction::new(name, None);
+            let toggle_trust = toggle_trust.clone();
+            let weak = popover.downgrade();
+            action.connect_activate(move |_, _| {
+                if let Some(popover) = weak.upgrade() {
+                    popover.popdown();
+                }
+                toggle_trust(sender.clone());
+            });
+            actions.add_action(&action);
+            let title = if trusted { "Don't trust" } else { "Trust" };
+            let icon = if trusted {
+                "changes-prevent-symbolic"
+            } else {
+                "changes-allow-symbolic"
+            };
+            let button = super::menu_item::action(title, icon, None, "sender.trust");
+            assert!(popover.add_child(&button, name));
         }
         if !bulk {
             popover.add_controller(shortcuts);
@@ -230,6 +261,8 @@ mod diagnostics {
             move |sender, action| {
                 recorder.borrow_mut().push((sender, action));
             },
+            |_| false,
+            |_| {},
         );
         window.present();
         settle();

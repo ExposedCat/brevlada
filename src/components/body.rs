@@ -2,12 +2,12 @@ use crate::{models::Message, theme};
 use adw::prelude::*;
 use webkit6::prelude::*;
 
-pub fn view(message: &Message) -> gtk::Widget {
+pub fn view(message: &Message, media: bool) -> (gtk::Widget, webkit6::WebView) {
     let settings = webkit6::Settings::builder()
         .enable_javascript(true)
         .enable_javascript_markup(false)
         .enable_html5_local_storage(false)
-        .auto_load_images(false)
+        .auto_load_images(media)
         .build();
     let manager = webkit6::UserContentManager::new();
     let view = webkit6::WebView::builder()
@@ -17,7 +17,6 @@ pub fn view(message: &Message) -> gtk::Widget {
         .height_request(theme::BODY_HEIGHT)
         .hexpand(true)
         .build();
-    super::body_layout::connect(&view, &manager);
     let stack = gtk::Stack::builder()
         .vexpand(false)
         .height_request(theme::BODY_HEIGHT)
@@ -26,6 +25,14 @@ pub fn view(message: &Message) -> gtk::Widget {
     stack.add_named(&loading(), Some("loading"));
     stack.add_named(&view, Some("content"));
     stack.set_visible_child_name("loading");
+    let target = stack.downgrade();
+    super::body_layout::connect(&view, &manager, move || {
+        if let Some(stack) = target.upgrade()
+            && stack.visible_child_name().as_deref() != Some("error")
+        {
+            stack.set_visible_child_name("content");
+        }
+    });
     let target = stack.downgrade();
     view.connect_load_changed(move |view, event| {
         if event == webkit6::LoadEvent::Finished
@@ -133,7 +140,25 @@ pub fn view(message: &Message) -> gtk::Widget {
         .hexpand(true)
         .css_classes(["html-viewer-frame"])
         .build();
-    frame.upcast()
+    (frame.upcast(), view)
+}
+
+pub fn enable_media(view: &webkit6::WebView) {
+    if let Some(settings) = webkit6::prelude::WebViewExt::settings(view) {
+        settings.set_auto_load_images(true);
+    }
+    // Retry image elements skipped while automatic image loading was disabled.
+    view.evaluate_javascript(
+        "document.querySelectorAll('img').forEach(image => { for (const name of ['src', 'srcset']) { const source = image.getAttribute(name); if (source && /^(https?:|\\/\\/)/i.test(source.trim())) { image.removeAttribute(name); image.setAttribute(name, source); } } });",
+        None,
+        None,
+        gtk::gio::Cancellable::NONE,
+        |result| {
+            if let Err(error) = result {
+                eprintln!("Could not load message media: {error}");
+            }
+        },
+    );
 }
 
 pub fn loading() -> gtk::Widget {

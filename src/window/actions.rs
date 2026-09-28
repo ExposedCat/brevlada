@@ -143,11 +143,17 @@ impl State {
         let weak = Rc::downgrade(self);
         let uid = message.uid;
         let reply_state = Rc::downgrade(self);
+        let media_state = Rc::downgrade(self);
+        let media_key = self.media_key(message);
+        let downloaded = self.downloaded_media.borrow().contains(&media_key);
+        let trusted = self.is_trusted(&models::senders::key(message));
         ui::viewer::card(
             message,
             expanded,
             self.selected.borrow().len() > 1,
             &self.avatars,
+            downloaded,
+            trusted,
             move || {
                 if let Some(state) = weak.upgrade() {
                     state.open(uid);
@@ -158,6 +164,11 @@ impl State {
                     state.compose.reply(reply_message);
                     let adjustment = state.viewer_scroll.vadjustment();
                     adjustment.set_value(adjustment.lower());
+                }
+            },
+            move || {
+                if let Some(state) = media_state.upgrade() {
+                    state.mark_media_downloaded(media_key.clone());
                 }
             },
         )

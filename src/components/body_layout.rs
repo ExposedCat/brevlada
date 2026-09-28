@@ -9,11 +9,24 @@ const SCRIPT: &str = concat!(
     include_str!("html_viewer/layout.js"),
 );
 
-pub fn connect(view: &webkit6::WebView, manager: &webkit6::UserContentManager) {
+pub fn connect(
+    view: &webkit6::WebView,
+    manager: &webkit6::UserContentManager,
+    ready: impl Fn() + 'static,
+) {
     manager.register_script_message_handler("bodySize", Some(WORLD));
+    manager.add_script(&webkit6::UserScript::for_world(
+        SCRIPT,
+        webkit6::UserContentInjectedFrames::TopFrame,
+        webkit6::UserScriptInjectionTime::End,
+        WORLD,
+        &[],
+        &[],
+    ));
     let weak = view.downgrade();
     manager.connect_script_message_received(Some("bodySize"), move |_, value| {
         if let Some(view) = weak.upgrade() {
+            ready();
             let height = value.to_int32().max(theme::BODY_HEIGHT);
             if height == view.height_request() {
                 return;

@@ -36,6 +36,8 @@ struct State {
     selected: RefCell<Vec<u32>>,
     deferred_read_sort: RefCell<HashSet<u32>>,
     cards: RefCell<HashMap<u32, ui::viewer::Card>>,
+    trusted_senders: RefCell<HashMap<String, HashSet<String>>>,
+    downloaded_media: RefCell<HashSet<(String, String, u32, String)>>,
     sidebar: gtk::Box,
     account_sidebar: ui::motion::Sidebar,
     restore_accounts_on_back: Cell<bool>,
@@ -66,6 +68,36 @@ struct State {
     search: gtk::SearchEntry,
 }
 
+fn load_trusted_senders() -> HashMap<String, HashSet<String>> {
+    let path = glib::user_config_dir().join("brevlada/trusted-senders.json");
+    match std::fs::read(&path) {
+        Ok(data) => serde_json::from_slice(&data).unwrap_or_else(|error| {
+            eprintln!("Could not restore trusted senders: {error}");
+            HashMap::new()
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(error) => {
+            eprintln!("Could not restore trusted senders: {error}");
+            HashMap::new()
+        }
+    }
+}
+
+fn load_downloaded_media() -> HashSet<(String, String, u32, String)> {
+    let path = glib::user_config_dir().join("brevlada/downloaded-media.json");
+    match std::fs::read(&path) {
+        Ok(data) => serde_json::from_slice(&data).unwrap_or_else(|error| {
+            eprintln!("Could not restore downloaded media: {error}");
+            HashSet::new()
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashSet::new(),
+        Err(error) => {
+            eprintln!("Could not restore downloaded media: {error}");
+            HashSet::new()
+        }
+    }
+}
+
 pub fn create(app: &adw::Application) {
     let shell = ui::shell::Shell::new(app);
     let window = shell.window.clone();
@@ -76,6 +108,8 @@ pub fn create(app: &adw::Application) {
     for threads in [false, true] {
         let lookup = Rc::downgrade(&state);
         let activate = Rc::downgrade(&state);
+        let trust_lookup = Rc::downgrade(&state);
+        let trust_toggle = Rc::downgrade(&state);
         ui::sender_menu::attach(
             if threads {
                 &state.thread_list
@@ -116,6 +150,22 @@ pub fn create(app: &adw::Application) {
             move |sender, action| {
                 if let Some(state) = activate.upgrade() {
                     state.sender_action(sender, action);
+                }
+            },
+            move |target| {
+                let Some(state) = trust_lookup.upgrade() else {
+                    return false;
+                };
+                match target {
+                    models::action_target::ActionTarget::Sender(sender) => state.is_trusted(sender),
+                    _ => false,
+                }
+            },
+            move |target| {
+                if let Some(state) = trust_toggle.upgrade()
+                    && let models::action_target::ActionTarget::Sender(sender) = target
+                {
+                    state.toggle_trust(&sender);
                 }
             },
         );
@@ -224,6 +274,89 @@ pub fn create(app: &adw::Application) {
 }
 
 impl State {
+    fn mark_media_downloaded(&self, key: (String, String, u32, String)) {
+        if !self.downloaded_media.borrow_mut().insert(key) {
+            return;
+        }
+        let path = glib::user_config_dir().join("brevlada/downloaded-media.json");
+        let save = (|| -> anyhow::Result<()> {
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            glib::file_set_contents(
+                &path,
+                &serde_json::to_vec(&*self.downloaded_media.borrow())?,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = save {
+            self.toast.add_toast(adw::Toast::new(&format!(
+                "Could not save downloaded media: {error}"
+            )));
+        }
+    }
+
+    fn media_key(&self, message: &Message) -> (String, String, u32, String) {
+        (
+            self.account
+                .borrow()
+                .as_ref()
+                .map_or(String::new(), |account| account.email.clone()),
+            self.folder.borrow().clone(),
+            message.uid,
+            message.message_id.clone(),
+        )
+    }
+
+    fn is_trusted(&self, sender: &str) -> bool {
+        self.account.borrow().as_ref().is_some_and(|account| {
+            self.trusted_senders
+                .borrow()
+                .get(&account.email)
+                .is_some_and(|senders| senders.contains(sender))
+        })
+    }
+
+    fn toggle_trust(&self, sender: &str) {
+        let Some(account) = self
+            .account
+            .borrow()
+            .as_ref()
+            .map(|account| account.email.clone())
+        else {
+            return;
+        };
+        let trusted = {
+            let mut accounts = self.trusted_senders.borrow_mut();
+            let senders = accounts.entry(account).or_default();
+            if !senders.insert(sender.to_owned()) {
+                senders.remove(sender);
+                false
+            } else {
+                true
+            }
+        };
+        let path = glib::user_config_dir().join("brevlada/trusted-senders.json");
+        let save = (|| -> anyhow::Result<()> {
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            glib::file_set_contents(&path, &serde_json::to_vec(&*self.trusted_senders.borrow())?)?;
+            Ok(())
+        })();
+        if let Err(error) = save {
+            self.toast.add_toast(adw::Toast::new(&format!(
+                "Could not save trusted senders: {error}"
+            )));
+        }
+        for message in self
+            .messages
+            .borrow()
+            .iter()
+            .filter(|message| models::senders::key(message) == sender)
+        {
+            if let Some(card) = self.cards.borrow().get(&message.uid) {
+                card.set_trusted(trusted);
+            }
+        }
+    }
+
     fn new(
         shell: ui::shell::Shell,
         sender: worker::Worker,
@@ -273,6 +406,8 @@ impl State {
             selected: RefCell::new(Vec::new()),
             deferred_read_sort: RefCell::default(),
             cards: RefCell::new(HashMap::new()),
+            trusted_senders: RefCell::new(load_trusted_senders()),
+            downloaded_media: RefCell::new(load_downloaded_media()),
             sidebar,
             account_sidebar,
             thread_sidebar,

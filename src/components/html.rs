@@ -7,7 +7,7 @@ pub fn document(message: &Message) -> String {
         message.body_html.clone()
     };
     format!(
-        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:;\"><style>{}</style></head><body><div id='brevlada-content'>{body}</div></body></html>",
+        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:;\"><style>{}</style></head><body><div id='brevlada-content'>{body}</div></body></html>",
         theme::HTML_CSS
     )
 }
@@ -67,5 +67,14 @@ mod tests {
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<details>"));
         assert!(html.contains("default-src 'none'"));
+    }
+
+    #[test]
+    fn remote_images_are_permitted_by_policy_for_webkit_to_load_on_request() {
+        let message = Message {
+            body_html: "<img src='https://example.com/image.png'>".into(),
+            ..Default::default()
+        };
+        assert!(document(&message).contains("img-src data: https: http:;"));
     }
 }
