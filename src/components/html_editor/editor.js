@@ -8,7 +8,7 @@ function cleanHTML(html) {
             }
         }
         if (node.hasAttribute('href') && !/^(https?:|mailto:)/i.test(node.getAttribute('href'))) node.removeAttribute('href');
-        if (node.hasAttribute('src') && !/^data:image\/(png|jpeg|gif|webp);base64,/i.test(node.getAttribute('src'))) node.removeAttribute('src');
+        if (node.hasAttribute('src') && !/^data:image\/(png|jpeg|gif|webp);base64,/i.test(node.getAttribute('src')) && !/^cid:/i.test(node.getAttribute('src'))) node.removeAttribute('src');
     }
     return parsed.body.innerHTML;
 }
@@ -47,14 +47,17 @@ function reportHeight(edited = false) {
     const height = Math.ceil(bounds.bottom + window.scrollY + parseFloat(style.paddingBottom));
     window.webkit.messageHandlers.composeHeight.postMessage(JSON.stringify([height, edited === true]));
 }
-function report(edited = false) {
-    reportHeight(edited);
+function getMessageText() {
     const quote = document.querySelector('iframe');
     let text = document.body.innerText;
     if (quote?.contentDocument?.body) {
         text += quote.contentDocument.body.innerText.split('\n').map(line => '> ' + line).join('\n');
     }
-    window.webkit.messageHandlers.composeText.postMessage(text);
+    return text;
+}
+function report(edited = false) {
+    reportHeight(edited);
+    window.webkit.messageHandlers.composeText.postMessage(getMessageText());
 }
 function getMessageHtml() {
     const body = document.body.cloneNode(true);

@@ -1,3 +1,4 @@
+pub mod active_row;
 pub mod avatars;
 mod body;
 mod body_layout;
@@ -9,11 +10,13 @@ pub mod folders;
 mod html;
 mod html_editor;
 mod html_formatting;
+pub mod links;
 pub mod mail_shortcuts;
 mod menu_item;
 mod message_row;
 pub mod motion;
 mod pane_state;
+pub mod parcel;
 mod preview;
 mod reply_quote;
 pub mod reveal;
@@ -21,11 +24,13 @@ pub mod scroll_position;
 pub mod sender_menu;
 pub mod shell;
 pub mod sidebar;
+pub mod sort_menu;
 pub mod states;
 pub mod sync_status;
 pub mod viewer;
+pub mod virtual_list;
 use adw::prelude::*;
-pub use message_row::{message_row, sender_row, update as update_message_row, update_sender};
+pub use message_row::{message_row, sender_row};
 
 pub fn column(class: &str) -> gtk::Box {
     let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -67,6 +72,7 @@ pub fn scroll(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
         .child(child)
         .hexpand(true)
         .vexpand(true)
+        .kinetic_scrolling(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build()
 }

@@ -11,6 +11,7 @@ pub fn container(child: &impl IsA<gtk::Widget>) -> gtk::Box {
     host
 }
 
+#[cfg(test)]
 pub fn attach<T: Clone + 'static>(
     list: &gtk::ListBox,
     scroll: &gtk::ScrolledWindow,
@@ -19,12 +20,12 @@ pub fn attach<T: Clone + 'static>(
     is_trusted: impl Fn(&T) -> bool + 'static,
     toggle_trust: impl Fn(T) + 'static,
 ) {
-    let activate = Rc::new(activate);
     let sender_at = Rc::new(sender_at);
-    let is_trusted = Rc::new(is_trusted);
-    let toggle_trust = Rc::new(toggle_trust);
+    let activate = Rc::new(activate);
     let lookup = sender_at.clone();
     let shortcut_activate = activate.clone();
+    let sender_at_menu = sender_at.clone();
+    let activate_menu = activate.clone();
     super::mail_shortcuts::attach(list, move |index, action| {
         if let Some((target, false)) = lookup(index) {
             shortcut_activate(target, action);
@@ -33,6 +34,82 @@ pub fn attach<T: Clone + 'static>(
             false
         }
     });
+    attach_inner(
+        list,
+        scroll,
+        move |index| sender_at_menu(index),
+        move |target, action| activate_menu(target, action),
+        is_trusted,
+        toggle_trust,
+        |list, _, y| list.row_at_y(y as i32).map(|row| row.index()),
+        |list| list.selected_row().map(|row| row.index()),
+        |list, index| list.select_row(index.and_then(|index| list.row_at_index(index)).as_ref()),
+    );
+}
+
+pub fn attach_view<T: Clone + 'static>(
+    list: &gtk::ListView,
+    scroll: &gtk::ScrolledWindow,
+    sender_at: impl Fn(i32) -> Option<(T, bool)> + 'static,
+    activate: impl Fn(T, SenderAction) + 'static,
+    is_trusted: impl Fn(&T) -> bool + 'static,
+    toggle_trust: impl Fn(T) + 'static,
+) {
+    let sender_at = Rc::new(sender_at);
+    let activate = Rc::new(activate);
+    let lookup = sender_at.clone();
+    let shortcut_activate = activate.clone();
+    super::mail_shortcuts::attach_view(list, move |index, action| {
+        if let Some((target, false)) = lookup(index) {
+            shortcut_activate(target, action);
+            true
+        } else {
+            false
+        }
+    });
+    attach_inner(
+        list,
+        scroll,
+        move |index| sender_at(index),
+        move |target, action| activate(target, action),
+        is_trusted,
+        toggle_trust,
+        |list, x, y| {
+            let mut widget = list.pick(x, y, gtk::PickFlags::DEFAULT);
+            while let Some(current) = widget {
+                if let Some(key) = current.widget_name().strip_prefix("virtual-message-row-") {
+                    return super::virtual_list::position(list, key)
+                        .map(|position| position as i32);
+                }
+                widget = current.parent();
+            }
+            None
+        },
+        |list| super::virtual_list::selected(list).map(|index| index as i32),
+        |list, index| {
+            super::virtual_list::selection(list)
+                .set_selected(index.map_or(gtk::INVALID_LIST_POSITION, |index| index as u32))
+        },
+    );
+}
+
+fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static>(
+    list: &W,
+    scroll: &gtk::ScrolledWindow,
+    sender_at: impl Fn(i32) -> Option<(T, bool)> + 'static,
+    activate: impl Fn(T, SenderAction) + 'static,
+    is_trusted: impl Fn(&T) -> bool + 'static,
+    toggle_trust: impl Fn(T) + 'static,
+    hit: impl Fn(&W, f64, f64) -> Option<i32> + 'static,
+    selected: impl Fn(&W) -> Option<i32> + 'static,
+    select: impl Fn(&W, Option<i32>) + 'static,
+) {
+    let activate = Rc::new(activate);
+    let sender_at = Rc::new(sender_at);
+    let is_trusted = Rc::new(is_trusted);
+    let toggle_trust = Rc::new(toggle_trust);
+    let selected = Rc::new(selected);
+    let select = Rc::new(select);
     let click = gtk::GestureClick::new();
     click.set_button(gtk::gdk::BUTTON_SECONDARY);
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -41,10 +118,10 @@ pub fn attach<T: Clone + 'static>(
     let scroll = scroll.downgrade();
     click.connect_pressed(move |gesture, _, x, y| {
         let Some(list) = weak.upgrade() else { return };
-        let Some(row) = list.row_at_y(y as i32) else {
+        let Some(index) = hit(&list, x, y) else {
             return;
         };
-        let Some((sender, bulk)) = sender_at(row.index()) else {
+        let Some((sender, bulk)) = sender_at(index) else {
             return;
         };
         gesture.set_state(gtk::EventSequenceState::Claimed);
@@ -151,7 +228,8 @@ pub fn attach<T: Clone + 'static>(
             return;
         };
         let position = scroll.vadjustment().value();
-        let selected = list.selected_row().map(|row| row.downgrade());
+        let selected_index = selected(&list);
+        let select = select.clone();
         let restore_list = list.downgrade();
         let restore_host = host.downgrade();
         let restore_scroll = scroll.downgrade();
@@ -162,14 +240,11 @@ pub fn attach<T: Clone + 'static>(
             let popover = popover.clone();
             let list = restore_list.clone();
             let scroll = restore_scroll.clone();
-            let selected = selected.clone();
+            let select = select.clone();
             gtk::glib::idle_add_local_once(move || {
                 popover.unparent();
                 if let Some(list) = list.upgrade() {
-                    let selected = selected
-                        .and_then(|row| row.upgrade())
-                        .filter(|row| row.parent().as_ref() == Some(list.upcast_ref()));
-                    list.select_row(selected.as_ref());
+                    select(&list, selected_index);
                 }
                 if let Some(scroll) = scroll.upgrade() {
                     scroll.vadjustment().set_value(position);
@@ -501,6 +576,72 @@ mod diagnostics {
             ]
         ));
         assert_eq!(activated.borrow().len(), count);
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session for ListView hit testing"]
+    fn virtual_row_context_menu_targets_clicked_item() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let list = super::super::virtual_list::new();
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_bind(|_, object| {
+            let item = object.downcast_ref::<gtk::ListItem>().unwrap();
+            let row = gtk::Label::new(Some(&format!("Sender {}", item.position())));
+            row.set_widget_name(&format!("virtual-message-row-{}", item.position()));
+            item.set_child(Some(&row));
+        });
+        list.set_factory(Some(&factory));
+        super::super::virtual_list::replace(&list, 20, None);
+        let scroll = gtk::ScrolledWindow::builder()
+            .child(&list)
+            .vexpand(true)
+            .build();
+        let host = container(&scroll);
+        let window = gtk::Window::builder()
+            .default_width(400)
+            .default_height(300)
+            .child(&host)
+            .build();
+        let activated = Rc::new(RefCell::new(Vec::new()));
+        let recorder = activated.clone();
+        attach_view(
+            &list,
+            &scroll,
+            |index| Some((index, true)),
+            move |index, action| recorder.borrow_mut().push((index, action)),
+            |_| false,
+            |_| {},
+        );
+        window.present();
+        settle();
+        let row = super::super::virtual_list::visible_row(&list, 3).unwrap();
+        let point = row
+            .compute_point(&list, &gtk::graphene::Point::new(4.0, 4.0))
+            .unwrap();
+        let click = list
+            .observe_controllers()
+            .iter::<gtk::glib::Object>()
+            .filter_map(Result::ok)
+            .find_map(|controller| controller.downcast::<gtk::GestureClick>().ok())
+            .unwrap();
+        click.emit_by_name::<()>(
+            "pressed",
+            &[&1i32, &f64::from(point.x()), &f64::from(point.y())],
+        );
+        settle();
+        let popover = host
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::PopoverMenu>()
+            .unwrap();
+        action_button(popover.upcast_ref(), "Archive all")
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap()
+            .emit_clicked();
+        assert_eq!(*activated.borrow(), vec![(3, SenderAction::Archive)]);
         window.close();
     }
 }

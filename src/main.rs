@@ -10,7 +10,7 @@ use gtk::{gio, glib};
 fn main() -> glib::ExitCode {
     gio::resources_register_include!("brevlada.gresource").expect("Bundled resources are invalid");
     let app = adw::Application::builder()
-        .application_id("org.example.OnlineAccounts")
+        .application_id("io.github.ExposedCat.Brevlada")
         .build();
     app.connect_activate(|app| {
         if let Some(window) = app.active_window() {

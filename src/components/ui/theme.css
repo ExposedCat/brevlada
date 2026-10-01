@@ -7,7 +7,7 @@
   --spacing-xl: 36px;
 
   --sidebar-bg: @sidebar_bg_color;
-  --message-row-hover-bg: @sidebar_bg_color;
+  --message-row-hover-bg: alpha(@window_fg_color, 0.06);
   --message-row-selected-bg: alpha(@accent_color, 0.1);
   --border-color: @borders;
   --error-color: @error_color;

@@ -50,12 +50,16 @@ fn execute(
     let (account, folder) = (&job.account, &job.folder);
     match &job.task {
         Task::Discover => {
-            let (all, folders, sent) =
-                connections
-                    .execute_body(account, &queue.cancellation, 0, |mail| mail.sync_folders())?;
-            storage.store_folders(&account.email, &all)?;
-            let folders = queue.discovered(&account.email, &folders, sent.as_deref());
-            events.send_blocking(Event::Folders(account.email.clone(), all))?;
+            let discovered = connections
+                .execute_body(account, &queue.cancellation, 0, |mail| mail.sync_folders())?;
+            storage.store_folders(&account.email, &discovered.all)?;
+            let folders = queue.discovered(
+                &account.email,
+                &discovered.sync,
+                discovered.sent.as_deref(),
+                discovered.drafts.as_deref(),
+            );
+            events.send_blocking(Event::Folders(account.email.clone(), discovered.all))?;
             for folder in folders
                 .into_iter()
                 .filter(|folder| !folder.eq_ignore_ascii_case("INBOX"))
@@ -68,11 +72,13 @@ fn execute(
             }
         }
         Task::Scan => {
+            let revision = storage.read_revision()?;
             let (validity, flags) =
                 connections.execute_body(account, &queue.cancellation, 0, |mail| {
                     mail.inventory(folder)
                 })?;
-            let missing = storage.inventory(&account.email, folder, validity, &flags)?;
+            let missing =
+                storage.inventory_since(&account.email, folder, validity, &flags, revision)?;
             let mut needed = storage.uncached_uids(&account.email, folder)?;
             needed.extend(missing.iter().copied());
             queue.inventory(
@@ -90,6 +96,9 @@ fn execute(
                 vec![(folder.clone(), flags.iter().any(|item| !item.read))],
             ))?;
             publish_list(storage, queue, events, job)?;
+            if queue.is_outgoing(&account.email, folder) {
+                events.send_blocking(Event::SentCacheChanged(account.email.clone()))?;
+            }
             if missing.is_empty() {
                 if !queue.headers_only(&account.email, folder) {
                     enqueue_bodies(storage, queue, job, validity, None)?;
@@ -117,7 +126,7 @@ fn execute(
             storage.store_headers(&account.email, folder, *validity, &messages)?;
             if end == uids.len() {
                 queue.headers_cached(&account.email, folder, *validity);
-                if queue.is_sent(&account.email, folder) {
+                if queue.is_outgoing(&account.email, folder) {
                     events.send_blocking(Event::SentCacheChanged(account.email.clone()))?;
                 }
             }
@@ -186,7 +195,7 @@ fn publish_list(
     events.send_blocking(Event::CacheList(
         job.account.email.clone(),
         job.folder.clone(),
-        storage.messages(&job.account.email, &job.folder)?,
+        storage.sender_headers(&job.account.email, &job.folder)?,
     ))?;
     Ok(())
 }
@@ -256,6 +265,7 @@ mod tests {
                 uid,
                 read: false,
                 flagged: false,
+                draft: false,
             })
             .collect();
         storage.inventory("a", "INBOX", 1, &flags).unwrap();

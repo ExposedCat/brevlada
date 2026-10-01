@@ -1,6 +1,7 @@
 use crate::models::sender_action::SenderAction;
 use adw::prelude::*;
 
+#[cfg(test)]
 pub fn attach(list: &gtk::ListBox, activate: impl Fn(i32, SenderAction) -> bool + 'static) {
     let keys = gtk::EventControllerKey::new();
     keys.set_name(Some("mail-row-shortcuts"));
@@ -36,10 +37,33 @@ pub fn attach(list: &gtk::ListBox, activate: impl Fn(i32, SenderAction) -> bool 
     list.add_controller(keys);
 }
 
+pub fn attach_view(list: &gtk::ListView, activate: impl Fn(i32, SenderAction) -> bool + 'static) {
+    let keys = gtk::EventControllerKey::new();
+    keys.set_name(Some("mail-row-shortcuts"));
+    let weak = list.downgrade();
+    keys.connect_key_pressed(move |_, key, _, modifiers| {
+        let Some(action) = action(key, modifiers) else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        let Some(list) = weak.upgrade() else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        let Some(index) = super::virtual_list::selected(&list) else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        if activate(index as i32, action) {
+            gtk::glib::Propagation::Stop
+        } else {
+            gtk::glib::Propagation::Proceed
+        }
+    });
+    list.add_controller(keys);
+}
+
 /// Fall back to the open conversation when focus is outside a message row.
 pub fn attach_open_message(
     window: &impl IsA<gtk::Widget>,
-    message_list: &gtk::ListBox,
+    message_list: &impl IsA<gtk::Widget>,
     compose: &impl IsA<gtk::Widget>,
     activate: impl Fn(SenderAction) -> bool + 'static,
 ) {
@@ -65,8 +89,7 @@ pub fn attach_open_message(
                 || widget.is::<gtk::TextView>()
                 || widget.is::<gtk::Popover>()
                 || compose.as_ref() == Some(&widget)
-                || (widget.is::<gtk::ListBoxRow>()
-                    && widget.parent().as_ref() == list.as_ref().map(|list| list.upcast_ref()))
+                || list.as_ref().is_some_and(|list| widget == *list.as_ref())
             {
                 return gtk::glib::Propagation::Proceed;
             }

@@ -17,16 +17,25 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
         .height_request(theme::BODY_HEIGHT)
         .hexpand(true)
         .build();
+    // WebKit's minimum height can exceed a short message's measured content.
+    // Keep that minimum from propagating into the card's layout.
+    let content = gtk::ScrolledWindow::builder()
+        .child(&view)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .height_request(theme::BODY_HEIGHT)
+        .vexpand(false)
+        .build();
     let stack = gtk::Stack::builder()
         .vexpand(false)
         .height_request(theme::BODY_HEIGHT)
         .vhomogeneous(false)
         .build();
     stack.add_named(&loading(), Some("loading"));
-    stack.add_named(&view, Some("content"));
+    stack.add_named(&content, Some("content"));
     stack.set_visible_child_name("loading");
     let target = stack.downgrade();
-    super::body_layout::connect(&view, &manager, move || {
+    super::body_layout::connect(&view, &content, &manager, move || {
         if let Some(stack) = target.upgrade()
             && stack.visible_child_name().as_deref() != Some("error")
         {
@@ -43,7 +52,7 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
             super::body_layout::observe(view);
         }
     });
-    let document = std::rc::Rc::new(super::html::document(message, hide_quotes));
+    let document = std::rc::Rc::new(super::html::document(message, hide_quotes, media));
     let target = stack.downgrade();
     let html = document.clone();
     view.connect_load_failed(move |view, _, _, failure| {
@@ -91,6 +100,7 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
             stack.set_visible_child_name("error");
         }
     });
+    view.connect_map(super::body_layout::observe);
     view.connect_unrealize(|view| view.stop_loading());
     view.connect_decide_policy(|_, decision, kind| {
         if matches!(
@@ -106,26 +116,7 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
                     || uri.starts_with("http://")
                     || uri.starts_with("mailto:"))
             {
-                // Distrobox forwards xdg-open to the host desktop. Looking up
-                // AppInfo directly can select a container-only browser instead.
-                match gtk::gio::Subprocess::newv(
-                    &[
-                        std::ffi::OsStr::new("xdg-open"),
-                        std::ffi::OsStr::new(uri.as_str()),
-                    ],
-                    gtk::gio::SubprocessFlags::NONE,
-                ) {
-                    Ok(process) => {
-                        process.wait_check_async(gtk::gio::Cancellable::NONE, |result| {
-                            if let Err(error) = result {
-                                gtk::glib::g_warning!("brevlada", "Unable to open link: {error}");
-                            }
-                        })
-                    }
-                    Err(error) => {
-                        gtk::glib::g_warning!("brevlada", "Unable to open link: {error}");
-                    }
-                }
+                super::links::open(uri.as_str());
             }
             decision.ignore();
             return true;
@@ -192,4 +183,96 @@ pub fn error(message: &str, retry: std::rc::Rc<dyn Fn()>) -> gtk::Widget {
     button.connect_clicked(move |_| retry());
     row.add_suffix(&button);
     row.upcast()
+}
+
+#[cfg(test)]
+mod diagnostics {
+    use super::*;
+
+    #[test]
+    #[ignore = "Requires a graphical session and WebKit"]
+    fn short_message_keeps_its_content_height() {
+        gtk::init().unwrap();
+        let message = Message {
+            body_text: "Hello".into(),
+            body_loaded: true,
+            ..Default::default()
+        };
+        let (body, view) = view(&message, false, false);
+        let viewer = super::super::column("message-container");
+        viewer.append(&body);
+        let content = super::super::column("message-viewer-content");
+        content.append(&viewer);
+        let viewport = gtk::Viewport::builder().child(&content).build();
+        let scroll = super::super::scroll(&viewport);
+        let window = gtk::Window::builder()
+            .default_width(700)
+            .default_height(600)
+            .child(&scroll)
+            .build();
+        window.present();
+        let context = gtk::glib::MainContext::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(view.is_mapped() && !view.is_loading());
+        assert_eq!(view.height_request(), theme::BODY_HEIGHT);
+        assert_eq!(view.height(), theme::BODY_HEIGHT);
+        assert!(body.height() < 80, "short body height: {}", body.height());
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session and WebKit"]
+    fn full_message_is_measured_after_mapping_and_width_changes() {
+        gtk::init().unwrap();
+        let html = std::env::var("BREVLADA_HTML_FIXTURE")
+            .ok()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .unwrap_or_else(|| format!(
+                "<!doctype html><html><head><style>body{{padding:0}} .line{{margin:0;padding:8px}}</style></head><body style='background:lightblue'><div>Header</div></div>{}<p>Bottom</p></body></html>",
+                "<p class='line'>A complete line of newsletter content</p>".repeat(80)
+            ));
+        let message = Message {
+            body_html: html,
+            body_loaded: true,
+            ..Default::default()
+        };
+        let (body, view) = view(&message, false, false);
+        let scroll = gtk::ScrolledWindow::builder().child(&body).build();
+        let window = gtk::Window::builder()
+            .default_width(700)
+            .default_height(400)
+            .child(&scroll)
+            .build();
+        window.present();
+        let context = gtk::glib::MainContext::default();
+        for width in [700, 450] {
+            window.set_default_size(width, 400);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < until {
+                while context.pending() {
+                    context.iteration(false);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(
+                view.height_request() > 1000,
+                "measured height: {}",
+                view.height_request()
+            );
+            assert!(
+                view.height() >= view.height_request(),
+                "allocated {} for measured {}",
+                view.height(),
+                view.height_request()
+            );
+            assert!(scroll.vadjustment().upper() > 1000.0);
+        }
+        window.close();
+    }
 }

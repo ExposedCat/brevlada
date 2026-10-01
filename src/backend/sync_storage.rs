@@ -2,7 +2,6 @@ use super::Storage;
 use crate::{
     backend::{mail_sync::Flags, parser::normalize_message_id},
     models::Message,
-    theme,
 };
 use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
@@ -19,16 +18,73 @@ impl Storage {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    #[cfg(test)]
     pub fn messages(&self, account: &str, folder: &str) -> Result<Vec<Message>> {
+        self.messages_with_limit(account, folder, crate::theme::MESSAGE_LIMIT)
+    }
+
+    #[cfg(test)]
+    pub fn messages_with_limit(
+        &self,
+        account: &str,
+        folder: &str,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
         let mut statement = self.0.prepare(
             "SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2
              ORDER BY json_extract(data, '$.timestamp') DESC, uid DESC LIMIT ?3",
         )?;
-        let rows = statement
-            .query_map(params![account, folder, theme::MESSAGE_LIMIT as i64], |r| {
-                r.get::<_, String>(0)
-            })?;
+        let rows = statement.query_map(params![account, folder, limit as i64], |r| {
+            r.get::<_, String>(0)
+        })?;
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    pub fn sender_page(
+        &self,
+        account: &str,
+        folder: &str,
+        sender: &str,
+        before: Option<(i64, u32)>,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        let mut statement = self.0.prepare(
+            "SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2
+             AND instr(lower(json_extract(data, '$.sender')), ?3) > 0
+             AND (?4 IS NULL OR (json_extract(data, '$.timestamp'), uid) < (?4, ?5))
+             ORDER BY json_extract(data, '$.timestamp') DESC, uid DESC LIMIT ?6",
+        )?;
+        let mut cursor = before;
+        let mut matched = Vec::new();
+        let batch_size = limit.max(25);
+        while matched.len() < limit {
+            let rows = statement.query_map(
+                params![
+                    account,
+                    folder,
+                    sender,
+                    cursor.map(|b| b.0),
+                    cursor.map(|b| b.1),
+                    batch_size as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )?;
+            let batch: Vec<Message> = rows
+                .map(|row| Ok(serde_json::from_str(&row?)?))
+                .collect::<Result<_>>()?;
+            let count = batch.len();
+            cursor = batch.last().map(|message| (message.timestamp, message.uid));
+            matched.extend(
+                batch
+                    .into_iter()
+                    .filter(|message| crate::models::senders::key(message) == sender),
+            );
+            if count < batch_size {
+                break;
+            }
+        }
+        matched.truncate(limit);
+        Ok(matched)
     }
 
     pub fn pending_bodies(
@@ -70,28 +126,7 @@ impl Storage {
             .flatten())
     }
 
-    pub fn mark_read_cached(
-        &self,
-        account: &str,
-        folder: &str,
-        validity: Option<u32>,
-        uid: u32,
-    ) -> Result<Option<Message>> {
-        let data: Option<String> = self
-            .0
-            .query_row(
-                "UPDATE rust_messages SET data=json_set(data, '$.is_read', json('true'))
-             WHERE account_id=?1 AND folder=?2 AND uid=?3
-             AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2) IS ?4
-             RETURNING data",
-                params![account, folder, uid, validity],
-                |row| row.get(0),
-            )
-            .optional()?;
-        data.map(|data| Ok(serde_json::from_str(&data)?))
-            .transpose()
-    }
-
+    #[cfg(test)]
     pub fn inventory(
         &mut self,
         account: &str,
@@ -99,9 +134,23 @@ impl Storage {
         validity: u32,
         flags: &[Flags],
     ) -> Result<Vec<u32>> {
+        self.inventory_since(account, folder, validity, flags, self.read_revision()?)
+    }
+
+    pub fn inventory_since(
+        &mut self,
+        account: &str,
+        folder: &str,
+        validity: u32,
+        flags: &[Flags],
+        snapshot_revision: i64,
+    ) -> Result<Vec<u32>> {
+        let _write = self.1.lock()?;
         let transaction = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let revision = Self::next_read_revision(&transaction)?;
+        let reads = Self::reads_since(&transaction, account, folder, validity, snapshot_revision)?;
         let previous: Option<u32> = transaction
             .query_row(
                 "SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2",
@@ -123,7 +172,12 @@ impl Storage {
                 .query_map(params![account, folder], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        let live: HashSet<_> = flags.iter().map(|item| item.uid).collect();
+        let removed = Self::removed_in(&transaction, account, folder, validity)?;
+        let live: HashSet<_> = flags
+            .iter()
+            .map(|item| item.uid)
+            .filter(|uid| !removed.contains(uid))
+            .collect();
         for uid in existing.difference(&live) {
             transaction.execute(
                 "DELETE FROM rust_messages WHERE account_id=?1 AND folder=?2 AND uid=?3",
@@ -132,11 +186,9 @@ impl Storage {
         }
         for item in flags.iter().filter(|item| existing.contains(&item.uid)) {
             transaction.execute(
-                "UPDATE rust_messages SET data=json_set(data, '$.is_read', json(?4), '$.is_flagged', json(?5))
-                 WHERE account_id=?1 AND folder=?2 AND uid=?3
-                 AND (json_extract(data, '$.is_read') != json_extract(?4, '$')
-                      OR coalesce(json_extract(data, '$.is_flagged'), 0) != json_extract(?5, '$'))",
-                params![account, folder, item.uid, if item.read { "true" } else { "false" }, if item.flagged { "true" } else { "false" }]
+                "UPDATE rust_messages SET data=json_set(data, '$.is_read', json(?4), '$.is_flagged', json(?5), '$.is_draft', json(?6), '$.read_revision', ?7)
+                 WHERE account_id=?1 AND folder=?2 AND uid=?3",
+                params![account, folder, item.uid, if reads.get(&item.uid).copied().unwrap_or(item.read) { "true" } else { "false" }, if item.flagged { "true" } else { "false" }, if item.draft { "true" } else { "false" }, revision]
             )?;
         }
         transaction.execute(
@@ -145,7 +197,14 @@ impl Storage {
         )?;
         transaction.execute(
             "INSERT OR REPLACE INTO rust_unread VALUES (?1,?2,?3)",
-            params![account, folder, flags.iter().any(|f| !f.read)],
+            params![
+                account,
+                folder,
+                flags
+                    .iter()
+                    .any(|f| !reads.get(&f.uid).copied().unwrap_or(f.read)
+                        && !removed.contains(&f.uid))
+            ],
         )?;
         transaction.commit()?;
         let mut missing: Vec<_> = live.difference(&existing).copied().collect();
@@ -160,9 +219,11 @@ impl Storage {
         validity: u32,
         messages: &[Message],
     ) -> Result<()> {
+        let _write = self.1.lock()?;
         let transaction = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let revision = Self::next_read_revision(&transaction)?;
         let current: Option<u32> = transaction
             .query_row(
                 "SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2",
@@ -172,14 +233,20 @@ impl Storage {
             .optional()?
             .flatten();
         ensure!(current == Some(validity), "Mailbox changed during sync");
-        for message in messages {
+        let removed = Self::removed_in(&transaction, account, folder, validity)?;
+        for message in messages
+            .iter()
+            .filter(|message| !removed.contains(&message.uid))
+        {
+            let mut message = message.clone();
+            message.read_revision = revision;
             transaction.execute(
                 "INSERT OR IGNORE INTO rust_messages VALUES (?1,?2,?3,?4)",
                 params![
                     account,
                     folder,
                     message.uid,
-                    serde_json::to_string(message)?
+                    serde_json::to_string(&message)?
                 ],
             )?;
         }
@@ -194,6 +261,7 @@ impl Storage {
         validity: Option<u32>,
         fetched: &Message,
     ) -> Result<Option<Message>> {
+        let _write = self.1.lock()?;
         let transaction = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -220,14 +288,27 @@ impl Storage {
         };
         let mut message: Message = serde_json::from_str(&data)?;
         if !normalize_message_id(&message.message_id).is_empty()
+            && !(message.is_draft && fetched.message_id.is_empty())
             && normalize_message_id(&message.message_id)
                 != normalize_message_id(&fetched.message_id)
         {
             return Ok(None);
         }
+        if message.is_draft && message.message_id.is_empty() {
+            message.message_id = fetched.message_id.clone();
+        }
+        message.uid_validity = validity;
+        message.cc = fetched.cc.clone();
+        message.in_reply_to = fetched.in_reply_to.clone();
         message.body_text = fetched.body_text.clone();
         message.body_html = fetched.body_html.clone();
         message.attachments = fetched.attachments.clone();
+        if fetched.inline_media_loaded {
+            message.inline_media = fetched.inline_media.clone();
+            message.inline_media_loaded = true;
+        }
+        message.unsubscribe = fetched.unsubscribe.clone().or(message.unsubscribe);
+        message.parcels = fetched.parcels.clone();
         message.body_loaded = fetched.body_loaded;
         transaction.execute(
             "UPDATE rust_messages SET data=?4 WHERE account_id=?1 AND folder=?2 AND uid=?3",
@@ -241,11 +322,115 @@ impl Storage {
         transaction.commit()?;
         Ok(Some(message))
     }
+
+    pub fn store_unsubscribe(
+        &self,
+        account: &str,
+        folder: &str,
+        validity: Option<u32>,
+        header: &Message,
+    ) -> Result<()> {
+        let _write = self.1.lock()?;
+        let current = self
+            .message(account, folder, header.uid)?
+            .ok_or_else(|| anyhow::anyhow!("Message is no longer cached"))?;
+        ensure!(
+            normalize_message_id(&current.message_id) == normalize_message_id(&header.message_id),
+            "The mailbox changed. Reload the folder."
+        );
+        let updated = self.0.execute(
+            "UPDATE rust_messages SET data=json_set(data, '$.unsubscribe', json(?5))
+             WHERE account_id=?1 AND folder=?2 AND uid=?3
+             AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2) IS ?4
+             AND json_extract(data, '$.message_id')=?6",
+            params![
+                account,
+                folder,
+                header.uid,
+                validity,
+                serde_json::to_string(&header.unsubscribe)?,
+                current.message_id
+            ],
+        )?;
+        ensure!(
+            updated == 1,
+            "Mailbox changed while loading unsubscribe headers"
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refreshes_legacy_unsubscribe_headers_without_overwriting_cached_body_or_flags() {
+        let storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        let legacy = Message {
+            uid: 2,
+            message_id: "same".into(),
+            body_loaded: true,
+            body_text: "Cached body".into(),
+            is_read: true,
+            is_flagged: true,
+            unsubscribe: Some(crate::models::Unsubscribe {
+                url: "https://example.org/u".into(),
+                one_click: None,
+            }),
+            ..Default::default()
+        };
+        storage.store("a", "INBOX", &legacy).unwrap();
+        let header = Message {
+            unsubscribe: Some(crate::models::Unsubscribe {
+                url: "https://example.org/u".into(),
+                one_click: Some(true),
+            }),
+            body_loaded: false,
+            body_text: String::new(),
+            is_read: false,
+            is_flagged: false,
+            ..legacy.clone()
+        };
+        storage
+            .store_unsubscribe("a", "INBOX", None, &header)
+            .unwrap();
+        assert_eq!(
+            storage.message("a", "INBOX", 2).unwrap().unwrap(),
+            Message {
+                unsubscribe: header.unsubscribe.clone(),
+                ..legacy
+            }
+        );
+        assert!(
+            storage
+                .store_unsubscribe("a", "INBOX", Some(99), &header)
+                .is_err()
+        );
+        assert!(
+            storage
+                .store_unsubscribe(
+                    "a",
+                    "INBOX",
+                    None,
+                    &Message {
+                        message_id: "replaced".into(),
+                        ..header
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(
+            storage
+                .message("a", "INBOX", 2)
+                .unwrap()
+                .unwrap()
+                .unsubscribe
+                .unwrap()
+                .one_click,
+            Some(true)
+        );
+    }
 
     #[test]
     fn resumes_missing_work_and_rejects_obsolete_bodies() {
@@ -255,11 +440,13 @@ mod tests {
                 uid: 1,
                 read: false,
                 flagged: false,
+                draft: false,
             },
             Flags {
                 uid: 2,
                 read: false,
                 flagged: false,
+                draft: false,
             },
         ];
         assert_eq!(

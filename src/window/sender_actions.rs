@@ -30,12 +30,29 @@ impl State {
             self.toast.add_toast(adw::Toast::new(&error.to_string()));
             return;
         }
-        self.new_selection();
         let replace_open_message = action != SenderAction::MarkRead
-            && self.messages.borrow().iter().any(|message| {
-                sender.matches(message) && self.selected.borrow().contains(&message.uid)
-            });
+            && self
+                .open_group
+                .borrow()
+                .iter()
+                .any(|message| sender.matches(message));
         if replace_open_message {
+            let sender_index = ui::virtual_list::groups(&self.list)
+                .iter()
+                .position(|group| {
+                    group.first().is_some_and(|message| {
+                        self.sender_pane.borrow().sender()
+                            == Some(models::senders::key(message).as_str())
+                    })
+                })
+                .unwrap_or(0);
+            let thread_index = ui::virtual_list::groups(&self.thread_list)
+                .iter()
+                .position(|group| super::rendering::overlaps(group, &self.open_group.borrow()))
+                .unwrap_or(0);
+            self.next_message
+                .set(Some((sender_index as u32, thread_index as u32)));
+            self.new_selection();
             self.deferred_read_sort.borrow_mut().clear();
             self.selected.borrow_mut().clear();
             self.cards.borrow_mut().clear();
@@ -46,32 +63,7 @@ impl State {
         }
         self.refresh_sender_view();
         if replace_open_message {
-            self.open_first_remaining();
-        }
-    }
-
-    fn open_first_remaining(self: &Rc<Self>) {
-        if self.thread_groups.borrow().is_empty() || self.selected_sender.borrow().is_none() {
-            let first = self
-                .groups
-                .borrow()
-                .first()
-                .and_then(|group| group.first())
-                .cloned();
-            let Some(first) = first else {
-                return;
-            };
-            if let Some(row) = self.list.row_at_index(0) {
-                self.list.select_row(Some(&row));
-            }
-            self.filter_sender(Some(first));
-        }
-        let group = self.thread_groups.borrow().first().cloned();
-        if let Some(group) = group {
-            if let Some(row) = self.thread_list.row_at_index(0) {
-                self.thread_list.select_row(Some(&row));
-            }
-            self.show_thread(group);
+            self.advance_message();
         }
     }
 
@@ -157,9 +149,9 @@ mod diagnostics {
                 matches!(commands.try_recv().unwrap(), Command::SenderAction { action: sent, .. } if sent == action)
             );
             if action == SenderAction::MarkRead {
-                assert!(state.groups.borrow()[0][0].is_read);
+                assert!(ui::virtual_list::groups(&state.list)[0][0].is_read);
             } else {
-                assert!(state.groups.borrow().is_empty());
+                assert!(ui::virtual_list::groups(&state.list).is_empty());
             }
             state.event(Event::Messages(
                 state.generation.get(),
@@ -167,18 +159,19 @@ mod diagnostics {
                 false,
             ));
             if action == SenderAction::MarkRead {
-                assert!(state.groups.borrow()[0][0].is_read);
+                assert!(ui::virtual_list::groups(&state.list)[0][0].is_read);
             } else {
-                assert!(state.groups.borrow().is_empty());
+                assert!(ui::virtual_list::groups(&state.list).is_empty());
             }
             state.event(Event::SenderActionFinished {
                 account: "account".into(),
                 folder: "INBOX".into(),
                 sender: "sender@example.com".into(),
                 messages: None,
+                removed: Vec::new(),
                 error: Some("Server refused action".into()),
             });
-            assert_eq!(state.groups.borrow()[0][0], message);
+            assert_eq!(ui::virtual_list::groups(&state.list)[0][0], message);
         }
         state.sender_action("sender@example.com".into(), SenderAction::Delete);
         state.event(Event::SenderActionFinished {
@@ -186,16 +179,18 @@ mod diagnostics {
             folder: "INBOX".into(),
             sender: "sender@example.com".into(),
             messages: Some(Vec::new()),
+            removed: vec![message.clone()],
             error: None,
         });
         assert!(state.messages.borrow().is_empty());
-        assert!(state.groups.borrow().is_empty());
+        assert!(ui::virtual_list::groups(&state.list).is_empty());
         let other = Message {
             uid: 2,
             subject: "Other conversation".into(),
             message_id: "other".into(),
             ..message.clone()
         };
+        *state.sender_actions.borrow_mut() = Default::default();
         *state.messages.borrow_mut() = vec![message.clone(), other.clone()];
         state.filter_sender(Some(message.clone()));
         let target = models::action_target::ActionTarget::Messages(vec![(
@@ -236,6 +231,7 @@ mod diagnostics {
                 folder: "INBOX".into(),
                 sender: target.clone(),
                 messages: None,
+                removed: Vec::new(),
                 error: Some("Server refused action".into()),
             });
             assert_eq!(
@@ -243,8 +239,6 @@ mod diagnostics {
                 vec![message.clone(), other.clone()]
             );
         }
-        // Reading updates the styling immediately but defers unread-first sorting
-        // until another conversation is opened, including across list refreshes.
         let unread = Message {
             uid: 10,
             timestamp: 1,
@@ -267,27 +261,37 @@ mod diagnostics {
         };
         *state.messages.borrow_mut() = vec![unread.clone(), newer.clone(), elsewhere.clone()];
         state.filter_sender(Some(unread.clone()));
-        let row = state.thread_list.row_at_index(0).unwrap();
-        state.thread_list.select_row(Some(&row));
+        let ticket = state.sender_pane.borrow().ticket();
+        state.event(Event::SenderPage(
+            state.generation.get(),
+            ticket,
+            vec![unread.clone(), newer.clone()],
+            false,
+        ));
+        ui::virtual_list::selection(&state.thread_list).set_selected(0);
         state.show_thread(vec![unread.clone()]);
         let read = Message {
             is_read: true,
             ..unread.clone()
         };
         state.update_body(&read);
-        assert_eq!(state.thread_list.row_at_index(0).unwrap(), row);
-        assert!(state.thread_groups.borrow()[0][0].is_read);
-        assert_eq!(state.groups.borrow()[0][0].sender, unread.sender);
+        assert_eq!(ui::virtual_list::selected(&state.thread_list), Some(0));
+        assert!(ui::virtual_list::groups(&state.thread_list)[0][0].is_read);
+        assert_eq!(
+            ui::virtual_list::groups(&state.list)[0][0].sender,
+            unread.sender
+        );
         let snapshot = state.messages.borrow().clone();
         state.event(Event::Messages(state.generation.get(), snapshot, false));
         state.show_thread(vec![read.clone()]);
-        assert_eq!(state.thread_list.row_at_index(0).unwrap(), row);
+        assert_eq!(ui::virtual_list::selected(&state.thread_list), Some(0));
         state.show_thread(vec![newer.clone()]);
-        assert_eq!(state.thread_list.row_at_index(1).unwrap(), row);
-        assert_eq!(state.groups.borrow()[0][0].uid, elsewhere.uid);
+        assert_eq!(ui::virtual_list::selected(&state.thread_list), Some(1));
+        assert_eq!(
+            ui::virtual_list::groups(&state.list)[0][0].uid,
+            elsewhere.uid
+        );
 
-        // Removing the open conversation selects AND opens its replacement.
-        // Removing the last conversation from a sender moves to the next sender.
         for (removed, action, expected) in [
             (newer, SenderAction::Archive, Some(read.clone())),
             (read, SenderAction::Delete, Some(elsewhere.clone())),
@@ -312,14 +316,26 @@ mod diagnostics {
                 &[&key, &0u32, &gtk::gdk::ModifierType::empty(),]
             ));
             if let Some(expected) = expected {
+                if state.sender_pane.borrow().loading() {
+                    let ticket = state.sender_pane.borrow().ticket();
+                    state.event(Event::SenderPage(
+                        state.generation.get(),
+                        ticket,
+                        vec![expected.clone()],
+                        false,
+                    ));
+                }
                 assert_eq!(*state.selected.borrow(), vec![expected.uid]);
                 assert!(state.cards.borrow()[&expected.uid].is_expanded());
-                assert_eq!(state.thread_list.selected_row().unwrap().index(), 0);
-                assert_eq!(state.thread_groups.borrow()[0][0].uid, expected.uid);
+                assert_eq!(ui::virtual_list::selected(&state.thread_list), Some(0));
+                assert_eq!(
+                    ui::virtual_list::groups(&state.thread_list)[0][0].uid,
+                    expected.uid
+                );
             } else {
                 assert!(state.selected.borrow().is_empty());
                 assert!(state.cards.borrow().is_empty());
-                assert!(state.groups.borrow().is_empty());
+                assert!(ui::virtual_list::groups(&state.list).is_empty());
             }
         }
         window.close();

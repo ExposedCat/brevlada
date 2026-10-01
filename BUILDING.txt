@@ -12,6 +12,60 @@ Run: cargo run
 Format: cargo fmt
 Verify: cargo test && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 
+Flatpak
+
+Application ID: io.github.ExposedCat.Brevlada
+Runtime: org.gnome.Platform 50, with org.gnome.Sdk 50 for builds and the
+org.freedesktop.Sdk.Extension.rust-stable 25.08 build extension.
+
+Install build dependencies:
+  flatpak install --user flathub org.gnome.Platform//50 org.gnome.Sdk//50 org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+Build a local repository and distributable bundle from the current source tree:
+  flatpak-builder --user --force-clean --repo=.flatpak/repo .flatpak/build io.github.ExposedCat.Brevlada.json
+  flatpak build-bundle .flatpak/repo .flatpak/Brevlada.flatpak io.github.ExposedCat.Brevlada --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+
+If the build host cannot mount FUSE filesystems, add --disable-rofiles-fuse to
+flatpak-builder. This changes its build cache handling, not sandbox permissions.
+
+Install, inspect permissions, and run:
+  flatpak install --user .flatpak/Brevlada.flatpak
+  flatpak info --show-permissions io.github.ExposedCat.Brevlada
+  flatpak run io.github.ExposedCat.Brevlada
+
+The manifest grants Wayland, X11 only as a fallback when Wayland is unavailable,
+GPU rendering, network access for IMAP/SMTP and avatar downloads, and access to
+the org.gnome.OnlineAccounts session-bus service for accounts and credentials.
+Online Accounts access is service-wide; Flatpak cannot scope this permission
+to an individual mail account. The desktop portal opens external links.
+No host/home filesystem, shared IPC, audio, secret-service, unrestricted D-Bus,
+or host-command permissions are needed. The Rust extension is build-only.
+
+GNOME Online Accounts and xdg-desktop-portal must be available on the host.
+The Flatpak cache is separate from the native cache, at
+~/.var/app/io.github.ExposedCat.Brevlada/data/brevlada/emails.db. It is created
+automatically without a filesystem permission. Existing mail is synced again;
+the native cache is not imported from outside the sandbox.
+
+Cargo dependencies are pinned by Cargo.lock and data/cargo-sources.json, with
+archive checksums. Compilation uses --frozen and has no network access. After
+changing Cargo.lock, regenerate the sources using flatpak-cargo-generator:
+  git clone https://github.com/flatpak/flatpak-builder-tools.git /tmp/brevlada-flatpak-builder-tools
+  python3 -m venv /tmp/brevlada-flatpak-generator-env
+  /tmp/brevlada-flatpak-generator-env/bin/pip install aiohttp tomlkit
+  /tmp/brevlada-flatpak-generator-env/bin/python /tmp/brevlada-flatpak-builder-tools/cargo/flatpak-cargo-generator.py Cargo.lock -o data/cargo-sources.json
+
+The directory source packages local edits and excludes native build artifacts
+and local Cargo configuration. For a Flathub submission, use a tagged source
+archive with a checksum or a pinned Git commit instead. Select a project
+license and add it to Cargo.toml, a license file, and the AppStream metadata
+before publishing; this repository does not currently declare a license.
+
+Flatpak permission reference:
+  https://docs.flatpak.org/en/latest/sandbox-permissions.html
+Cargo source generator:
+  https://github.com/flatpak/flatpak-builder-tools/tree/master/cargo
+
 GNOME Online Accounts must have a mail account configured. Configure accounts through the GNOME Settings Online Accounts panel.
 
 The SQLite cache remains at $XDG_DATA_HOME/brevlada/emails.db, defaulting to
@@ -40,10 +94,19 @@ in multiple folders is cached and counted separately in each folder. The last-sy
 timestamp is saved at the start of a new sync and restored on startup; "Last synced"
 uses that start time, including when a sync was interrupted.
 
-Headers and bodies are saved incrementally in SQLite WAL transactions. Switching
-views does not cancel background caching; shutdown interrupts network requests,
+Headers and bodies are saved incrementally in SQLite WAL transactions. Cache
+connections share a write gate, so background sync, body loads, and avatar saves
+wait their turn without competing for SQLite's write lock. Initialization runs
+once while the cache is open; later connections do not rerun migrations. Reads
+remain concurrent, and the write gate is released before any network request.
+Switching views does not cancel background caching; shutdown interrupts network requests,
 and restart resumes missing work from the cache. Completed bodies are not fetched
-again. Large folders use bounded batches; the UI shows the latest 50 messages.
+again. Large folders use bounded sync batches. The sender list sorts all cached headers
+before showing its first 50 senders, including unread state from older messages.
+Scrolling reveals the next 50 senders in that same order. HTML bodies, attachments,
+and inline media are loaded separately when a sender or message is opened; cached
+plain text remains available for search. GtkListView recycles offscreen sender and
+thread rows.
 Preview fetches also cache the full text/HTML body without marking mail read.
 Opening a message marks it read. Attachments are listed by name, not cached as files.
 

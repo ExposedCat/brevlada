@@ -1,0 +1,53 @@
+{
+    "app-id": "io.github.ExposedCat.Brevlada",
+    "runtime": "org.gnome.Platform",
+    "runtime-version": "50",
+    "sdk": "org.gnome.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command": "brevlada",
+    "finish-args": [
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--device=dri",
+        "--share=network",
+        "--talk-name=org.gnome.OnlineAccounts"
+    ],
+    "modules": [
+        {
+            "name": "brevlada",
+            "buildsystem": "simple",
+            "build-options": {
+                "append-path": "/usr/lib/sdk/rust-stable/bin",
+                "env": {
+                    "CARGO_HOME": "/run/build/brevlada/cargo",
+                    "CARGO_NET_OFFLINE": "true"
+                }
+            },
+            "build-commands": [
+                "cargo build --frozen --release",
+                "install -Dm755 target/release/brevlada /app/bin/brevlada",
+                "install -Dm644 data/io.github.ExposedCat.Brevlada.desktop /app/share/applications/io.github.ExposedCat.Brevlada.desktop",
+                "install -Dm644 data/io.github.ExposedCat.Brevlada.metainfo.xml /app/share/metainfo/io.github.ExposedCat.Brevlada.metainfo.xml",
+                "install -Dm644 resources/brevlada-mail-read-symbolic.svg /app/share/icons/hicolor/scalable/apps/io.github.ExposedCat.Brevlada.svg",
+                "install -Dm644 resources/brevlada-mail-read-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.ExposedCat.Brevlada-symbolic.svg"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": ".",
+                    "skip": [
+                        ".git",
+                        ".cargo",
+                        ".native",
+                        ".flatpak",
+                        ".flatpak-builder",
+                        "target"
+                    ]
+                },
+                "data/cargo-sources.json"
+            ]
+        }
+    ]
+}

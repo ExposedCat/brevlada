@@ -4,6 +4,12 @@ use anyhow::{Context, Result, ensure};
 use imap::{Session, types::NameAttribute};
 use std::io::{Read, Write};
 
+pub struct Outcome {
+    pub messages: Option<Vec<Message>>,
+    pub error: Option<String>,
+    pub removed: Vec<Message>,
+}
+
 pub fn execute(
     account: &Account,
     folder: &str,
@@ -11,7 +17,7 @@ pub fn execute(
     action: SenderAction,
     storage: &mut Storage,
     events: &async_channel::Sender<Event>,
-) -> Result<(Option<Vec<Message>>, Option<String>)> {
+) -> Result<Outcome> {
     let mut mail = Mail::connect(account)?;
     let result = match target {
         crate::models::action_target::ActionTarget::Sender(sender) => {
@@ -25,27 +31,51 @@ pub fn execute(
             action,
         ),
     };
+    let mut removed = Vec::new();
+    let mut error = None;
+    let applied = result.is_ok();
+    match result {
+        Ok(messages) => {
+            if action != SenderAction::MarkRead {
+                removed = messages.clone();
+            }
+            if let Err(failure) = storage.confirm_action(&account.email, folder, &messages, action)
+            {
+                error = Some(format!(
+                    "Action completed, but the mail cache could not update: {failure}"
+                ));
+            }
+        }
+        Err(failure) => error = Some(failure.to_string()),
+    }
     let refresh = (|| -> Result<Vec<Message>> {
+        let revision = storage.read_revision()?;
         let (validity, flags) = mail.inventory(folder)?;
-        storage.inventory(&account.email, folder, validity, &flags)?;
-        let (validity, headers, uids) = mail.headers(folder)?;
-        storage.reconcile(&account.email, folder, validity, headers, &uids)?;
+        storage.inventory_since(&account.email, folder, validity, &flags, revision)?;
         events.send_blocking(Event::Unread(
             account.email.clone(),
             vec![(folder.into(), flags.iter().any(|flag| !flag.read))],
         ))?;
-        storage.messages(&account.email, folder)
+        storage.sender_headers(&account.email, folder)
     })();
-    let error = result
-        .err()
-        .or_else(|| {
-            refresh
-                .as_ref()
-                .err()
-                .map(|error| anyhow::anyhow!(error.to_string()))
-        })
-        .map(|error| error.to_string());
-    Ok((refresh.ok(), error))
+    let messages = match refresh {
+        Ok(messages) => Some(messages),
+        Err(failure) => {
+            if error.is_none() {
+                error = Some(if applied {
+                    format!("Action completed, but the message list could not refresh: {failure}")
+                } else {
+                    failure.to_string()
+                });
+            }
+            storage.sender_headers(&account.email, folder).ok()
+        }
+    };
+    Ok(Outcome {
+        messages,
+        error,
+        removed,
+    })
 }
 
 fn apply<T: Read + Write>(
@@ -53,7 +83,7 @@ fn apply<T: Read + Write>(
     folder: &str,
     sender: &str,
     action: SenderAction,
-) -> Result<()> {
+) -> Result<Vec<Message>> {
     ensure!(!sender.is_empty(), "Sender has no email address");
     ensure!(
         !sender.chars().any(char::is_control),
@@ -68,23 +98,19 @@ fn apply<T: Read + Write>(
         .uid_search(format!("FROM \"{escaped}\""))?
         .into_iter()
         .collect();
-    let mut uids = Vec::new();
+    let mut messages = Vec::new();
     for chunk in candidates.chunks(200) {
-        let headers =
-            session.uid_fetch(sequence(chunk), "(UID BODY.PEEK[HEADER.FIELDS (FROM)])")?;
-        for header in headers.iter() {
-            let parsed = mailparse::parse_mail(header.header().context("Missing sender header")?)?;
-            use mailparse::MailHeaderMap;
-            let message = Message {
-                sender: parsed.headers.get_first_value("From").unwrap_or_default(),
-                ..Default::default()
-            };
-            if senders::key(&message) == sender {
-                uids.push(header.uid.context("Missing message UID")?);
-            }
-        }
+        messages.extend(
+            super::mail_headers::fetch(session, folder, None, validity, chunk)?
+                .into_iter()
+                .filter(|message| senders::key(message) == sender),
+        );
     }
-    apply_uids(session, folder, validity, &uids, action)
+    let uids: Vec<_> = messages.iter().map(|message| message.uid).collect();
+    if !apply_uids(session, folder, validity, &uids, action)? {
+        messages.clear();
+    }
+    Ok(messages)
 }
 
 fn apply_messages(
@@ -93,24 +119,26 @@ fn apply_messages(
     validity: Option<u32>,
     messages: &[(u32, String)],
     action: SenderAction,
-) -> Result<()> {
+) -> Result<Vec<Message>> {
     let validity = validity.context("Mailbox is not ready; refresh and retry")?;
     let uids: Vec<_> = messages.iter().map(|(uid, _)| *uid).collect();
-    if uids.is_empty() {
-        return Ok(());
-    }
+    let mut verified = Vec::new();
     for chunk in uids.chunks(200) {
-        let headers = mail.header_batch(folder, validity, chunk)?;
-        for header in headers {
+        for header in mail.header_batch(folder, validity, chunk)? {
             ensure!(
                 messages
                     .iter()
                     .any(|(uid, id)| *uid == header.uid && *id == header.message_id),
                 "Message changed on the server; refresh and retry"
             );
+            verified.push(header);
         }
     }
-    apply_uids(&mut mail.session, folder, validity, &uids, action)
+    let uids: Vec<_> = verified.iter().map(|message| message.uid).collect();
+    if !apply_uids(&mut mail.session, folder, validity, &uids, action)? {
+        verified.clear();
+    }
+    Ok(verified)
 }
 
 fn apply_uids<T: Read + Write>(
@@ -119,9 +147,9 @@ fn apply_uids<T: Read + Write>(
     validity: u32,
     uids: &[u32],
     action: SenderAction,
-) -> Result<()> {
+) -> Result<bool> {
     if uids.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let destination = if action == SenderAction::MarkRead {
         None
@@ -139,7 +167,7 @@ fn apply_uids<T: Read + Write>(
     };
     if let Some(destination) = &destination {
         if destination == folder && action == SenderAction::Archive {
-            return Ok(());
+            return Ok(false);
         }
         ensure!(
             (can_move && destination != folder) || can_expunge,
@@ -170,7 +198,7 @@ fn apply_uids<T: Read + Write>(
             session.uid_expunge(&sequence)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn sequence(uids: &[u32]) -> String {
@@ -272,8 +300,8 @@ mod tests {
         let responses = format!(
             "a1 OK login\r\n* OK [UIDVALIDITY 7] valid\r\na2 OK select\r\n\
              * SEARCH 1 90\r\na3 OK search\r\n\
-             * 1 FETCH (UID 1 BODY[HEADER.FIELDS (FROM)] {{{}}}\r\n{})\r\n\
-             * 2 FETCH (UID 90 BODY[HEADER.FIELDS (FROM)] {{{}}}\r\n{})\r\n\
+             * 1 FETCH (UID 1 BODY[HEADER] {{{}}}\r\n{})\r\n\
+             * 2 FETCH (UID 90 BODY[HEADER] {{{}}}\r\n{})\r\n\
              a4 OK fetch\r\n* OK [UIDVALIDITY 7] valid\r\na5 OK select\r\na6 OK store\r\n",
             from.len(),
             from,
@@ -318,7 +346,7 @@ mod tests {
             let responses = format!(
                 "a1 OK login\r\n* OK [UIDVALIDITY 7] valid\r\na2 OK select\r\n\
                  * SEARCH 1\r\na3 OK search\r\n\
-                 * 1 FETCH (UID 1 BODY[HEADER.FIELDS (FROM)] {{{}}}\r\n{})\r\na4 OK fetch\r\n\
+                 * 1 FETCH (UID 1 BODY[HEADER] {{{}}}\r\n{})\r\na4 OK fetch\r\n\
                  * LIST ({special}) \"/\" \"Localized\"\r\na5 OK list\r\n\
                  * CAPABILITY IMAP4rev1 MOVE\r\na6 OK capability\r\n\
                  * OK [UIDVALIDITY 7] valid\r\na7 OK select\r\na8 OK mutation\r\na9 OK mutation\r\n",

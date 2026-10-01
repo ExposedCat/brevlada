@@ -1,12 +1,26 @@
 use super::{accounts, avatar_queue::AvatarQueue, connections::Connections, storage::Storage};
 use crate::models::{Account, Draft, Message, SentMessage};
 use anyhow::Result;
-use std::{collections::HashSet, path::PathBuf, sync::mpsc};
+use std::{path::PathBuf, sync::mpsc};
 
 pub enum Command {
-    Send {
+    Unsubscribe {
+        account: Account,
+        folder: String,
+        uid: u32,
+        message_id: String,
+    },
+    Compose {
         account: Account,
         draft: Draft,
+        target: Option<crate::models::draft::Target>,
+        request: u64,
+        save: bool,
+    },
+    DeleteDraft {
+        account: Account,
+        target: crate::models::draft::Target,
+        request: u64,
     },
     RelatedSent {
         account: Account,
@@ -36,10 +50,27 @@ pub enum Command {
         folder: String,
         generation: u64,
     },
+    LoadSenderPage {
+        account: Account,
+        folder: String,
+        sender: String,
+        generation: u64,
+        sender_generation: u64,
+        before: Option<(i64, u32)>,
+        limit: usize,
+    },
 }
 
 pub enum Event {
-    Sent(Result<(), String>),
+    Unsubscribe {
+        account: String,
+        folder: String,
+        uid: u32,
+        message_id: String,
+        result: Result<super::unsubscribe::Outcome, String>,
+    },
+    Composed(u64, Result<crate::models::draft::Outcome, String>),
+    DraftDeleted(u64, Result<(), String>),
     SentCacheChanged(String),
     RelatedSent(u64, u64, Vec<SentMessage>),
     SentBody(u64, u64, String, u32, Result<Message, String>),
@@ -49,6 +80,7 @@ pub enum Event {
         sender: crate::models::action_target::ActionTarget,
         messages: Option<Vec<Message>>,
         error: Option<String>,
+        removed: Vec<Message>,
     },
     Accounts(Vec<Account>),
     SidebarReady,
@@ -56,6 +88,8 @@ pub enum Event {
     Unread(String, Vec<(String, bool)>),
     UnreadSnapshot(String, Vec<(String, bool)>),
     Messages(u64, Vec<Message>, bool),
+    SenderPage(u64, u64, Vec<Message>, bool),
+    SenderPageError(u64, u64, String),
     Body(u64, u64, Message),
     BodyError(u64, u64, u32, String),
     Preview(u64, u64, Message),
@@ -78,6 +112,7 @@ pub struct BodyRequest {
 
 pub struct Worker {
     commands: mpsc::Sender<Command>,
+    cache_commands: mpsc::Sender<Command>,
     background: super::sync_queue::SyncQueue,
     bodies: super::body_queue::BodyQueue,
     avatars: AvatarQueue,
@@ -95,6 +130,7 @@ impl Worker {
         (
             Self {
                 background: super::sync_queue::SyncQueue::default(),
+                cache_commands: commands.clone(),
                 commands,
                 bodies: super::body_queue::BodyQueue::default(),
                 avatars: AvatarQueue::default(),
@@ -104,7 +140,15 @@ impl Worker {
     }
 
     pub fn send(&self, command: Command) -> Result<()> {
-        self.commands
+        let channel = if matches!(
+            command,
+            Command::LoadSenderPage { .. } | Command::RelatedSent { .. }
+        ) {
+            &self.cache_commands
+        } else {
+            &self.commands
+        };
+        channel
             .send(command)
             .map_err(|_| anyhow::anyhow!("Mail service stopped"))
     }
@@ -146,6 +190,7 @@ impl Drop for Worker {
 
 pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     let (sender, receiver) = mpsc::channel();
+    let (cache_sender, cache_receiver) = mpsc::channel();
     let (events, results) = async_channel::unbounded();
     let bodies = super::body_queue::BodyQueue::default();
     for _ in 0..2 {
@@ -157,16 +202,87 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     }
     let background = super::sync_queue::SyncQueue::default();
     super::sync_worker::start(path.clone(), background.clone(), events.clone());
-    start_commands(path, receiver, events, background.clone());
+    start_commands(path.clone(), receiver, events.clone(), background.clone());
+    start_cache_reads(path, cache_receiver, events);
     (
         Worker {
             commands: sender,
+            cache_commands: cache_sender,
             background,
             bodies,
             avatars,
         },
         results,
     )
+}
+
+fn start_cache_reads(
+    path: PathBuf,
+    receiver: mpsc::Receiver<Command>,
+    events: async_channel::Sender<Event>,
+) {
+    std::thread::spawn(move || {
+        let mut storage = None;
+        while let Ok(command) = receiver.recv() {
+            let result = (|| -> Result<Event> {
+                if storage.is_none() {
+                    storage = Some(Storage::open_read_only(&path)?);
+                }
+                let storage = storage.as_ref().unwrap();
+                Ok(match &command {
+                    Command::LoadSenderPage {
+                        account,
+                        folder,
+                        sender,
+                        generation,
+                        sender_generation,
+                        before,
+                        limit,
+                    } => {
+                        let mut messages = storage.sender_page(
+                            &account.email,
+                            folder,
+                            sender,
+                            *before,
+                            *limit + 1,
+                        )?;
+                        let has_more = messages.len() > *limit;
+                        messages.truncate(*limit);
+                        Event::SenderPage(*generation, *sender_generation, messages, has_more)
+                    }
+                    Command::RelatedSent {
+                        account,
+                        folder,
+                        messages,
+                        generation,
+                        selection,
+                    } => Event::RelatedSent(
+                        *generation,
+                        *selection,
+                        storage.related_sent(&account.email, folder, messages)?,
+                    ),
+                    _ => unreachable!("only cache commands reach this worker"),
+                })
+            })();
+            let event = match result {
+                Ok(event) => event,
+                Err(error) => match command {
+                    Command::LoadSenderPage {
+                        generation,
+                        sender_generation,
+                        ..
+                    } => Event::SenderPageError(generation, sender_generation, error.to_string()),
+                    Command::RelatedSent { .. } => {
+                        Event::Error(None, format!("Could not load outgoing messages: {error}"))
+                    }
+                    _ => continue,
+                },
+            };
+            if events.send_blocking(event).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 fn start_commands(
@@ -187,7 +303,6 @@ fn start_commands(
             }
         };
         let mut connections = Connections::default();
-        let mut sent_loaded = HashSet::new();
         while let Ok(command) = receiver.recv() {
             let generation = match &command {
                 Command::Load { generation, .. } => Some(*generation),
@@ -199,7 +314,6 @@ fn start_commands(
                 &mut connections,
                 &events,
                 &background,
-                &mut sent_loaded,
             ) && events
                 .send_blocking(Event::Error(generation, error.to_string()))
                 .is_err()
@@ -216,65 +330,75 @@ fn execute(
     connections: &mut Connections,
     events: &async_channel::Sender<Event>,
     background: &super::sync_queue::SyncQueue,
-    sent_loaded: &mut HashSet<String>,
 ) -> Result<()> {
     match command {
-        Command::Send { account, draft } => {
-            let result = super::smtp::send(&account, &draft).map_err(|error| error.to_string());
-            match result {
-                Ok(message) => {
-                    if let Err(error) = storage.store_sent(&account.email, &message) {
-                        eprintln!("Could not cache sent message: {error}");
-                    }
-                    events.send_blocking(Event::Sent(Ok(())))?;
-                    events.send_blocking(Event::SentCacheChanged(account.email))?;
-                    background.refresh();
-                }
-                Err(error) => events.send_blocking(Event::Sent(Err(error)))?,
-            }
-        }
-        Command::RelatedSent {
+        Command::Unsubscribe {
             account,
             folder,
-            messages,
-            generation,
-            selection,
+            uid,
+            message_id,
         } => {
-            if !sent_loaded.contains(&account.email) {
-                let fresh = connections.execute(&account, |mail| {
-                    let (_, _, sent) = mail.sync_folders()?;
-                    sent.map(|folder| {
-                        mail.headers(&folder)
-                            .map(|(validity, messages, uids)| (folder, validity, messages, uids))
-                    })
-                    .transpose()
-                });
-                match fresh {
-                    Ok(Some((sent, validity, headers, uids))) => {
-                        match storage.reconcile(&account.email, &sent, validity, headers, &uids) {
-                            Ok(()) => {
-                                sent_loaded.insert(account.email.clone());
-                            }
-                            Err(error) => eprintln!("Could not cache sent headers: {error}"),
+            let result = super::unsubscribe::execute(
+                &account,
+                &folder,
+                uid,
+                &message_id,
+                storage,
+                connections,
+            )
+            .map_err(|error| error.to_string());
+            events.send_blocking(Event::Unsubscribe {
+                account: account.email,
+                folder,
+                uid,
+                message_id,
+                result,
+            })?;
+        }
+        Command::Compose {
+            account,
+            draft,
+            target,
+            request,
+            save,
+        } => {
+            let result = if save {
+                super::drafts::save(&account, &draft, target.as_ref(), storage)
+                    .map(crate::models::draft::Outcome::Saved)
+            } else {
+                super::drafts::prepare_send(&account, &draft, target.as_ref())
+                    .and_then(|draft| super::smtp::send(&account, &draft))
+                    .map(|message| {
+                        if let Err(error) = storage.store_sent(&account.email, &message) {
+                            eprintln!("Could not cache sent message: {error}");
                         }
-                    }
-                    Ok(None) => {
-                        sent_loaded.insert(account.email.clone());
-                    }
-                    Err(error) => eprintln!("Could not load sent headers: {error}"),
-                }
+                        let cleanup_error = target.as_ref().and_then(|target| {
+                            super::drafts::delete(&account, target, storage)
+                                .err()
+                                .map(|error| error.to_string())
+                        });
+                        crate::models::draft::Outcome::Sent(message, cleanup_error)
+                    })
             }
-            let related = match storage.related_sent(&account.email, &folder, &messages) {
-                Ok(related) => related,
-                Err(error) => {
-                    events.send_blocking(Event::Error(
-                        None,
-                        format!("Could not load sent messages: {error}"),
-                    ))?;
-                    Vec::new()
-                }
-            };
-            events.send_blocking(Event::RelatedSent(generation, selection, related))?;
+            .map_err(|error| error.to_string());
+            let changed = result.is_ok();
+            events.send_blocking(Event::Composed(request, result))?;
+            if changed {
+                events.send_blocking(Event::SentCacheChanged(account.email))?;
+            }
+        }
+        Command::DeleteDraft {
+            account,
+            target,
+            request,
+        } => {
+            let result = super::drafts::delete(&account, &target, storage)
+                .map_err(|error| error.to_string());
+            let deleted = result.is_ok();
+            events.send_blocking(Event::DraftDeleted(request, result))?;
+            if deleted {
+                events.send_blocking(Event::SentCacheChanged(account.email))?;
+            }
         }
         Command::SentBody {
             account,
@@ -285,18 +409,23 @@ fn execute(
         } => {
             let result = (|| {
                 let validity = storage.validity(&account.email, &folder)?;
-                let cached = storage
+                let mut cached = storage
                     .message(&account.email, &folder, uid)?
-                    .ok_or_else(|| anyhow::anyhow!("Sent message is no longer cached"))?;
+                    .ok_or_else(|| anyhow::anyhow!("Outgoing message is no longer cached"))?;
+                super::mail_sync::ensure_draft_id(&mut cached, &folder);
                 if cached.body_loaded {
                     return Ok(cached);
                 }
-                let message = connections.execute(&account, |mail| {
-                    mail.body_with_validity(&folder, uid, validity)
+                let mut message = connections.execute(&account, |mail| {
+                    mail.body_with_validity(&folder, uid, validity, true)
                 })?;
+                message.is_draft |= cached.is_draft;
+                if message.is_draft && message.message_id.is_empty() {
+                    message.message_id = cached.message_id.clone();
+                }
                 storage
                     .store_body(&account.email, &folder, validity, &message)?
-                    .ok_or_else(|| anyhow::anyhow!("Sent mailbox changed while loading"))
+                    .ok_or_else(|| anyhow::anyhow!("Outgoing mailbox changed while loading"))
             })()
             .map_err(|error: anyhow::Error| error.to_string());
             events.send_blocking(Event::SentBody(generation, selection, folder, uid, result))?;
@@ -309,16 +438,21 @@ fn execute(
         } => {
             let outcome =
                 super::sender_actions::execute(&account, &folder, &sender, action, storage, events);
-            let (messages, error) = match outcome {
+            let outcome = match outcome {
                 Ok(outcome) => outcome,
-                Err(error) => (None, Some(error.to_string())),
+                Err(error) => super::sender_actions::Outcome {
+                    messages: None,
+                    error: Some(error.to_string()),
+                    removed: Vec::new(),
+                },
             };
             events.send_blocking(Event::SenderActionFinished {
                 account: account.email,
                 folder,
                 sender,
-                messages,
-                error,
+                messages: outcome.messages,
+                error: outcome.error,
+                removed: outcome.removed,
             })?;
             background.refresh();
         }
@@ -365,21 +499,123 @@ fn execute(
         } => {
             events.send_blocking(Event::Messages(
                 generation,
-                storage.messages(&account.email, &folder)?,
+                storage.sender_headers(&account.email, &folder)?,
                 true,
             ))?;
+            let revision = storage.read_revision()?;
             let (validity, messages, uids) =
                 connections.execute(&account, |mail| mail.headers(&folder))?;
-            storage.reconcile(&account.email, &folder, validity, messages, &uids)?;
+            storage.reconcile_since(
+                &account.email,
+                &folder,
+                validity,
+                messages,
+                &uids,
+                revision,
+            )?;
             events.send_blocking(Event::Messages(
                 generation,
-                storage.messages(&account.email, &folder)?,
+                storage.sender_headers(&account.email, &folder)?,
                 false,
             ))?;
             let unread = connections.execute(&account, |mail| mail.has_unread(&folder))?;
             storage.store_unread(&account.email, &folder, unread)?;
             events.send_blocking(Event::Unread(account.email, vec![(folder, unread)]))?;
         }
+        Command::LoadSenderPage { .. } | Command::RelatedSent { .. } => {
+            unreachable!("cache reads use cache worker")
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_cached_draft_bodies_without_waiting_for_the_network_worker() {
+        let path = std::env::temp_dir().join(format!(
+            "brevlada-draft-cache-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let received = Message {
+            uid: 1,
+            message_id: "incoming".into(),
+            sender: "other@example.com".into(),
+            ..Default::default()
+        };
+        let draft = Message {
+            uid: 42,
+            uid_validity: Some(7),
+            message_id: "draft".into(),
+            references: vec!["incoming".into()],
+            is_draft: true,
+            body_loaded: true,
+            body_text: "Cached body".into(),
+            body_html: "<b>Cached body</b>".into(),
+            cc: "cc@example.com".into(),
+            ..Default::default()
+        };
+        {
+            let mut storage = Storage::open(&path).unwrap();
+            storage
+                .store_saved_draft("me@example.com", "Drafts", &draft)
+                .unwrap();
+        }
+        let (commands, network_commands) = mpsc::channel();
+        let (cache_commands, cache_receiver) = mpsc::channel();
+        let (events, results) = async_channel::unbounded();
+        start_cache_reads(path.clone(), cache_receiver, events);
+        let worker = Worker {
+            commands,
+            cache_commands,
+            background: super::super::sync_queue::SyncQueue::default(),
+            bodies: super::super::body_queue::BodyQueue::default(),
+            avatars: AvatarQueue::default(),
+        };
+        // The network queue has no consumer: a cache lookup must still finish.
+        worker
+            .send(Command::RelatedSent {
+                account: Account {
+                    email: "me@example.com".into(),
+                    path: String::new(),
+                    name: String::new(),
+                    host: String::new(),
+                    username: String::new(),
+                    port: 993,
+                    ssl: true,
+                    tls: false,
+                    oauth2: false,
+                    smtp: None,
+                },
+                folder: "INBOX".into(),
+                messages: vec![received],
+                generation: 3,
+                selection: 9,
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let result = loop {
+            match results.try_recv() {
+                Ok(event) => break event,
+                Err(async_channel::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(error) => panic!("Cache read did not complete: {error}"),
+            }
+        };
+        let Event::RelatedSent(3, 9, related) = result else {
+            panic!("Expected cached drafts")
+        };
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].message, draft);
+        assert!(network_commands.try_recv().is_err());
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
 }

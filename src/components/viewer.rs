@@ -10,12 +10,16 @@ struct Content {
     expanded: Cell<bool>,
     rendered: Cell<bool>,
     media: Cell<bool>,
+    has_media: Cell<bool>,
     trusted: Cell<bool>,
     hide_quotes: bool,
+    threaded: bool,
     media_button: gtk::Button,
+    unsubscribe_button: gtk::Button,
     on_media: Rc<dyn Fn()>,
     open: Rc<dyn Fn()>,
     reply: Rc<dyn Fn(&Message)>,
+    unsubscribe: Rc<dyn Fn(&Message)>,
     reply_pending: Cell<bool>,
     signals: std::cell::RefCell<Vec<(gtk::Adjustment, gtk::glib::SignalHandlerId)>>,
 }
@@ -27,6 +31,15 @@ pub struct Card {
 }
 
 impl Card {
+    pub fn finish_unsubscribe(&self, done: bool) {
+        self.content.unsubscribe_button.set_label(if done {
+            "Unsubscribed"
+        } else {
+            "Unsubscribe"
+        });
+        self.content.unsubscribe_button.set_sensitive(!done);
+    }
+
     pub fn set_trusted(&self, trusted: bool) {
         self.content.trusted.set(trusted);
         if trusted && self.content.rendered.get() {
@@ -42,9 +55,37 @@ impl Card {
     pub fn is_expanded(&self) -> bool {
         self.content.expanded.get()
     }
+    pub fn layout_matches(&self, message: &Message, threaded: bool, hide_quotes: bool) -> bool {
+        let current = self.content.message.borrow();
+        current.uid == message.uid
+            && current.message_id == message.message_id
+            && current.is_draft == message.is_draft
+            && self.content.threaded == threaded
+            && self.content.hide_quotes == hide_quotes
+    }
+
     pub fn update(&self, message: &Message) {
+        let changed = {
+            let old = self.content.message.borrow();
+            old.body_loaded
+                && (old.body_html != message.body_html || old.body_text != message.body_text)
+        };
+        let inline_changed =
+            self.content.message.borrow().inline_media_loaded != message.inline_media_loaded;
         *self.content.message.borrow_mut() = message.clone();
+        self.content
+            .has_media
+            .set(super::html::has_remote_media(message));
         self.content.update_media_button();
+        self.content
+            .unsubscribe_button
+            .set_visible(message.unsubscribe.is_some());
+        if changed
+            || (inline_changed && self.content.media.get() && message.body_html.contains("cid:"))
+        {
+            self.content.rendered.set(false);
+            self.content.webview.borrow_mut().take();
+        }
         self.content.show();
         if message.body_loaded && self.content.reply_pending.replace(false) {
             (self.content.reply)(message);
@@ -69,11 +110,8 @@ impl Card {
 
 impl Content {
     fn update_media_button(&self) {
-        self.media_button.set_visible(
-            !self.trusted.get()
-                && !self.media.get()
-                && super::html::has_remote_media(&self.message.borrow()),
-        );
+        self.media_button
+            .set_visible(!self.trusted.get() && !self.media.get() && self.has_media.get());
     }
 
     fn download_media(&self) {
@@ -82,7 +120,13 @@ impl Content {
         }
         self.media_button.set_visible(false);
         (self.on_media)();
-        if let Some(view) = self.webview.borrow().as_ref() {
+        if self.message.borrow().body_html.contains("cid:") {
+            if self.message.borrow().inline_media_loaded {
+                self.rendered.set(false);
+                self.webview.borrow_mut().take();
+                self.show();
+            }
+        } else if let Some(view) = self.webview.borrow().as_ref() {
             super::body::enable_media(view);
         }
     }
@@ -130,6 +174,7 @@ pub fn card(
     open: impl Fn() + 'static,
     reply: impl Fn(&Message) + 'static,
     download_media: impl Fn() + 'static,
+    unsubscribe: impl Fn(&Message) + 'static,
 ) -> Card {
     let widget = column("message-row-widget");
     widget.set_vexpand(false);
@@ -143,9 +188,13 @@ pub fn card(
         .build();
     body.set_child(Some(&super::body::loading()));
     let media_button = button("image-x-generic-symbolic", "Download media");
+    let unsubscribe_button = gtk::Button::with_label("Unsubscribe");
+    unsubscribe_button.add_css_class("flat");
+    unsubscribe_button.set_valign(gtk::Align::Center);
+    unsubscribe_button.set_visible(message.unsubscribe.is_some());
     media_button.set_valign(gtk::Align::Center);
-    media_button
-        .set_visible(!media_downloaded && !trusted && super::html::has_remote_media(message));
+    let has_media = super::html::has_remote_media(message);
+    media_button.set_visible(!media_downloaded && !trusted && has_media);
     let content = Rc::new(Content {
         message: std::cell::RefCell::new(message.clone()),
         body: body.clone(),
@@ -153,12 +202,16 @@ pub fn card(
         expanded: Cell::new(expanded || !threaded),
         rendered: Cell::new(false),
         media: Cell::new(media_downloaded),
+        has_media: Cell::new(has_media),
         trusted: Cell::new(trusted),
         hide_quotes,
+        threaded,
         media_button: media_button.clone(),
+        unsubscribe_button: unsubscribe_button.clone(),
         on_media: Rc::new(download_media),
         open: Rc::new(open),
         reply: Rc::new(reply),
+        unsubscribe: Rc::new(unsubscribe),
         reply_pending: Cell::new(false),
         signals: std::cell::RefCell::new(Vec::new()),
     });
@@ -228,7 +281,7 @@ pub fn card(
     }
     let (name, email) = display::sender(message);
     let row = adw::ActionRow::builder()
-        .title(if sent {
+        .title(if sent || message.is_draft {
             format!("To: {}", message.recipients)
         } else {
             display::sender_name(message)
@@ -236,7 +289,9 @@ pub fn card(
         .use_markup(false)
         .hexpand(true)
         .build();
-    if sent {
+    if message.is_draft {
+        row.set_subtitle("Draft");
+    } else if sent {
         row.set_subtitle("Sent");
     } else if !name.is_empty() && !email.is_empty() {
         row.set_subtitle(&email);
@@ -268,6 +323,21 @@ pub fn card(
         .css_classes(["message-row-date"])
         .build();
     row.add_suffix(&date);
+    {
+        let weak = Rc::downgrade(&content);
+        unsubscribe_button.connect_clicked(move |button| {
+            let Some(content) = weak.upgrade() else {
+                return;
+            };
+            if content.message.borrow().unsubscribe.is_none() {
+                return;
+            }
+            button.set_sensitive(false);
+            button.set_label("Unsubscribing…");
+            (content.unsubscribe)(&content.message.borrow());
+        });
+        row.add_suffix(&unsubscribe_button);
+    }
     let avatar = adw::Avatar::new(
         theme::AVATAR_SIZE,
         Some(&display::sender_name(message)),

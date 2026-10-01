@@ -4,5 +4,6 @@
     <file preprocess="xml-stripblanks">shoe-box-symbolic.svg</file>
     <file preprocess="xml-stripblanks">brevlada-mail-read-symbolic.svg</file>
     <file preprocess="xml-stripblanks">paper-plane-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">truck-symbolic.svg</file>
   </gresource>
 </gresources>

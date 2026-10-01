@@ -45,10 +45,11 @@ fn load(
     let mut message = storage
         .message(&request.account.email, &request.folder, request.uid)?
         .context("Message is no longer in this folder")?;
-    if !message.body_loaded {
+    if !message.body_loaded || (message.body_html.contains("cid:") && !message.inline_media_loaded)
+    {
         let fetched =
             connections.execute_body(&request.account, queue, request.selection, |mail| {
-                mail.body_with_validity(&request.folder, request.uid, validity)
+                mail.body_with_validity(&request.folder, request.uid, validity, true)
             })?;
         anyhow::ensure!(
             super::parser::normalize_message_id(&message.message_id).is_empty()

@@ -60,12 +60,45 @@ toolbarview > * {
     padding-left: 24px;
 }
 
-.message-row:hover {
+scrolledwindow.message-list-surface {
+    background-color: var(--sidebar-bg);
+    border: 1px solid alpha(@borders, 0.5);
+    border-radius: 12px;
+}
+
+listview.message-list-view {
+    background-color: transparent;
+    border-radius: 12px;
+}
+
+listview.message-list-view row,
+listview.message-list-view row:hover,
+listview.message-list-view row:selected {
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}
+
+listview.message-list-view row:hover .message-row {
     background-color: var(--message-row-hover-bg);
 }
 
-.message-row:selected {
+listview.message-list-view row .message-row-open,
+listview.message-list-view row:hover .message-row-open {
     background-color: var(--message-row-selected-bg);
+}
+
+listview.message-list-view row:focus:focus-visible {
+    outline-width: 0;
+}
+
+button.message-list-more {
+    background-color: var(--sidebar-bg);
+    border: 1px solid alpha(@borders, 0.5);
+    border-radius: 9999px;
+    box-shadow: 0 2px 6px alpha(@shade_color, 0.15);
+    padding: 4px 12px;
 }
 
 .message-row-sender {

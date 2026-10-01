@@ -26,6 +26,7 @@ impl Storage {
     }
 
     pub fn store_avatar(&self, email: &str, source: Source, image: Option<&[u8]>) -> Result<()> {
+        let _write = self.1.lock()?;
         self.0.execute(
             "INSERT OR REPLACE INTO rust_avatars VALUES (?1,?2,?3,?4)",
             params![email, source.as_str(), image, now()],

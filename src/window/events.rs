@@ -3,14 +3,46 @@ use super::*;
 impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
         match event {
-            Event::Sent(result) => {
-                let success = result.is_ok();
-                self.compose.finish_send(success);
-                self.toast.add_toast(adw::Toast::new(&match result {
-                    Ok(()) => "Message sent".to_owned(),
-                    Err(error) => format!("Could not send message: {error}"),
-                }));
+            Event::Unsubscribe {
+                account,
+                folder,
+                uid,
+                message_id,
+                result,
+            } => {
+                let done = matches!(&result, Ok(crate::backend::unsubscribe::Outcome::Done));
+                if self
+                    .account
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| current.email == account)
+                {
+                    if *self.folder.borrow() == folder
+                        && let Some(card) = self.cards.borrow().get(&uid)
+                        && self
+                            .open_group
+                            .borrow()
+                            .iter()
+                            .any(|message| message.uid == uid && message.message_id == message_id)
+                    {
+                        card.finish_unsubscribe(done);
+                    }
+                    if let Some(card) = self.sent_cards.borrow().get(&message_id) {
+                        card.finish_unsubscribe(done);
+                    }
+                }
+                match result {
+                    Ok(crate::backend::unsubscribe::Outcome::Open(url)) => ui::links::open(&url),
+                    Ok(crate::backend::unsubscribe::Outcome::Done) => {
+                        self.toast.add_toast(adw::Toast::new("Unsubscribed"))
+                    }
+                    Err(error) => self
+                        .toast
+                        .add_toast(adw::Toast::new(&format!("Could not unsubscribe: {error}"))),
+                }
             }
+            Event::Composed(request, result) => self.composer_finished(request, result),
+            Event::DraftDeleted(request, result) => self.draft_deleted(request, result),
             Event::SentCacheChanged(account) => {
                 if self
                     .account
@@ -24,10 +56,13 @@ impl State {
             Event::RelatedSent(generation, selection, mut messages)
                 if generation == self.generation.get() && selection == self.selection.get() =>
             {
+                self.reconcile_drafts(&mut messages);
                 for item in &mut messages {
                     if !item.message.body_loaded
                         && let Some(loaded) = self.related_sent.borrow().iter().find(|old| {
-                            old.message.message_id == item.message.message_id
+                            old.folder == item.folder
+                                && old.message.uid == item.message.uid
+                                && old.message.message_id == item.message.message_id
                                 && old.message.body_loaded
                         })
                     {
@@ -35,9 +70,19 @@ impl State {
                     }
                 }
                 if *self.related_sent.borrow() != messages || self.cards.borrow().is_empty() {
+                    let only_drafts_changed = self
+                        .related_sent
+                        .borrow()
+                        .iter()
+                        .filter(|item| !item.message.is_draft)
+                        .eq(messages.iter().filter(|item| !item.message.is_draft));
                     *self.related_sent.borrow_mut() = messages;
                     ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
-                        self.render_conversation();
+                        if only_drafts_changed {
+                            self.update_draft_widgets();
+                        } else {
+                            self.render_conversation();
+                        }
                     });
                 }
             }
@@ -65,11 +110,15 @@ impl State {
                             if let Some(card) = self.sent_cards.borrow().get(&id) {
                                 card.update(&message);
                             }
+                            if message.is_draft {
+                                self.draft_editor(&folder, &message);
+                            }
                         }
                         Err(error) => {
                             if let Some(card) = self.sent_cards.borrow().get(&id) {
                                 card.error(&error);
                             }
+                            self.draft_body_error(&folder, &id, &error);
                         }
                     }
                 }
@@ -78,10 +127,21 @@ impl State {
                 account,
                 folder,
                 sender,
-                messages,
+                mut messages,
                 error,
+                removed,
             } => {
-                if let Some(messages) = &messages {
+                self.sender_actions
+                    .borrow_mut()
+                    .confirm_removed(&account, &folder, &removed);
+                if let Some(messages) = &mut messages {
+                    if let Some(previous) = self
+                        .folder_cache
+                        .borrow()
+                        .get(&(account.clone(), folder.clone()))
+                    {
+                        models::read_state::merge(messages, previous.iter());
+                    }
                     self.folder_cache
                         .borrow_mut()
                         .insert((account.clone(), folder.clone()), messages.clone());
@@ -96,15 +156,22 @@ impl State {
                     .is_some_and(|current| current.email == account)
                     && *self.folder.borrow() == folder
                 {
+                    self.sender_pane.borrow_mut().remove(&removed);
                     if let Some(messages) = messages {
-                        *self.messages.borrow_mut() = messages;
+                        self.event(Event::Messages(
+                            self.generation.get(),
+                            messages,
+                            self.loading.get(),
+                        ));
+                    } else {
+                        self.refresh_sender_view();
                     }
-                    self.refresh_sender_view();
+                    self.advance_message();
                     self.load_expanded();
                 }
                 if let Some(error) = error {
                     self.toast.add_toast(adw::Toast::new(&format!(
-                        "Could not complete action for {}: {error}",
+                        "Action for {}: {error}",
                         sender.label()
                     )));
                 }
@@ -206,21 +273,34 @@ impl State {
             Event::Messages(generation, mut messages, pending)
                 if generation == self.generation.get() =>
             {
+                self.merge_read_states(&mut messages);
                 self.loading.set(pending);
                 self.refresh.set_sensitive(!pending);
                 ui::states::refreshing(&self.refresh, pending);
-                for message in &mut messages {
-                    if !message.body_loaded
-                        && let Some(existing) = self.messages.borrow().iter().find(|old| {
-                            old.uid == message.uid
-                                && old.message_id == message.message_id
-                                && old.body_loaded
-                        })
-                    {
-                        message.body_loaded = true;
-                        message.body_html = existing.body_html.clone();
-                        message.body_text = existing.body_text.clone();
-                        message.attachments = existing.attachments.clone();
+                {
+                    let existing = self.messages.borrow();
+                    let sender_messages = self.sender_pane.borrow();
+                    let by_id: HashMap<_, _> = existing
+                        .iter()
+                        .chain(sender_messages.messages())
+                        .filter(|message| message.body_loaded)
+                        .map(|message| ((message.uid, message.message_id.as_str()), message))
+                        .collect();
+                    for message in &mut messages {
+                        if !message.body_loaded
+                            && let Some(existing) =
+                                by_id.get(&(message.uid, message.message_id.as_str()))
+                        {
+                            message.body_loaded = true;
+                            message.body_html = existing.body_html.clone();
+                            message.body_text = existing.body_text.clone();
+                            message.attachments = existing.attachments.clone();
+                            message.inline_media = existing.inline_media.clone();
+                            message.inline_media_loaded = existing.inline_media_loaded;
+                            message.parcels = existing.parcels.clone();
+                            message.unsubscribe =
+                                message.unsubscribe.clone().or(existing.unsubscribe.clone());
+                        }
                     }
                 }
                 if (!pending || !messages.is_empty())
@@ -232,10 +312,53 @@ impl State {
                     );
                 }
                 *self.messages.borrow_mut() = messages;
+                if self.sender_pane.borrow().sender().is_some() {
+                    let folder_messages = self.messages.borrow();
+                    for sender_message in self.sender_pane.borrow_mut().messages_mut().iter_mut() {
+                        if let Some(updated) = folder_messages.iter().find(|message| {
+                            message.uid == sender_message.uid
+                                && message.message_id == sender_message.message_id
+                        }) {
+                            *sender_message = updated.clone();
+                        }
+                    }
+                }
                 self.render_list();
                 self.load_expanded();
             }
-            Event::CacheList(email, folder, messages) => {
+            Event::SenderPage(generation, sender_generation, mut messages, has_more)
+                if generation == self.generation.get()
+                    && self.sender_pane.borrow().accepts(sender_generation) =>
+            {
+                self.merge_read_states(&mut messages);
+                self.sender_pane
+                    .borrow_mut()
+                    .finish(sender_generation, messages, has_more);
+                self.thread_load_more.set_visible(false);
+                self.thread_load_more.set_sensitive(true);
+                self.render_sender_pane();
+                self.advance_message();
+            }
+            Event::SenderPageError(generation, sender_generation, error)
+                if generation == self.generation.get()
+                    && self.sender_pane.borrow().accepts(sender_generation) =>
+            {
+                self.sender_pane.borrow_mut().fail(sender_generation);
+                self.thread_load_more.set_visible(true);
+                self.thread_load_more.set_sensitive(true);
+                if self.sender_pane.borrow().messages().is_empty() {
+                    ui::states::list_state(
+                        &self.thread_stack,
+                        "Could not load messages",
+                        false,
+                        false,
+                    );
+                }
+                self.toast.add_toast(adw::Toast::new(&format!(
+                    "Could not load sender messages: {error}"
+                )));
+            }
+            Event::CacheList(email, folder, mut messages) => {
                 let current = self
                     .account
                     .borrow()
@@ -247,6 +370,13 @@ impl State {
                         self.event(Event::Messages(self.generation.get(), messages, false));
                     }
                 } else {
+                    if let Some(previous) = self
+                        .folder_cache
+                        .borrow()
+                        .get(&(email.clone(), folder.clone()))
+                    {
+                        models::read_state::merge(&mut messages, previous.iter());
+                    }
                     self.folder_cache
                         .borrow_mut()
                         .insert((email, folder), messages);
@@ -283,8 +413,16 @@ impl State {
             Event::Body(generation, selection, message)
                 if generation == self.generation.get() && selection == self.selection.get() =>
             {
-                self.pending.borrow_mut().remove(&message.uid);
+                if message.is_read {
+                    self.pending.borrow_mut().remove(&message.uid);
+                }
                 self.update_body(&message);
+                if message.is_draft {
+                    self.draft_editor(&self.folder.borrow(), &message);
+                }
+                if message.is_read {
+                    self.load_expanded();
+                }
             }
             Event::BodyError(generation, selection, uid, error)
                 if generation == self.generation.get() && selection == self.selection.get() =>
@@ -298,6 +436,12 @@ impl State {
                     .borrow()
                     .iter()
                     .any(|m| m.uid == uid && m.body_loaded)
+                    || self
+                        .sender_pane
+                        .borrow()
+                        .messages()
+                        .iter()
+                        .any(|m| m.uid == uid && m.body_loaded)
                 {
                     self.toast.add_toast(adw::Toast::new(&error));
                 }

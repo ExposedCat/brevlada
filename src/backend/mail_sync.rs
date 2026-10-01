@@ -1,29 +1,86 @@
-use super::{mail::Mail, parser};
+use super::mail::Mail;
 use crate::models::Message;
 use anyhow::{Context, Result, ensure};
 use imap::types::{Flag, NameAttribute};
+
+pub struct Folders {
+    pub all: Vec<String>,
+    pub sync: Vec<String>,
+    pub sent: Option<String>,
+    pub drafts: Option<String>,
+}
+
+fn named_folder(folder: &str, names: &[&str]) -> bool {
+    names.contains(
+        &folder
+            .rsplit(['/', '.'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+    )
+}
+
+fn has_special_use(attributes: &[NameAttribute<'_>], value: &str) -> bool {
+    attributes.iter().any(|attribute| {
+        matches!(attribute, NameAttribute::Custom(name) if name.eq_ignore_ascii_case(value))
+    })
+}
+
+fn is_draft(folder: &str, flags: &[Flag<'_>], drafts: Option<&str>) -> bool {
+    flags.contains(&Flag::Draft)
+        || drafts == Some(folder)
+        || named_folder(folder, &["draft", "drafts"])
+}
+
+pub(super) fn apply_flags(
+    message: &mut Message,
+    folder: &str,
+    flags: &[Flag<'_>],
+    drafts: Option<&str>,
+) {
+    message.is_flagged = flags.contains(&Flag::Flagged);
+    message.is_draft = is_draft(folder, flags, drafts);
+    ensure_draft_id(message, folder);
+}
+
+pub(super) fn ensure_draft_id(message: &mut Message, folder: &str) {
+    if message.is_draft && message.message_id.is_empty() {
+        // Some clients do not assign a Message-ID until the draft is sent.
+        message.message_id = format!("brevlada-draft:{}:{}", folder, message.uid);
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Flags {
     pub uid: u32,
     pub read: bool,
     pub flagged: bool,
+    pub draft: bool,
 }
 
 impl Mail {
-    pub fn sync_folders(&mut self) -> Result<(Vec<String>, Vec<String>, Option<String>)> {
+    pub fn sync_folders(&mut self) -> Result<Folders> {
         let listed = self.session.list(None, Some("*"))?;
-        let sent = listed.iter()
-            .filter(|folder| !folder.attributes().contains(&NameAttribute::NoSelect))
-            .find(|folder| folder.attributes().iter().any(|attribute| {
-                matches!(attribute, NameAttribute::Custom(value) if value.eq_ignore_ascii_case("\\Sent"))
-            }))
-            .or_else(|| listed.iter()
+        let special = |attribute: &str, names: &[&str]| {
+            listed
+                .iter()
                 .filter(|folder| !folder.attributes().contains(&NameAttribute::NoSelect))
-                .find(|folder| {
-                    matches!(folder.name().rsplit(['/', '.']).next().unwrap_or_default().to_ascii_lowercase().as_str(), "sent" | "sent mail" | "sent items" | "sent messages")
-                }))
-            .map(|folder| folder.name().to_owned());
+                .find(|folder| has_special_use(folder.attributes(), attribute))
+                .or_else(|| {
+                    listed
+                        .iter()
+                        .filter(|folder| !folder.attributes().contains(&NameAttribute::NoSelect))
+                        .find(|folder| named_folder(folder.name(), names))
+                })
+                .map(|folder| folder.name().to_owned())
+        };
+        let sent = special(
+            "\\Sent",
+            &["sent", "sent mail", "sent items", "sent messages"],
+        );
+        let drafts = special("\\Drafts", &["draft", "drafts"]);
+        self.drafts_folder = drafts.clone();
         let excluded: Vec<_> = listed
             .iter()
             .filter(|folder| excluded_folder(folder.name(), folder.attributes()))
@@ -47,7 +104,12 @@ impl Mail {
         }
         all.sort();
         sync.sort();
-        Ok((all, sync, sent))
+        Ok(Folders {
+            all,
+            sync,
+            sent,
+            drafts,
+        })
     }
 
     pub fn inventory(&mut self, folder: &str) -> Result<(u32, Vec<Flags>)> {
@@ -59,11 +121,13 @@ impl Mail {
         let fetched = self.session.uid_fetch("1:*", "(UID FLAGS)")?;
         let flags = fetched
             .iter()
+            .filter(|item| item.uid.is_some())
             .map(|item| {
                 Ok(Flags {
                     uid: item.uid.context("Missing message UID")?,
                     read: item.flags().contains(&Flag::Seen),
                     flagged: item.flags().contains(&Flag::Flagged),
+                    draft: is_draft(folder, item.flags(), self.drafts_folder.as_deref()),
                 })
             })
             .collect::<Result<_>>()?;
@@ -80,31 +144,17 @@ impl Mail {
             self.session.select(folder)?.uid_validity == Some(validity),
             "Mailbox changed during sync"
         );
-        let sequence = uids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let fetched = self
-            .session
-            .uid_fetch(sequence, "(UID FLAGS BODY.PEEK[HEADER])")?;
-        fetched
-            .iter()
-            .map(|item| {
-                let mut message = parser::parse(
-                    item.uid.context("Missing message UID")?,
-                    item.header().context("Missing message headers")?,
-                    item.flags().contains(&Flag::Seen),
-                    false,
-                )?;
-                message.is_flagged = item.flags().contains(&Flag::Flagged);
-                Ok(message)
-            })
-            .collect()
+        super::mail_headers::fetch(
+            &mut self.session,
+            folder,
+            self.drafts_folder.as_deref(),
+            validity,
+            uids,
+        )
     }
 
     pub fn cached_body(&mut self, folder: &str, validity: u32, uid: u32) -> Result<Message> {
-        self.body_with_validity(folder, uid, Some(validity))
+        self.body_with_validity(folder, uid, Some(validity), false)
     }
 }
 
@@ -130,6 +180,27 @@ fn excluded_folder(name: &str, attributes: &[NameAttribute<'_>]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::parser;
+
+    #[test]
+    fn recognizes_drafts_and_gives_idless_headers_a_stable_identity() {
+        assert!(has_special_use(
+            &[NameAttribute::from("\\drafts")],
+            "\\Drafts"
+        ));
+        assert!(is_draft("Entwürfe", &[], Some("Entwürfe")));
+        assert!(is_draft("Work", &[Flag::Draft], None));
+        assert!(is_draft("[Gmail]/Drafts", &[], None));
+        assert!(!is_draft("Drafts research", &[], None));
+        let mut header = parser::parse(7, b"To: other@example.com\r\n\r\n", false, false).unwrap();
+        apply_flags(&mut header, "Entwürfe", &[], Some("Entwürfe"));
+        let mut body =
+            parser::parse(7, b"To: other@example.com\r\n\r\nHello", false, true).unwrap();
+        apply_flags(&mut body, "Entwürfe", &[Flag::Draft], None);
+        assert!(header.is_draft);
+        assert!(!header.message_id.is_empty());
+        assert_eq!(header.message_id, body.message_id);
+    }
 
     #[test]
     fn excludes_server_special_use_and_common_nested_names() {

@@ -3,7 +3,7 @@ body {
     line-height: 1.6;
     color: #333;
     margin: 0;
-    padding: 16px 16px 8px 16px;
+    padding: 0;
     background-color: transparent;
 }
 pre {
@@ -79,9 +79,13 @@ pre {
 html, body {
     height: auto !important;
     min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
 }
 #brevlada-content {
-    display: flow-root;
+    display: flow-root !important;
+    position: relative !important;
+    overflow: visible !important;
     height: auto !important;
     min-height: 0 !important;
     max-height: none !important;

@@ -1,44 +1,81 @@
 use crate::models::{Message, SentMessage};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashSet, path::Path, sync::Arc};
 
+#[path = "storage_access.rs"]
+mod access;
+#[path = "action_storage.rs"]
+mod actions;
 #[path = "avatar_storage.rs"]
 pub mod avatar;
+#[cfg(test)]
+#[path = "storage_concurrency.rs"]
+mod concurrency_tests;
 #[path = "sync_history.rs"]
 mod history;
+#[path = "read_storage.rs"]
+mod reads;
+#[path = "sender_storage.rs"]
+mod senders;
 #[path = "sync_settings.rs"]
 mod settings;
 #[path = "sync_storage.rs"]
 mod sync;
 
-pub struct Storage(Connection);
+pub struct Storage(Connection, Arc<access::Access>);
 
 impl Storage {
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let access = access::Access::for_path(path)?;
+        // Wait for an initialization already in progress before using its schema.
+        let _write = access.lock()?;
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(Self(connection, access.clone()))
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        Self::initialize(Connection::open(path)?)
+        let access = access::Access::for_path(path)?;
+        let mut state = access.lock()?;
+        let connection = Connection::open(path)?;
+        if !state.initialized {
+            let mut storage = Self::initialize(connection)?;
+            storage.1 = access.clone();
+            state.initialized = true;
+            Ok(storage)
+        } else {
+            connection.busy_timeout(std::time::Duration::from_secs(5))?;
+            Ok(Self(connection, access.clone()))
+        }
     }
 
     fn initialize(mut connection: Connection) -> Result<Self> {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        // Every worker opens its own connection at startup and this transaction
-        // writes, so take the write lock up front. A deferred transaction that
-        // upgrades later fails immediately with "database is locked" instead of
-        // waiting out the busy timeout.
+        // Take the SQLite write lock up front so external writers honor the busy
+        // timeout instead of causing a failed read-to-write transaction upgrade.
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS rust_messages (
             account_id TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL,
             data TEXT NOT NULL, PRIMARY KEY(account_id, folder, uid));
+            CREATE TABLE IF NOT EXISTS rust_removed_messages (
+            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
+            uid INTEGER NOT NULL, PRIMARY KEY(account_id, folder, uid_validity, uid));
             CREATE TABLE IF NOT EXISTS rust_folders (
             account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER,
             PRIMARY KEY(account_id, folder));
             CREATE TABLE IF NOT EXISTS rust_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rust_read_changes (
+            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL,
+            uid_validity INTEGER, revision INTEGER NOT NULL,
+            PRIMARY KEY(account_id, folder, uid));
             CREATE TABLE IF NOT EXISTS rust_sync_settings (
             account_id TEXT PRIMARY KEY, folders TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS rust_avatars (
@@ -52,6 +89,12 @@ impl Storage {
             PRIMARY KEY(account_id, message_id));
             CREATE INDEX IF NOT EXISTS rust_messages_date ON rust_messages
             (account_id, folder, json_extract(data, '$.timestamp') DESC, uid DESC);",
+        )?;
+        // Older draft cache entries lack the recipient/reply fields needed by the editor.
+        transaction.execute(
+            "UPDATE rust_messages SET data=json_set(data, '$.body_loaded', json('false'))
+             WHERE coalesce(json_extract(data, '$.is_draft'),0) AND json_type(data, '$.cc') IS NULL",
+            [],
         )?;
         use rusqlite::OptionalExtension;
         let sources: Option<String> = transaction
@@ -103,10 +146,13 @@ impl Storage {
                     value(2)?,
                     Message {
                         uid: row.get(0)?,
+                        uid_validity: None,
                         message_id: value(3)?.trim_matches(['<', '>']).to_string(),
                         subject: value(4)?,
                         sender: format!("{} <{}>", value(5)?, value(6)?),
                         recipients: value(7)?,
+                        cc: String::new(),
+                        in_reply_to: None,
                         date,
                         timestamp,
                         references: value(9)?
@@ -114,11 +160,17 @@ impl Storage {
                             .map(|s| s.trim_matches(['<', '>']).to_string())
                             .collect(),
                         is_read: row.get::<_, Option<bool>>(10)?.unwrap_or(false),
+                        read_revision: 0,
                         is_flagged: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
+                        is_draft: false,
                         body_loaded: !body_text.is_empty() || !body_html.is_empty(),
                         body_text,
                         body_html,
                         attachments: Vec::new(),
+                        inline_media: Vec::new(),
+                        inline_media_loaded: false,
+                        unsubscribe: None,
+                        parcels: Vec::new(),
                     },
                 ))
             })?;
@@ -141,7 +193,7 @@ impl Storage {
             transaction.execute("INSERT INTO rust_metadata VALUES ('legacy_import','1')", [])?;
         }
         transaction.commit()?;
-        Ok(Self(connection))
+        Ok(Self(connection, access::Access::initialized()))
     }
 
     pub fn message(&self, account: &str, folder: &str, uid: u32) -> Result<Option<Message>> {
@@ -158,7 +210,86 @@ impl Storage {
             .transpose()
     }
 
+    pub fn delete_draft(
+        &mut self,
+        account: &str,
+        target: &crate::models::draft::Target,
+    ) -> Result<()> {
+        if let Some(validity) = target.validity.filter(|_| target.uid != 0) {
+            self.confirm_action(
+                account,
+                &target.folder,
+                &[Message {
+                    uid: target.uid,
+                    uid_validity: Some(validity),
+                    is_draft: true,
+                    ..Default::default()
+                }],
+                crate::models::sender_action::SenderAction::Archive,
+            )?;
+        } else {
+            let _write = self.1.lock()?;
+            self.0.execute(
+                "DELETE FROM rust_messages WHERE account_id=?1 AND folder=?2 AND json_extract(data, '$.message_id')=?3 AND coalesce(json_extract(data, '$.is_draft'),0)",
+                params![account, target.folder, target.message_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn store_saved_draft(
+        &mut self,
+        account: &str,
+        folder: &str,
+        message: &Message,
+    ) -> Result<()> {
+        use rusqlite::{OptionalExtension, TransactionBehavior};
+        let validity = message
+            .uid_validity
+            .context("Saved draft needs UIDVALIDITY")?;
+        anyhow::ensure!(
+            message.uid != 0 && message.is_draft && message.body_loaded,
+            "Saved draft is incomplete"
+        );
+        let _write = self.1.lock()?;
+        let transaction = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: Option<u32> = transaction
+            .query_row(
+                "SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2",
+                params![account, folder],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        anyhow::ensure!(
+            current.is_none_or(|current| current == validity),
+            "Draft mailbox changed while caching"
+        );
+        anyhow::ensure!(
+            !Self::removed_in(&transaction, account, folder, validity)?.contains(&message.uid),
+            "Draft was already removed"
+        );
+        transaction.execute(
+            "INSERT OR REPLACE INTO rust_folders VALUES (?1,?2,?3)",
+            params![account, folder, validity],
+        )?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",
+            params![
+                account,
+                folder,
+                message.uid,
+                serde_json::to_string(message)?
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn store_sent(&self, account: &str, message: &Message) -> Result<()> {
+        let _write = self.1.lock()?;
         self.0.execute(
             "INSERT OR REPLACE INTO rust_sent_local VALUES (?1,?2,?3)",
             params![account, message.message_id, serde_json::to_string(message)?],
@@ -183,14 +314,24 @@ impl Storage {
             });
         }
         let mut cached = self.0.prepare(
-            "SELECT folder, data FROM rust_messages WHERE account_id=?1 AND folder<>?2 ORDER BY json_extract(data, '$.timestamp') DESC",
+            "SELECT m.folder, m.data, f.uid_validity FROM rust_messages m
+             LEFT JOIN rust_folders f ON m.account_id=f.account_id AND m.folder=f.folder
+             WHERE m.account_id=?1 AND m.folder<>?2 ORDER BY json_extract(m.data, '$.timestamp') DESC",
         )?;
         for row in cached.query_map(params![account, folder], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<u32>>(2)?,
+            ))
         })? {
-            let (folder, data) = row?;
-            let message: Message = serde_json::from_str(&data)?;
-            if crate::models::senders::key(&message).eq_ignore_ascii_case(account) {
+            let (folder, data, validity) = row?;
+            let mut message: Message = serde_json::from_str(&data)?;
+            message.uid_validity = message.uid_validity.or(validity);
+            super::mail_sync::ensure_draft_id(&mut message, &folder);
+            if message.is_draft
+                || crate::models::senders::key(&message).eq_ignore_ascii_case(account)
+            {
                 candidates.push(SentMessage { folder, message });
             }
         }
@@ -199,6 +340,7 @@ impl Storage {
 
     #[cfg(test)]
     pub fn store(&self, account: &str, folder: &str, message: &Message) -> Result<()> {
+        let _write = self.1.lock()?;
         self.0.execute(
             "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",
             params![
@@ -235,6 +377,7 @@ impl Storage {
     }
 
     pub fn store_unread(&self, account: &str, folder: &str, unread: bool) -> Result<()> {
+        let _write = self.1.lock()?;
         self.0.execute(
             "INSERT OR REPLACE INTO rust_unread VALUES (?1,?2,?3)",
             params![account, folder, unread],
@@ -243,7 +386,10 @@ impl Storage {
     }
 
     pub fn store_folders(&mut self, account: &str, folders: &[String]) -> Result<()> {
-        let transaction = self.0.transaction()?;
+        let _write = self.1.lock()?;
+        let transaction = self
+            .0
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for folder in folders {
             transaction.execute(
                 "INSERT OR IGNORE INTO rust_folders (account_id,folder) VALUES (?1,?2)",
@@ -254,6 +400,7 @@ impl Storage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn reconcile(
         &mut self,
         account: &str,
@@ -262,9 +409,31 @@ impl Storage {
         messages: Vec<Message>,
         live: &[u32],
     ) -> Result<()> {
+        self.reconcile_since(
+            account,
+            folder,
+            validity,
+            messages,
+            live,
+            self.read_revision()?,
+        )
+    }
+
+    pub fn reconcile_since(
+        &mut self,
+        account: &str,
+        folder: &str,
+        validity: u32,
+        messages: Vec<Message>,
+        live: &[u32],
+        snapshot_revision: i64,
+    ) -> Result<()> {
+        let _write = self.1.lock()?;
         let transaction = self
             .0
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let revision = Self::next_read_revision(&transaction)?;
+        let reads = Self::reads_since(&transaction, account, folder, validity, snapshot_revision)?;
         let existing: Vec<Message> = {
             let mut statement = transaction
                 .prepare("SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2")?;
@@ -285,7 +454,12 @@ impl Storage {
                 params![account, folder],
             )?;
         }
-        let live: HashSet<_> = live.iter().copied().collect();
+        let removed = Self::removed_in(&transaction, account, folder, validity)?;
+        let live: HashSet<_> = live
+            .iter()
+            .copied()
+            .filter(|uid| !removed.contains(uid))
+            .collect();
         for message in &existing {
             if !live.contains(&message.uid) {
                 transaction.execute(
@@ -294,12 +468,21 @@ impl Storage {
                 )?;
             }
         }
-        for mut message in messages {
+        for mut message in messages
+            .into_iter()
+            .filter(|message| !removed.contains(&message.uid))
+        {
+            message.uid_validity = Some(validity);
+            message.is_read = reads.get(&message.uid).copied().unwrap_or(message.is_read);
+            message.read_revision = revision;
             if !reset && let Some(old) = existing.iter().find(|m| m.uid == message.uid) {
                 message.body_text = old.body_text.clone();
                 message.body_html = old.body_html.clone();
                 message.attachments = old.attachments.clone();
+                message.inline_media = old.inline_media.clone();
+                message.inline_media_loaded = old.inline_media_loaded;
                 message.body_loaded = old.body_loaded;
+                message.parcels = old.parcels.clone();
             }
             transaction.execute(
                 "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",
@@ -326,6 +509,135 @@ mod tests {
 
     fn storage() -> Storage {
         Storage::open(Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn sender_headers_include_older_unread_mail_without_loading_heavy_bodies() {
+        let storage = storage();
+        for uid in 1..=120 {
+            storage
+                .store(
+                    "a",
+                    "INBOX",
+                    &Message {
+                        uid,
+                        timestamp: uid as i64,
+                        sender: if uid == 1 || uid == 120 {
+                            "Alice <alice@example.com>".into()
+                        } else {
+                            format!("sender{uid}@example.com")
+                        },
+                        is_read: uid != 1 && uid != 2,
+                        body_loaded: true,
+                        body_text: "Searchable cached text".into(),
+                        body_html: "<p>Cached body</p>".into(),
+                        attachments: vec!["file.pdf".into()],
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        storage
+            .store(
+                "b",
+                "INBOX",
+                &Message {
+                    uid: 121,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        storage
+            .store(
+                "a",
+                "Archive",
+                &Message {
+                    uid: 122,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let headers = storage.sender_headers("a", "INBOX").unwrap();
+        assert_eq!(headers.len(), 120);
+        assert!(headers.iter().all(|message| {
+            !message.body_loaded && message.body_html.is_empty() && message.attachments.is_empty()
+        }));
+        assert!(headers.iter().all(|message| message.matches("searchable")));
+        let groups = crate::models::senders::groups(&headers, "");
+        assert_eq!(groups.len(), 119);
+        assert_eq!(groups[0][0].uid, 120);
+        assert!(groups[0].iter().any(|message| !message.is_read));
+        assert_eq!(groups[1][0].uid, 2);
+        let body = storage.message("a", "INBOX", 120).unwrap().unwrap();
+        assert!(body.body_loaded);
+        assert_eq!(body.body_html, "<p>Cached body</p>");
+        assert_eq!(body.attachments, vec!["file.pdf"]);
+    }
+
+    #[test]
+    fn sender_pages_are_bounded_and_continue_from_last_message() {
+        let storage = storage();
+        for uid in 1..=120 {
+            storage
+                .store(
+                    "a",
+                    "INBOX",
+                    &Message {
+                        uid,
+                        timestamp: uid as i64,
+                        sender: if uid % 2 == 0 {
+                            "Alice <ALICE@example.com>"
+                        } else {
+                            "Bob <bob@example.com>"
+                        }
+                        .into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let first = storage
+            .sender_page("a", "INBOX", "alice@example.com", None, 25)
+            .unwrap();
+        assert_eq!(first.len(), 25);
+        assert_eq!(first[0].uid, 120);
+        assert_eq!(first[24].uid, 72);
+        let next = storage
+            .sender_page("a", "INBOX", "alice@example.com", Some((72, 72)), 25)
+            .unwrap();
+        assert_eq!(next.len(), 25);
+        assert_eq!(next[0].uid, 70);
+        assert_eq!(next[24].uid, 22);
+    }
+
+    #[test]
+    fn sender_page_skips_addresses_only_mentioned_in_display_names() {
+        let storage = storage();
+        for uid in 1..=60 {
+            let sender = if uid > 30 {
+                "alice@example.com <other@example.com>"
+            } else {
+                "Alice <alice@example.com>"
+            };
+            storage
+                .store(
+                    "a",
+                    "INBOX",
+                    &Message {
+                        uid,
+                        timestamp: uid as i64,
+                        sender: sender.into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let page = storage
+            .sender_page("a", "INBOX", "alice@example.com", None, 10)
+            .unwrap();
+        assert_eq!(page.len(), 10);
+        assert_eq!(page[0].uid, 30);
+        assert_eq!(page[9].uid, 21);
     }
 
     #[test]
@@ -427,6 +739,99 @@ mod tests {
         assert_eq!(related.len(), 1);
         assert_eq!(related[0].message, sent);
         assert!(related[0].folder.is_empty());
+    }
+
+    #[test]
+    fn caches_one_saved_draft_without_removing_other_drafts_and_rejects_stale_validity() {
+        let mut storage = storage();
+        let existing = Message {
+            uid: 1,
+            uid_validity: Some(7),
+            message_id: "existing".into(),
+            is_draft: true,
+            body_loaded: true,
+            body_text: "Keep this draft".into(),
+            ..Default::default()
+        };
+        storage.store_saved_draft("a", "Drafts", &existing).unwrap();
+        let saved = Message {
+            uid: 2,
+            message_id: "saved".into(),
+            body_text: "New draft".into(),
+            cc: "cc@example.com".into(),
+            ..existing.clone()
+        };
+        storage.store_saved_draft("a", "Drafts", &saved).unwrap();
+        assert_eq!(
+            storage.message("a", "Drafts", 1).unwrap(),
+            Some(existing.clone())
+        );
+        assert_eq!(
+            storage.message("a", "Drafts", 2).unwrap(),
+            Some(saved.clone())
+        );
+        let stale = Message {
+            uid_validity: Some(8),
+            ..saved
+        };
+        assert!(storage.store_saved_draft("a", "Drafts", &stale).is_err());
+        assert_eq!(storage.validity("a", "Drafts").unwrap(), Some(7));
+        assert_eq!(storage.message("a", "Drafts", 1).unwrap(), Some(existing));
+    }
+
+    #[test]
+    fn injects_related_drafts_without_from_or_message_id_and_removes_deleted_drafts() {
+        let mut storage = storage();
+        let received = Message {
+            uid: 7,
+            message_id: "incoming".into(),
+            subject: "Topic".into(),
+            sender: "other@example.com".into(),
+            ..Default::default()
+        };
+        let draft = Message {
+            uid: 1,
+            is_draft: true,
+            recipients: "other@example.com".into(),
+            subject: "Re: Topic".into(),
+            ..Default::default()
+        };
+        storage.store("me@example.com", "Drafts", &draft).unwrap();
+        storage.store("else@example.com", "Drafts", &draft).unwrap();
+        storage
+            .store(
+                "me@example.com",
+                "Drafts",
+                &Message {
+                    uid: 2,
+                    message_id: "unrelated".into(),
+                    subject: "Other topic".into(),
+                    ..draft
+                },
+            )
+            .unwrap();
+        let related = storage
+            .related_sent("me@example.com", "INBOX", std::slice::from_ref(&received))
+            .unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].folder, "Drafts");
+        assert!(related[0].message.is_draft);
+        assert!(!related[0].message.message_id.is_empty());
+        assert!(
+            storage
+                .related_sent("me@example.com", "Drafts", std::slice::from_ref(&received))
+                .unwrap()
+                .is_empty()
+        );
+        storage
+            .reconcile("me@example.com", "Drafts", 1, vec![], &[])
+            .unwrap();
+        assert!(
+            storage
+                .related_sent("me@example.com", "INBOX", &[received])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

@@ -34,6 +34,50 @@
     box-shadow: 0 2px 4px var(--card-shadow);
 }
 
+.parcel-card {
+    border-radius: var(--spacing-md);
+    background: var(--headerbar-bg-color);
+    border: 1px solid var(--borders);
+    padding: var(--spacing-md);
+    margin-bottom: var(--spacing-sm);
+}
+
+.parcel-timeline {
+    margin-top: var(--spacing-sm);
+    margin-bottom: var(--spacing-sm);
+}
+
+.parcel-step {
+    min-width: 86px;
+}
+
+.parcel-step-name {
+    font-size: 0.85em;
+}
+
+.parcel-single-step {
+    color: var(--color-text);
+}
+
+.parcel-single-step-name {
+    font-size: 1em;
+    color: var(--color-text);
+    opacity: 1;
+}
+
+.parcel-step-done {
+    color: var(--info-color);
+}
+
+.parcel-step-pending {
+    opacity: 0.65;
+}
+
+.parcel-line {
+    margin-top: 12px;
+    min-height: 2px;
+}
+
 .compose-card {
     padding: var(--spacing-md);
     border-spacing: var(--spacing-sm);

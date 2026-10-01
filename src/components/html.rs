@@ -1,5 +1,6 @@
 use crate::{models::Message, theme};
 use scraper::{Html, Selector};
+use std::sync::LazyLock;
 
 pub fn has_remote_media(message: &Message) -> bool {
     if !message.body_loaded || message.body_html.is_empty() {
@@ -15,22 +16,64 @@ pub fn has_remote_media(message: &Message) -> bool {
                     url.starts_with("https://")
                         || url.starts_with("http://")
                         || url.starts_with("//")
+                        || url.starts_with("cid:")
                 })
             })
         })
     })
 }
 
-pub fn document(message: &Message, hide_quotes: bool) -> String {
+pub fn document(message: &Message, hide_quotes: bool, media: bool) -> String {
     let body = if message.body_html.is_empty() {
         plain_text(&message.body_text, hide_quotes)
     } else {
-        message.body_html.clone()
+        normalized_html(&message.body_html)
+    };
+    static CID: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r#"(?i)cid:([^\s"'<>)]+)"#).unwrap());
+    let body = if media && !message.inline_media.is_empty() {
+        CID.replace_all(&body, |captures: &regex::Captures<'_>| {
+            let id = captures[1].to_ascii_lowercase();
+            message
+                .inline_media
+                .iter()
+                .find(|part| part.content_id == id)
+                .map(|part| format!("data:{};base64,{}", part.mime, part.data))
+                .unwrap_or_else(|| captures[0].to_owned())
+        })
+        .into_owned()
+    } else {
+        body
     };
     format!(
-        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:;\"><style>{}</style></head><body><div id='brevlada-content' data-hide-quotes='{hide_quotes}'>{body}</div></body></html>",
+        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:;\"></head><body><div id='brevlada-content' data-hide-quotes='{hide_quotes}'>{body}</div><style>{}</style></body></html>",
         theme::HTML_CSS,
     )
+}
+
+fn normalized_html(source: &str) -> String {
+    let document = Html::parse_document(source);
+    let styles = Selector::parse("head style").unwrap();
+    let body = Selector::parse("body").unwrap();
+    let mut result = document
+        .select(&styles)
+        .map(|style| style.html())
+        .collect::<String>();
+    if let Some(body) = document.select(&body).next() {
+        result.push_str("<div");
+        for (name, value) in body.value().attrs() {
+            if matches!(name, "style" | "class" | "id" | "dir" | "lang") {
+                result.push_str(&format!(
+                    " {name}=\"{}\"",
+                    gtk::glib::markup_escape_text(value)
+                ));
+            }
+        }
+        result.push('>');
+        result.push_str(&body.inner_html());
+        result.push_str("</div>");
+    }
+    result
 }
 
 fn plain_text(text: &str, hide_quotes: bool) -> String {
@@ -87,6 +130,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn full_documents_and_unbalanced_markup_stay_inside_the_measured_root() {
+        let html = document(&Message {
+            body_html: "<!doctype html><html><head><style>body{padding:0}</style></head><body class='newsletter' style='background:blue'><table><tr><td>Top</td></tr></table></div><p>Bottom</p></body></html>".into(),
+            ..Default::default()
+        }, false, false);
+        let parsed = Html::parse_document(&html);
+        let root = parsed
+            .select(&Selector::parse("#brevlada-content").unwrap())
+            .next()
+            .unwrap();
+        assert!(root.text().collect::<String>().contains("Bottom"));
+        assert!(root.inner_html().contains("newsletter"));
+        assert!(root.inner_html().contains("background:blue"));
+        assert_eq!(parsed.select(&Selector::parse("html").unwrap()).count(), 1);
+        assert!(html.find("body{padding:0}").unwrap() < html.find(theme::HTML_CSS).unwrap());
+    }
+
+    #[test]
     fn collapses_only_trailing_plain_text_quotes() {
         let html = plain_text(
             "Intro\n> inline quote\nMy reply\n> older reply\n> another line\n\n",
@@ -113,6 +174,7 @@ mod tests {
                 ..Default::default()
             },
             false,
+            false,
         );
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
@@ -126,7 +188,7 @@ mod tests {
             body_html: "<img src='https://example.com/image.png'>".into(),
             ..Default::default()
         };
-        assert!(document(&message, false).contains("img-src data: https: http:;"));
+        assert!(document(&message, false, false).contains("img-src data: https: http:;"));
     }
 
     #[test]
@@ -145,6 +207,21 @@ mod tests {
         message.body_loaded = true;
         assert!(has_remote_media(&message));
         message.body_html = "<p>Just text</p><img src='cid:logo'>".into();
-        assert!(!has_remote_media(&message));
+        assert!(has_remote_media(&message));
+    }
+
+    #[test]
+    fn replaces_cid_image_only_when_media_is_enabled() {
+        let message = Message {
+            body_html: "<img src='cid:logo@example.com'>".into(),
+            inline_media: vec![crate::models::InlineMedia {
+                content_id: "logo@example.com".into(),
+                mime: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+            ..Default::default()
+        };
+        assert!(document(&message, false, false).contains("cid:logo@example.com"));
+        assert!(document(&message, false, true).contains("data:image/png;base64,aGVsbG8="));
     }
 }

@@ -12,6 +12,7 @@ use std::{
 pub struct Mail {
     pub(super) session: Session<TlsStream<TcpStream>>,
     socket: TcpStream,
+    pub(super) drafts_folder: Option<String>,
 }
 
 struct OAuth(String);
@@ -84,6 +85,7 @@ impl Mail {
         Ok(Self {
             session,
             socket: cancellation,
+            drafts_folder: None,
         })
     }
 
@@ -116,27 +118,13 @@ impl Mail {
         if recent.is_empty() {
             return Ok((validity, Vec::new(), uids));
         }
-        let sequence = recent
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let fetched = self
-            .session
-            .uid_fetch(sequence, "(UID FLAGS BODY.PEEK[HEADER])")?;
-        let mut messages = Vec::new();
-        for item in fetched.iter() {
-            let uid = item.uid.context("Missing message UID")?;
-            let bytes = item.header().context("Missing message headers")?;
-            let mut message = parser::parse(
-                uid,
-                bytes,
-                item.flags().contains(&imap::types::Flag::Seen),
-                false,
-            )?;
-            message.is_flagged = item.flags().contains(&imap::types::Flag::Flagged);
-            messages.push(message);
-        }
+        let messages = super::mail_headers::fetch(
+            &mut self.session,
+            folder,
+            self.drafts_folder.as_deref(),
+            validity,
+            recent,
+        )?;
         Ok((validity, messages, uids))
     }
 
@@ -145,6 +133,7 @@ impl Mail {
         folder: &str,
         uid: u32,
         validity: Option<u32>,
+        inline: bool,
     ) -> Result<Message> {
         let mailbox = self.session.select(folder)?;
         anyhow::ensure!(
@@ -158,14 +147,51 @@ impl Mail {
             .iter()
             .find(|item| item.uid == Some(uid) && item.body().is_some())
             .context("Message is no longer on the server")?;
-        let mut message = parser::parse(
-            uid,
-            item.body().context("Missing message body")?,
-            item.flags().contains(&imap::types::Flag::Seen),
-            true,
-        )?;
-        message.is_flagged = item.flags().contains(&imap::types::Flag::Flagged);
+        let bytes = item.body().context("Missing message body")?;
+        let mut message = if inline {
+            parser::parse_with_inline(uid, bytes, item.flags().contains(&imap::types::Flag::Seen))?
+        } else {
+            parser::parse(
+                uid,
+                bytes,
+                item.flags().contains(&imap::types::Flag::Seen),
+                true,
+            )?
+        };
+        message.uid_validity = mailbox.uid_validity;
+        super::mail_sync::apply_flags(
+            &mut message,
+            folder,
+            item.flags(),
+            self.drafts_folder.as_deref(),
+        );
         Ok(message)
+    }
+
+    pub fn header_with_validity(
+        &mut self,
+        folder: &str,
+        uid: u32,
+        validity: Option<u32>,
+    ) -> Result<Message> {
+        let mailbox = self.session.examine(folder)?;
+        anyhow::ensure!(
+            validity.is_none() || mailbox.uid_validity == validity,
+            "Mailbox changed while loading unsubscribe headers"
+        );
+        let fetched = self
+            .session
+            .uid_fetch(uid.to_string(), "(UID FLAGS BODY.PEEK[HEADER])")?;
+        let item = fetched
+            .iter()
+            .find(|item| item.uid == Some(uid) && item.header().is_some())
+            .context("Message is no longer on the server")?;
+        parser::parse(
+            uid,
+            item.header().context("Missing message headers")?,
+            item.flags().contains(&imap::types::Flag::Seen),
+            false,
+        )
     }
 
     pub fn mark_read(&mut self, folder: &str, uid: u32, validity: Option<u32>) -> Result<()> {

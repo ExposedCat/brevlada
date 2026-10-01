@@ -2,15 +2,12 @@ use super::{avatars::Avatars, column, display, horizontal, label, preview};
 use crate::{models::Message, models::senders, theme};
 use adw::prelude::*;
 
-pub fn message_row(group: &[Message]) -> gtk::ListBoxRow {
+pub fn message_row(group: &[Message]) -> gtk::Box {
     let message = group.first().expect("Thread has a message");
     let unread = group.iter().any(|m| !m.is_read);
-    let row = gtk::ListBoxRow::builder()
-        .activatable(true)
-        .selectable(true)
-        .css_classes(["message-row", "message-row-with-icon"])
-        .build();
     let container = horizontal("message-row-container", theme::ROW_GAP);
+    container.add_css_class("message-row");
+    container.add_css_class("message-row-with-icon");
     let left = horizontal("message-row-left", theme::ICON_GAP);
     left.set_hexpand(true);
     left.append(&gtk::Image::from_icon_name(if unread {
@@ -68,29 +65,17 @@ pub fn message_row(group: &[Message]) -> gtk::ListBoxRow {
     }
     right.append(&icons);
     container.append(&right);
-    row.set_child(Some(&container));
-    row
+    container
 }
 
-pub fn update(row: &gtk::ListBoxRow, group: &[Message]) {
-    let replacement = message_row(group);
-    let child = replacement.child();
-    replacement.set_child(None::<&gtk::Widget>);
-    row.set_child(child.as_ref());
-}
-
-pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::ListBoxRow {
+pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::Box {
     let unread = group.iter().any(|m| !m.is_read);
     let message = group
         .iter()
         .max_by_key(|m| (m.timestamp, m.uid))
         .expect("Sender has a message");
-    let row = gtk::ListBoxRow::builder()
-        .activatable(true)
-        .selectable(true)
-        .css_classes(["message-row"])
-        .build();
     let container = horizontal("message-row-container", theme::SPACING);
+    container.add_css_class("message-row");
     let name = display::sender_name(message);
     let avatar = adw::Avatar::new(theme::SENDER_AVATAR_SIZE, Some(&name), true);
     avatars.attach(&avatar, &senders::key(message));
@@ -121,15 +106,6 @@ pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::ListBoxRow {
     }
     content.append(&subject);
     container.append(&content);
-    row.set_tooltip_text(Some(&display::sender(message).1));
-    row.set_child(Some(&container));
-    row
-}
-
-pub fn update_sender(row: &gtk::ListBoxRow, group: &[Message], avatars: &Avatars) {
-    let replacement = sender_row(group, avatars);
-    let child = replacement.child();
-    replacement.set_child(None::<&gtk::Widget>);
-    row.set_tooltip_text(replacement.tooltip_text().as_deref());
-    row.set_child(child.as_ref());
+    container.set_tooltip_text(Some(&display::sender(message).1));
+    container
 }

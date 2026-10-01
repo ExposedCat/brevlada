@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Brevlada
+GenericName=Email Client
+Comment=Read and send mail with GNOME Online Accounts
+Exec=brevlada
+Icon=io.github.ExposedCat.Brevlada
+Terminal=false
+Categories=GNOME;GTK;Network;Email;
+Keywords=Mail;Email;IMAP;SMTP;
+StartupNotify=true
+StartupWMClass=io.github.ExposedCat.Brevlada

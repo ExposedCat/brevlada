@@ -3,6 +3,16 @@ use crate::theme;
 use adw::prelude::*;
 
 pub fn placeholder(text: &str, class: &str, icon: &str, loading: bool) -> gtk::Box {
+    placeholder_with_text_opacity(text, class, icon, loading, 0.7)
+}
+
+fn placeholder_with_text_opacity(
+    text: &str,
+    class: &str,
+    icon: &str,
+    loading: bool,
+    text_opacity: f64,
+) -> gtk::Box {
     let content = column(class);
     content.add_css_class("message-state");
     content.set_halign(gtk::Align::Center);
@@ -25,7 +35,7 @@ pub fn placeholder(text: &str, class: &str, icon: &str, loading: bool) -> gtk::B
     }
     let text = label(text, "state-text");
     text.set_halign(gtk::Align::Center);
-    text.set_opacity(0.7);
+    text.set_opacity(text_opacity);
     text.set_wrap(true);
     content.append(&text);
     content
@@ -54,9 +64,6 @@ pub fn loading_thread(viewer: &gtk::Box) {
 }
 
 pub fn list_state(stack: &gtk::Stack, text: &str, loading: bool, error: bool) {
-    if let Some(previous) = stack.child_by_name("state") {
-        stack.remove(&previous);
-    }
     let class = if error {
         "message-list-error-state"
     } else if loading {
@@ -77,7 +84,25 @@ pub fn list_state(stack: &gtk::Stack, text: &str, loading: bool, error: bool) {
     if error {
         state.add_css_class("error");
     }
-    stack.add_named(&state, Some("state"));
+    show_list_state(stack, &state);
+}
+
+pub fn no_senders_found(stack: &gtk::Stack) {
+    let state = placeholder_with_text_opacity(
+        "No senders found",
+        "message-list-empty-state",
+        "system-search-symbolic",
+        false,
+        1.0,
+    );
+    show_list_state(stack, &state);
+}
+
+fn show_list_state(stack: &gtk::Stack, state: &gtk::Box) {
+    if let Some(previous) = stack.child_by_name("state") {
+        stack.remove(&previous);
+    }
+    stack.add_named(state, Some("state"));
     stack.set_visible_child_name("state");
 }
 

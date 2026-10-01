@@ -156,12 +156,30 @@ impl Editor {
         }
     }
 
-    pub async fn message_html(&self) -> Result<String, gtk::glib::Error> {
+    pub async fn message(&self) -> Result<(String, String), gtk::glib::Error> {
+        for _ in 0..250 {
+            if self.ready.get() {
+                break;
+            }
+            gtk::glib::timeout_future(std::time::Duration::from_millis(20)).await;
+        }
+        if !self.ready.get() {
+            return Err(gtk::glib::Error::new(
+                gtk::gio::IOErrorEnum::TimedOut,
+                "Formatted editor is still loading",
+            ));
+        }
         let value = self
             .view
-            .evaluate_javascript_future("getMessageHtml()", Some(WORLD), None)
+            .evaluate_javascript_future(
+                "JSON.stringify([getMessageHtml(), getMessageText()])",
+                Some(WORLD),
+                None,
+            )
             .await?;
-        Ok(value.to_str().to_string())
+        serde_json::from_str(&value.to_str()).map_err(|error| {
+            gtk::glib::Error::new(gtk::gio::IOErrorEnum::InvalidData, &error.to_string())
+        })
     }
 }
 

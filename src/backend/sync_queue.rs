@@ -90,6 +90,7 @@ struct Pending {
     expanded: HashSet<String>,
     folders: HashMap<String, Vec<String>>,
     sent: HashMap<String, String>,
+    drafts: HashMap<String, String>,
     jobs: Vec<Job>,
     known: HashSet<Key>,
     active: HashMap<String, usize>,
@@ -190,17 +191,29 @@ impl SyncQueue {
             .folders
             .insert(account.into(), folders);
     }
-    pub fn discovered(&self, account: &str, folders: &[String], sent: Option<&str>) -> Vec<String> {
+    pub fn discovered(
+        &self,
+        account: &str,
+        folders: &[String],
+        sent: Option<&str>,
+        drafts: Option<&str>,
+    ) -> Vec<String> {
         let mut state = self.state.0.lock().unwrap();
         if let Some(sent) = sent {
             state.sent.insert(account.to_owned(), sent.to_owned());
         } else {
             state.sent.remove(account);
         }
+        if let Some(drafts) = drafts {
+            state.drafts.insert(account.to_owned(), drafts.to_owned());
+        } else {
+            state.drafts.remove(account);
+        }
         let mut selected: Vec<_> = folders
             .iter()
             .filter(|folder| {
-                sent.is_some_and(|sent| sent == folder.as_str())
+                (sent.is_some_and(|sent| sent == folder.as_str())
+                    || drafts.is_some_and(|drafts| drafts == folder.as_str()))
                     || state.folders.get(account).is_some_and(|selected| {
                         selected.iter().any(|item| {
                             item == *folder
@@ -224,21 +237,24 @@ impl SyncQueue {
 
     pub fn headers_only(&self, account: &str, folder: &str) -> bool {
         let state = self.state.0.lock().unwrap();
-        state.sent.get(account).is_some_and(|sent| sent == folder)
+        (state.sent.get(account).is_some_and(|sent| sent == folder)
+            || state
+                .drafts
+                .get(account)
+                .is_some_and(|drafts| drafts == folder))
             && !state
                 .folders
                 .get(account)
                 .is_some_and(|selected| selected.iter().any(|item| item == folder))
     }
 
-    pub fn is_sent(&self, account: &str, folder: &str) -> bool {
-        self.state
-            .0
-            .lock()
-            .unwrap()
-            .sent
-            .get(account)
-            .is_some_and(|sent| sent == folder)
+    pub fn is_outgoing(&self, account: &str, folder: &str) -> bool {
+        let state = self.state.0.lock().unwrap();
+        state.sent.get(account).is_some_and(|sent| sent == folder)
+            || state
+                .drafts
+                .get(account)
+                .is_some_and(|drafts| drafts == folder)
     }
     pub fn inventory(&self, account: &str, folder: &str, inventory: Inventory) {
         self.state
@@ -412,7 +428,8 @@ mod tests {
             let next = queue.pop().unwrap();
             match next.task {
                 Task::Discover => {
-                    let selected = queue.discovered(&next.account.email, &available, Some("Sent"));
+                    let selected =
+                        queue.discovered(&next.account.email, &available, Some("Sent"), None);
                     for folder in selected.into_iter().filter(|folder| folder != "INBOX") {
                         queue.push(job(&next.account.email, &folder, Task::Scan));
                     }
@@ -440,11 +457,36 @@ mod tests {
     fn implicit_sent_sync_fetches_headers_only() {
         let queue = SyncQueue::default();
         queue.restore_folders("account", vec!["INBOX".into()]);
-        queue.discovered("account", &["INBOX".into(), "Sent".into()], Some("Sent"));
+        queue.discovered(
+            "account",
+            &["INBOX".into(), "Sent".into()],
+            Some("Sent"),
+            None,
+        );
         assert!(queue.headers_only("account", "Sent"));
         assert!(!queue.headers_only("account", "INBOX"));
         queue.restore_folders("account", vec!["INBOX".into(), "Sent".into()]);
         assert!(!queue.headers_only("account", "Sent"));
+        queue.close();
+    }
+
+    #[test]
+    fn syncs_drafts_implicitly_without_changing_selected_folders() {
+        let queue = SyncQueue::default();
+        let selected = vec!["INBOX".into()];
+        queue.restore_folders("account", selected.clone());
+        let available = vec!["INBOX".into(), "Sent".into(), "Entwürfe".into()];
+        assert_eq!(
+            queue.discovered("account", &available, Some("Sent"), Some("Entwürfe")),
+            available
+        );
+        assert!(queue.headers_only("account", "Entwürfe"));
+        assert!(queue.is_outgoing("account", "Entwürfe"));
+        assert_eq!(queue.state.0.lock().unwrap().folders["account"], selected);
+        queue.restore_folders("account", vec!["INBOX".into(), "Entwürfe".into()]);
+        assert!(!queue.headers_only("account", "Entwürfe"));
+        queue.discovered("account", &available, Some("Sent"), None);
+        assert!(!queue.is_outgoing("account", "Entwürfe"));
         queue.close();
     }
 

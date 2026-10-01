@@ -3,6 +3,15 @@ use crate::models::Draft;
 use crate::theme;
 use adw::prelude::*;
 use std::cell::RefCell;
+
+#[derive(Default)]
+struct Reply {
+    in_reply_to: Option<String>,
+    references: Vec<String>,
+}
+
+type CancelAction = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+pub type Complete = Box<dyn FnOnce(Result<Draft, String>)>;
 use std::rc::Rc;
 
 pub struct Compose {
@@ -15,7 +24,9 @@ pub struct Compose {
     html_editor: super::html_editor::Editor,
     text_mode: gtk::ToggleButton,
     send: gtk::Button,
-    reply_to: Rc<RefCell<Option<(String, Vec<String>)>>>,
+    save: gtk::Button,
+    reply_to: Rc<RefCell<Reply>>,
+    cancel_action: CancelAction,
 }
 
 impl Compose {
@@ -41,7 +52,8 @@ impl Compose {
         send.add_css_class("suggested-action");
         send.add_css_class("compose-send");
         header.append(&send);
-        header.append(&button("folder-download-symbolic", "Save draft"));
+        let save = button("folder-download-symbolic", "Save draft");
+        header.append(&save);
         let cancel = button("window-close-symbolic", "Cancel");
         header.append(&cancel);
         widget.append(&header);
@@ -166,9 +178,15 @@ impl Compose {
         let body_input = body.clone();
         let rich_input = html_editor.clone();
         let plain_mode = text_mode.clone();
-        let reply_to = Rc::new(RefCell::new(None));
+        let reply_to = Rc::new(RefCell::new(Reply::default()));
+        let cancel_action: CancelAction = Rc::default();
+        let on_cancel = cancel_action.clone();
         let cancelled_reply = reply_to.clone();
         cancel.connect_clicked(move |_| {
+            if let Some(callback) = on_cancel.borrow().as_ref() {
+                callback();
+                return;
+            }
             if let Some(card) = card.upgrade() {
                 card.set_visible(false);
             }
@@ -178,7 +196,7 @@ impl Compose {
             plain_mode.set_active(true);
             body_input.buffer().set_text("");
             rich_input.set_html("");
-            *cancelled_reply.borrow_mut() = None;
+            *cancelled_reply.borrow_mut() = Reply::default();
             if let Some(trigger) = trigger.upgrade() {
                 trigger.grab_focus();
             }
@@ -193,11 +211,67 @@ impl Compose {
             html_editor,
             text_mode,
             send,
+            save,
             reply_to,
+            cancel_action,
         }
     }
 
-    pub fn connect_send(&self, send_draft: impl Fn(Result<Draft, String>) + 'static) {
+    pub fn connect_cancel(&self, callback: impl Fn() + 'static) {
+        *self.cancel_action.borrow_mut() = Some(Rc::new(callback));
+    }
+
+    pub fn load_draft(&self, draft: &Draft) {
+        self.text_mode.set_active(true);
+        self.receiver.set_text(&draft.to);
+        self.cc.set_text(&draft.cc);
+        self.subject.set_text(&draft.subject);
+        self.body.buffer().set_text(&draft.text);
+        *self.reply_to.borrow_mut() = Reply {
+            in_reply_to: draft.in_reply_to.clone(),
+            references: draft.references.clone(),
+        };
+        if let Some(html) = &draft.html {
+            self.html_mode.set_active(true);
+            self.html_editor.set_html(html);
+        }
+        self.widget.set_visible(true);
+    }
+
+    pub fn set_ready(&self, ready: bool) {
+        self.receiver.set_sensitive(ready);
+        self.cc.set_sensitive(ready);
+        self.subject.set_sensitive(ready);
+        self.save.set_sensitive(ready);
+        let mut child = self
+            .widget
+            .first_child()
+            .and_then(|header| header.next_sibling());
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            widget.set_sensitive(ready);
+        }
+        if ready {
+            update_send(
+                &self.send,
+                &self.receiver,
+                &self.subject,
+                &self.body.buffer(),
+            );
+        } else {
+            self.send.set_sensitive(false);
+        }
+    }
+
+    pub fn connect_send(&self, callback: impl Fn() -> Complete + 'static) {
+        self.connect_submit(&self.send, callback);
+    }
+
+    pub fn connect_save(&self, callback: impl Fn() -> Complete + 'static) {
+        self.connect_submit(&self.save, callback);
+    }
+
+    fn connect_submit(&self, button: &gtk::Button, submit: impl Fn() -> Complete + 'static) {
         let receiver = self.receiver.clone();
         let cc = self.cc.clone();
         let subject = self.subject.clone();
@@ -205,9 +279,12 @@ impl Compose {
         let mode = self.html_mode.clone();
         let editor = self.html_editor.clone();
         let widget = self.widget.clone();
-        let callback = Rc::new(send_draft);
+        let callback = Rc::new(submit);
         let reply_to = self.reply_to.clone();
-        self.send.connect_clicked(move |_| {
+        button.connect_clicked(move |_| {
+            if !widget.is_sensitive() {
+                return;
+            }
             widget.set_sensitive(false);
             let draft = Draft {
                 to: receiver.text().to_string(),
@@ -218,23 +295,21 @@ impl Compose {
                     .text(&body.buffer().start_iter(), &body.buffer().end_iter(), true)
                     .to_string(),
                 html: None,
-                in_reply_to: reply_to.borrow().as_ref().map(|(id, _)| id.clone()),
-                references: reply_to
-                    .borrow()
-                    .as_ref()
-                    .map(|(_, refs)| refs.clone())
-                    .unwrap_or_default(),
+                attachments: Vec::new(),
+                in_reply_to: reply_to.borrow().in_reply_to.clone(),
+                references: reply_to.borrow().references.clone(),
             };
-            let callback = callback.clone();
+            let callback = callback();
             let mode = mode.clone();
             let editor = editor.clone();
             gtk::glib::MainContext::default().spawn_local(async move {
                 let result = if mode.is_active() {
                     editor
-                        .message_html()
+                        .message()
                         .await
-                        .map(|html| Draft {
+                        .map(|(html, text)| Draft {
                             html: Some(html),
+                            text,
                             ..draft
                         })
                         .map_err(|error| format!("Could not read formatted message: {error}"))
@@ -256,7 +331,7 @@ impl Compose {
             self.text_mode.set_active(true);
             self.body.buffer().set_text("");
             self.html_editor.set_html("");
-            *self.reply_to.borrow_mut() = None;
+            *self.reply_to.borrow_mut() = Reply::default();
         }
     }
 
@@ -273,7 +348,10 @@ impl Compose {
             if !message.message_id.is_empty() {
                 let mut references = message.references.clone();
                 references.push(message.message_id.clone());
-                *self.reply_to.borrow_mut() = Some((message.message_id.clone(), references));
+                *self.reply_to.borrow_mut() = Reply {
+                    in_reply_to: Some(message.message_id.clone()),
+                    references,
+                };
             }
             let subject = message.subject.trim();
             self.subject

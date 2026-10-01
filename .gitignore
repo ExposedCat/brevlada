@@ -4,3 +4,5 @@ resources.gresource
 /target/
 /.native/
 /.cargo/config.toml
+/.flatpak/
+/.flatpak-builder/

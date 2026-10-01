@@ -6,13 +6,15 @@ pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub sidebar: gtk::Box,
     pub account_sidebar: super::motion::Sidebar,
+    pub account_title: gtk::Label,
     pub thread_sidebar: super::motion::Sidebar,
-    pub thread_list: gtk::ListBox,
+    pub thread_list: gtk::ListView,
     pub thread_scroll: gtk::ScrolledWindow,
     pub thread_stack: gtk::Stack,
     pub sync_status: super::sync_status::SyncStatus,
-    pub list: gtk::ListBox,
+    pub list: gtk::ListView,
     pub list_scroll: gtk::ScrolledWindow,
+    pub thread_load_more: gtk::Button,
     pub viewer_scroll: gtk::ScrolledWindow,
     pub list_stack: gtk::Stack,
     pub viewer: gtk::Box,
@@ -22,6 +24,8 @@ pub struct Shell {
     pub refresh: gtk::Button,
     pub sync: gtk::Button,
     pub back: gtk::Button,
+    pub sender_unread_first: super::sort_menu::SortMenu,
+    pub thread_unread_first: super::sort_menu::SortMenu,
     pub search: gtk::SearchEntry,
     pub toast: adw::ToastOverlay,
 }
@@ -62,8 +66,14 @@ impl Shell {
         sidebar_wrapper.append(&scroll(&sidebar));
         sidebar_column.append(&sidebar_wrapper);
         let middle = column("message-list-wrapper");
+        let account_title = gtk::Label::builder()
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(40)
+            .css_classes(["title"])
+            .visible(false)
+            .build();
         let list_header = adw::HeaderBar::builder()
-            .title_widget(&gtk::Box::new(gtk::Orientation::Horizontal, 0))
+            .title_widget(&account_title)
             .show_end_title_buttons(false)
             .width_request(theme::LIST_WIDTH)
             .css_classes(["message-list-header"])
@@ -86,7 +96,9 @@ impl Shell {
             .valign(gtk::Align::Center)
             .build();
         search_toggle.add_css_class("flat");
-        list_header.pack_end(&search_toggle);
+        list_header.pack_start(&search_toggle);
+        let sender_unread_first = super::sort_menu::SortMenu::new();
+        list_header.pack_end(&sender_unread_first.widget);
         middle.append(&list_header);
         let search = gtk::SearchEntry::builder()
             .placeholder_text("Search messages")
@@ -111,20 +123,12 @@ impl Shell {
             }
         });
         middle.append(&search_bar);
-        let list = gtk::ListBox::builder()
-            .activate_on_single_click(true)
-            .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(["boxed-list"])
-            .build();
-        let list_root = adw::PreferencesGroup::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .css_classes(["message-list-root"])
-            .build();
-        list_root.add(&list);
+        let list = super::virtual_list::new();
+        let list_scroll = super::virtual_list::scroll(&list);
         let list_stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
-        let list_scroll = scroll(&list_root);
-        list_stack.add_named(&super::sender_menu::container(&list_scroll), Some("list"));
+        let list_root = super::sender_menu::container(&list_scroll);
+        list_root.add_css_class("message-list-root");
+        list_stack.add_named(&list_root, Some("list"));
         states::list_state(&list_stack, "No messages in this folder", false, false);
         middle.append(&list_stack);
         let thread_sidebar = column("message-list-wrapper");
@@ -136,21 +140,26 @@ impl Shell {
             .css_classes(["message-list-header"])
             .build();
         thread_header.pack_start(&back);
+        let thread_unread_first = super::sort_menu::SortMenu::new();
+        thread_header.pack_end(&thread_unread_first.widget);
         thread_sidebar.append(&thread_header);
-        let thread_list = gtk::ListBox::builder()
-            .activate_on_single_click(true)
-            .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(["boxed-list"])
-            .build();
-        let thread_root = adw::PreferencesGroup::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .css_classes(["message-list-root"])
-            .build();
-        thread_root.add(&thread_list);
-        let thread_scroll = scroll(&thread_root);
+        let thread_list = super::virtual_list::new();
+        let thread_load_more = gtk::Button::with_label("Retry loading");
+        thread_load_more.add_css_class("message-list-more");
+        thread_load_more.set_halign(gtk::Align::Center);
+        thread_load_more.set_valign(gtk::Align::End);
+        thread_load_more.set_margin_bottom(theme::SMALL_SPACING);
+        thread_load_more.set_visible(false);
+        let thread_scroll = super::virtual_list::scroll(&thread_list);
+        let thread_overlay = gtk::Overlay::new();
+        thread_overlay.set_hexpand(true);
+        thread_overlay.set_vexpand(true);
+        thread_overlay.set_child(Some(&thread_scroll));
+        thread_overlay.add_overlay(&thread_load_more);
+        let thread_root = super::sender_menu::container(&thread_overlay);
+        thread_root.add_css_class("message-list-root");
         let thread_stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
-        thread_stack.add_named(&super::sender_menu::container(&thread_scroll), Some("list"));
+        thread_stack.add_named(&thread_root, Some("list"));
         thread_sidebar.append(&thread_stack);
         let right = column("content-wrapper");
         let header = adw::HeaderBar::builder()
@@ -192,9 +201,13 @@ impl Shell {
         super::pane_state::remember(&window, &account_sidebar, &content, &thread_sidebar);
         expand_sidebar.set_visible(!account_sidebar.get_visible());
         let expand = expand_sidebar.downgrade();
+        let title = account_title.downgrade();
         account_sidebar.connect_visible_notify(move |sidebar| {
             if let Some(expand) = expand.upgrade() {
                 expand.set_visible(!sidebar.get_visible());
+            }
+            if let Some(title) = title.upgrade() {
+                title.set_visible(!sidebar.get_visible() && !title.text().is_empty());
             }
         });
         let target = account_sidebar.downgrade();
@@ -228,6 +241,7 @@ impl Shell {
             window,
             sidebar,
             account_sidebar,
+            account_title,
             thread_sidebar,
             thread_list,
             thread_scroll,
@@ -235,6 +249,7 @@ impl Shell {
             sync_status,
             list,
             list_scroll,
+            thread_load_more,
             viewer_scroll,
             list_stack,
             viewer,
@@ -244,6 +259,8 @@ impl Shell {
             refresh,
             sync,
             back,
+            sender_unread_first,
+            thread_unread_first,
             search,
             toast,
         }

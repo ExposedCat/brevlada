@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 impl Storage {
     pub fn record_sync_started(&self, at: SystemTime) -> Result<()> {
         let seconds = at.duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
+        let _write = self.1.lock()?;
         self.0.execute(
             "INSERT OR REPLACE INTO rust_metadata (key, value) VALUES ('last_sync_started', ?1)",
             [seconds.to_string()],

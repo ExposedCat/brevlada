@@ -210,6 +210,24 @@ fn part(content_type: &str, body: &str) -> String {
     result
 }
 
+pub(super) fn draft_message(account: &Account, draft: &Draft) -> Result<String> {
+    ensure!(
+        addresses(&account.email)?.len() == 1,
+        "Account email address is invalid"
+    );
+    ensure!(
+        !draft.to.contains(['\r', '\n']) && !draft.cc.contains(['\r', '\n']),
+        "Invalid recipient headers"
+    );
+    // Drafts may contain unfinished addresses, or no recipients, subject or body.
+    let cc = if draft.cc.is_empty() {
+        Vec::new()
+    } else {
+        vec![draft.cc.clone()]
+    };
+    message(account, draft, std::slice::from_ref(&draft.to), &cc)
+}
+
 fn message(account: &Account, draft: &Draft, to: &[String], cc: &[String]) -> Result<String> {
     ensure!(!draft.subject.contains(['\r', '\n']), "Invalid subject");
     let from = &account.email;
@@ -222,7 +240,10 @@ fn message(account: &Account, draft: &Draft, to: &[String], cc: &[String]) -> Re
     if !cc.is_empty() {
         output.push_str(&format!("Cc: {}\r\n", cc.join(", ")));
     }
-    let domain = from.rsplit_once('@').map(|(_, domain)| domain).unwrap();
+    let domain = from
+        .rsplit_once('@')
+        .map(|(_, domain)| domain)
+        .context("Account email address is invalid")?;
     output.push_str(&format!(
         "Subject: {}\r\nDate: {}\r\nMessage-ID: <{}.{}@{}>\r\nMIME-Version: 1.0\r\n",
         encoded(draft.subject.trim()),
@@ -270,6 +291,23 @@ fn message(account: &Account, draft: &Draft, to: &[String], cc: &[String]) -> Re
     } else {
         output.push_str(&part("text/plain", &draft.text));
     }
+    if !draft.attachments.is_empty() {
+        let boundary = format!(
+            "brevlada-mixed-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let split = output
+            .find("\r\nContent-Type:")
+            .context("Missing message content type")?;
+        let body = output[split + 2..].to_owned();
+        output.truncate(split);
+        output.push_str(&format!("\r\nContent-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n--{boundary}\r\n{body}"));
+        for attachment in &draft.attachments {
+            output.push_str(&format!("--{boundary}\r\n{attachment}"));
+        }
+        output.push_str(&format!("--{boundary}--\r\n"));
+    }
     Ok(output)
 }
 
@@ -304,10 +342,11 @@ mod tests {
             subject: "Re: topic".into(),
             text: "Reply".into(),
             html: Some("<p>Reply</p>".into()),
+            attachments: Vec::new(),
             in_reply_to: Some("incoming@example.com".into()),
             references: vec!["original@example.com".into(), "incoming@example.com".into()],
         };
-        let bytes = message(&account, &draft, &[draft.to.clone()], &[]).unwrap();
+        let bytes = message(&account, &draft, std::slice::from_ref(&draft.to), &[]).unwrap();
         let parsed = super::super::parser::parse(0, bytes.as_bytes(), true, true).unwrap();
         assert!(parsed.message_id.contains("@example.com"));
         assert!(
@@ -322,5 +361,41 @@ mod tests {
         );
         assert_eq!(parsed.body_text.trim(), "Reply");
         assert_eq!(parsed.body_html.trim(), "<p>Reply</p>");
+
+        let unfinished = Draft {
+            to: "Other <unfinished".into(),
+            cc: "Copy <copy@example.com>".into(),
+            subject: String::new(),
+            text: String::new(),
+            attachments: vec!["Content-Type: application/octet-stream; name=report.bin\r\nContent-Disposition: attachment; filename=report.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nAP8K\r\n".into()],
+            ..draft
+        };
+        let raw = draft_message(&account, &unfinished).unwrap();
+        let parsed = super::super::parser::parse(0, raw.as_bytes(), true, true).unwrap();
+        assert_eq!(parsed.recipients, unfinished.to);
+        assert!(parsed.subject.is_empty());
+        assert!(parsed.body_text.trim().is_empty());
+        assert_eq!(parsed.body_html.trim(), "<p>Reply</p>");
+        assert_eq!(parsed.attachments, ["report.bin"]);
+        assert_eq!(
+            mailparse::parse_mail(raw.as_bytes()).unwrap().subparts[1]
+                .get_body_raw()
+                .unwrap(),
+            [0, 255, 10]
+        );
+        assert!(parsed.references.contains(&"incoming@example.com".into()));
+        use mailparse::MailHeaderMap;
+        assert_eq!(
+            mailparse::parse_mail(raw.as_bytes())
+                .unwrap()
+                .headers
+                .get_first_value("Cc"),
+            Some(unfinished.cc.clone())
+        );
+        let injection = Draft {
+            to: "other@example.com\r\nBcc: hidden@example.com".into(),
+            ..unfinished
+        };
+        assert!(draft_message(&account, &injection).is_err());
     }
 }

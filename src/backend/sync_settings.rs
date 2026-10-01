@@ -4,6 +4,7 @@ use rusqlite::params;
 
 impl Storage {
     pub fn sync_folders(&self, account: &str) -> Result<Vec<String>> {
+        let _write = self.1.lock()?;
         self.0.execute(
             "INSERT OR IGNORE INTO rust_sync_settings (account_id,folders) VALUES (?1,?2)",
             params![account, serde_json::to_string(&["INBOX"])?],

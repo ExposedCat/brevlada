@@ -11,6 +11,7 @@ const SCRIPT: &str = concat!(
 
 pub fn connect(
     view: &webkit6::WebView,
+    content: &gtk::ScrolledWindow,
     manager: &webkit6::UserContentManager,
     ready: impl Fn() + 'static,
 ) {
@@ -24,24 +25,28 @@ pub fn connect(
         &[],
     ));
     let weak = view.downgrade();
+    let target = content.downgrade();
     manager.connect_script_message_received(Some("bodySize"), move |_, value| {
-        if let Some(view) = weak.upgrade() {
-            ready();
+        if let (Some(view), Some(content)) = (weak.upgrade(), target.upgrade()) {
             let height = value.to_int32().max(theme::BODY_HEIGHT);
             if height == view.height_request() {
+                ready();
                 return;
             }
-            if let Some(scroll) = view
+            if let Some(scroll) = content
                 .ancestor(gtk::ScrolledWindow::static_type())
                 .and_downcast::<gtk::ScrolledWindow>()
                 && let Some(container) = scroll.child()
             {
                 super::scroll_position::preserve(&scroll, &container, || {
-                    view.set_height_request(height)
+                    view.set_height_request(height);
+                    content.set_height_request(height);
                 });
             } else {
                 view.set_height_request(height);
+                content.set_height_request(height);
             }
+            ready();
         }
     });
 }
