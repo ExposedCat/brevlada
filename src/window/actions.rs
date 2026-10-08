@@ -17,7 +17,10 @@ impl State {
         self.loading.set(true);
         self.refresh.set_sensitive(false);
         ui::states::refreshing(&self.refresh, true);
-        if self.messages.borrow().is_empty() && !self.has_cached_folder() {
+        if !self.search_open(false)
+            && self.messages.borrow().is_empty()
+            && !self.has_cached_folder()
+        {
             ui::states::list_state(&self.list_stack, "Loading messages...", true, false);
         }
         self.send(Command::Load {
@@ -38,7 +41,7 @@ impl State {
     }
 
     pub(super) fn maybe_load_more(&self) {
-        if self.rendering.get() || !self.search.text().trim().is_empty() {
+        if self.rendering.get() || self.sender_search_active() {
             return;
         }
         let adjustment = self.list_scroll.vadjustment();
@@ -50,6 +53,18 @@ impl State {
     }
 
     pub(super) fn select(self: &Rc<Self>, account: Account, folder: String) {
+        self.select_mailbox(account, folder, false);
+    }
+
+    pub(super) fn select_mailbox(
+        self: &Rc<Self>,
+        account: Account,
+        folder: String,
+        preserve_search: bool,
+    ) {
+        if !preserve_search {
+            self.cancel_search(false);
+        }
         // Preserve body/read updates made since the last list response.
         if !self.messages.borrow().is_empty() {
             let current = self.account.borrow();
@@ -70,18 +85,27 @@ impl State {
         self.sender.focus(&account.email, &folder);
         self.generation.set(self.generation.get() + 1);
         self.new_selection();
-        self.account_title.set_label(&account.email);
-        self.account_title.set_tooltip_text(Some(&account.email));
-        self.account_title
-            .set_visible(!self.account_sidebar.get_visible());
+        self.calendar_history.borrow_mut().clear();
+        self.search_filters.set_current(Some(&account.email));
+        self.search_filters
+            .set_current_folder(Some(&folder), preserve_search);
+        if !preserve_search {
+            *self.search_account_order.borrow_mut() = None;
+            self.reset_list();
+        }
         *self.account.borrow_mut() = Some(account);
-        self.reset_list();
+        self.refresh_account_title();
         self.next_message.set(None);
+        self.search_message.borrow_mut().take();
+        self.search_sender.borrow_mut().take();
         self.sender_pane.borrow_mut().select(None);
         self.back.set_visible(false);
         self.thread_sidebar.set_visible(false);
-        self.restore_accounts_on_back.set(false);
+        if !preserve_search {
+            self.restore_accounts_on_back.set(false);
+        }
         self.reset_threads();
+        self.thread_search.set_text("");
         *self.folder.borrow_mut() = folder;
         self.selected.borrow_mut().clear();
         self.deferred_read_sort.borrow_mut().clear();
@@ -92,7 +116,11 @@ impl State {
         self.open_group.borrow_mut().clear();
         *self.messages.borrow_mut() = cached;
         self.loading.set(true);
-        self.render_list();
+        if preserve_search {
+            *self.search_snapshots.borrow_mut() = [None, None];
+        } else {
+            self.render_list();
+        }
         ui::states::select_message(&self.viewer);
         self.load();
     }
@@ -112,6 +140,7 @@ impl State {
     }
 
     pub(super) fn show_thread(self: &Rc<Self>, group: Vec<Message>) {
+        self.search_message.borrow_mut().take();
         self.next_message.set(None);
         self.new_selection();
         let selected: Vec<_> = group.iter().map(|message| message.uid).collect();
@@ -123,7 +152,8 @@ impl State {
                 .collect();
         }
         *self.selected.borrow_mut() = selected;
-        *self.open_group.borrow_mut() = group.clone();
+        self.conversation_limit.set(25);
+        *self.open_group.borrow_mut() = group;
         self.related_sent.borrow_mut().clear();
         self.sent_pending.borrow_mut().clear();
         self.cards.borrow_mut().clear();
@@ -132,7 +162,6 @@ impl State {
         self.viewer_scroll.vadjustment().set_value(0.0);
         self.request_related_sent();
         self.render_conversation();
-        self.render_list();
         self.refresh_open_styles();
         self.viewer_reveal.play();
     }
@@ -145,193 +174,18 @@ impl State {
             if let Err(error) = self.sender.send(Command::RelatedSent {
                 account,
                 folder: self.folder.borrow().clone(),
-                messages: self.open_group.borrow().clone(),
+                messages: self
+                    .open_group
+                    .borrow()
+                    .iter()
+                    .map(|message| message.list_header(false))
+                    .collect(),
                 generation: self.generation.get(),
                 selection: self.selection.get(),
             }) {
                 self.toast.add_toast(adw::Toast::new(&error.to_string()));
                 self.render_conversation();
             }
-        }
-    }
-
-    pub(super) fn render_conversation(self: &Rc<Self>) {
-        let mut group: Vec<_> = self
-            .open_group
-            .borrow()
-            .iter()
-            .map(|original| {
-                self.messages
-                    .borrow()
-                    .iter()
-                    .find(|current| {
-                        current.uid == original.uid && current.message_id == original.message_id
-                    })
-                    .cloned()
-                    .or_else(|| {
-                        self.sender_pane
-                            .borrow()
-                            .messages()
-                            .iter()
-                            .find(|current| {
-                                current.uid == original.uid
-                                    && current.message_id == original.message_id
-                            })
-                            .cloned()
-                    })
-                    .unwrap_or_else(|| original.clone())
-            })
-            .collect();
-        for message in &mut group {
-            if message.body_loaded && message.parcels.is_empty() && !message.body_html.is_empty() {
-                message.parcels = models::parcel::parse_message(message);
-                if !message.parcels.is_empty() {
-                    if let Some(cached) = self
-                        .messages
-                        .borrow_mut()
-                        .iter_mut()
-                        .find(|cached| cached.uid == message.uid)
-                    {
-                        cached.parcels = message.parcels.clone();
-                    }
-                }
-            }
-        }
-        let mut messages: Vec<_> = group
-            .iter()
-            .cloned()
-            .map(|message| (false, String::new(), message))
-            .collect();
-        messages.extend(
-            self.related_sent
-                .borrow()
-                .iter()
-                .map(|item| (true, item.folder.clone(), item.message.clone())),
-        );
-        messages.retain(|(sent, folder, message)| {
-            let folder = if *sent {
-                folder.clone()
-            } else {
-                self.folder.borrow().clone()
-            };
-            !self
-                .draft_removed
-                .borrow()
-                .contains(&self.draft_key(&folder, &message.message_id))
-        });
-        messages.sort_by_key(|(_, _, message)| std::cmp::Reverse((message.timestamp, message.uid)));
-        let previous = self.cards.borrow().clone();
-        let previous_sent = self.sent_cards.borrow().clone();
-        let mut widgets: Vec<gtk::Widget> = Vec::new();
-        self.cards.borrow_mut().clear();
-        self.sent_cards.borrow_mut().clear();
-        self.viewer.set_vexpand(false);
-        if let Some((parcel, timestamp)) = messages
-            .iter()
-            .filter(|(sent, _, _)| !sent)
-            .flat_map(|(_, _, message)| {
-                message
-                    .parcels
-                    .iter()
-                    .map(move |parcel| (parcel, message.timestamp))
-            })
-            .next()
-        {
-            widgets.push(ui::parcel::card(parcel, timestamp).upcast());
-        }
-        let threaded = messages
-            .iter()
-            .filter(|(_, _, message)| !message.is_draft)
-            .count()
-            > 1;
-        let first_message = messages
-            .iter()
-            .position(|(_, _, message)| !message.is_draft);
-        let unread = group
-            .iter()
-            .any(|message| !message.is_draft && !message.is_read);
-        for (index, (sent, folder, message)) in messages.iter().enumerate() {
-            if message.is_draft {
-                let folder = if *sent {
-                    folder.clone()
-                } else {
-                    self.folder.borrow().clone()
-                };
-                let editor = self.draft_editor(&folder, message);
-                widgets.push(editor.widget.clone().upcast());
-                if !message.body_loaded && !editor.loaded.get() {
-                    if *sent {
-                        self.open_sent(&folder, message.uid, &message.message_id);
-                    } else {
-                        self.open(message.uid);
-                    }
-                }
-                continue;
-            }
-            let hide_quotes = models::conversation::quoted_message_visible(
-                message,
-                messages[index + 1..]
-                    .iter()
-                    .map(|(_, _, older)| older)
-                    .filter(|older| !older.is_draft),
-            );
-            let expanded = if *sent {
-                previous_sent
-                    .get(&message.message_id)
-                    .map(|card| card.is_expanded())
-            } else {
-                previous.get(&message.uid).map(|card| card.is_expanded())
-            }
-            .unwrap_or((!*sent && !message.is_read) || (!unread && Some(index) == first_message));
-            let previous = if *sent {
-                previous_sent.get(&message.message_id)
-            } else {
-                previous.get(&message.uid)
-            };
-            let card = if let Some(card) =
-                previous.filter(|card| card.layout_matches(message, threaded, hide_quotes))
-            {
-                card.update(message);
-                card.clone()
-            } else {
-                self.card(
-                    message,
-                    expanded,
-                    if *sent { Some(folder) } else { None },
-                    threaded,
-                    hide_quotes,
-                )
-            };
-            widgets.push(card.widget.clone().upcast());
-            if *sent {
-                self.sent_cards
-                    .borrow_mut()
-                    .insert(message.message_id.clone(), card);
-                if expanded && !message.body_loaded {
-                    self.open_sent(folder, message.uid, &message.message_id);
-                }
-            } else {
-                self.cards.borrow_mut().insert(message.uid, card);
-            }
-            if expanded && !sent {
-                self.open(message.uid);
-            }
-        }
-        let mut child = self.viewer.first_child();
-        while let Some(widget) = child {
-            child = widget.next_sibling();
-            if !widgets.contains(&widget) {
-                self.viewer.remove(&widget);
-            }
-        }
-        let mut previous: Option<gtk::Widget> = None;
-        for widget in widgets {
-            if widget.parent().is_some() {
-                self.viewer.reorder_child_after(&widget, previous.as_ref());
-            } else {
-                self.viewer.insert_child_after(&widget, previous.as_ref());
-            }
-            previous = Some(widget);
         }
     }
 
@@ -347,10 +201,11 @@ impl State {
         let uid = message.uid;
         let sent_folder = sent_folder.map(str::to_owned);
         let sent_id = message.message_id.clone();
-        let reply_state = Rc::downgrade(self);
+        let response_state = Rc::downgrade(self);
         let media_state = Rc::downgrade(self);
         let unsubscribe_state = Rc::downgrade(self);
         let unsubscribe_folder = sent_folder.clone();
+        let response_folder = sent_folder.clone();
         let mut media_key = self.media_key(message);
         if let Some(folder) = &sent_folder {
             media_key.1 = folder.clone();
@@ -372,6 +227,10 @@ impl State {
             &self.avatars,
             downloaded,
             trusted,
+            self.account.borrow().clone(),
+            sent_folder
+                .clone()
+                .unwrap_or_else(|| self.folder.borrow().clone()),
             move || {
                 if let Some(state) = weak.upgrade() {
                     if let Some(folder) = &sent_folder {
@@ -381,16 +240,12 @@ impl State {
                     }
                 }
             },
-            move |reply_message| {
-                if let Some(state) = reply_state.upgrade() {
-                    let recipient = if own {
-                        reply_message.recipients.clone()
-                    } else {
-                        models::senders::identity(reply_message).1
-                    };
-                    state.compose.reply(reply_message, &recipient);
-                    let adjustment = state.viewer_scroll.vadjustment();
-                    adjustment.set_value(adjustment.lower());
+            move |message, action| {
+                if let Some(state) = response_state.upgrade() {
+                    let folder = response_folder
+                        .clone()
+                        .unwrap_or_else(|| state.folder.borrow().clone());
+                    state.new_composer("", Some((message, &folder, action)));
                 }
             },
             move || {
@@ -457,6 +312,7 @@ impl State {
         self.pending.borrow_mut().clear();
         self.preview_pending.borrow_mut().clear();
         self.sent_pending.borrow_mut().clear();
+        self.parcel_history.borrow_mut().clear();
     }
 
     pub(super) fn load_expanded(&self) {
@@ -486,10 +342,20 @@ impl State {
                     .iter()
                     .find(|message| message.uid == uid)
                     .cloned()
+            })
+            .or_else(|| {
+                self.open_group
+                    .borrow()
+                    .iter()
+                    .find(|message| message.uid == uid)
+                    .cloned()
             });
         let Some(message) = message else {
             return;
         };
+        if self.retained_spam(&message) {
+            return;
+        }
         if message.body_loaded
             && message.is_read
             && (!message.body_html.contains("cid:") || message.inline_media_loaded)

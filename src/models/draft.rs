@@ -19,27 +19,30 @@ impl Target {
     }
 }
 
-#[derive(Clone, Debug)]
 pub struct Saved {
-    pub folder: String,
-    pub message: Message,
+    pub item: super::SentMessage,
+    pub original_parts: Vec<String>,
     pub cleanup_error: Option<String>,
 }
 
-pub enum Outcome {
-    Saved(Saved),
-    Sent(Message, Option<String>),
+pub struct Outcome {
+    pub message: Message,
+    pub cleanup_error: Option<String>,
 }
 
 impl From<&Message> for Draft {
     fn from(message: &Message) -> Self {
         Self {
+            attachments_loaded: false,
             to: message.recipients.clone(),
             cc: message.cc.clone(),
             subject: message.subject.clone(),
             text: message.body_text.clone(),
             html: (!message.body_html.is_empty()).then(|| message.body_html.clone()),
             attachments: Vec::new(),
+            attachment_names: message.attachments.clone(),
+            removed_attachments: Vec::new(),
+            attachment_source: None,
             in_reply_to: message.in_reply_to.clone(),
             references: message.references.clone(),
         }

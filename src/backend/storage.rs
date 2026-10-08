@@ -9,6 +9,8 @@ mod access;
 mod actions;
 #[path = "avatar_storage.rs"]
 pub mod avatar;
+#[path = "calendar_storage.rs"]
+mod calendar;
 #[cfg(test)]
 #[path = "storage_concurrency.rs"]
 mod concurrency_tests;
@@ -90,6 +92,13 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS rust_messages_date ON rust_messages
             (account_id, folder, json_extract(data, '$.timestamp') DESC, uid DESC);",
         )?;
+        // Old cached bodies lack Reply-To and may also lack Cc. Reload them once
+        // so responding to already cached mail uses the original headers.
+        transaction.execute(
+            "UPDATE rust_messages SET data=json_set(data, '$.body_loaded', json('false'))
+             WHERE json_type(data, '$.reply_to') IS NULL",
+            [],
+        )?;
         // Older draft cache entries lack the recipient/reply fields needed by the editor.
         transaction.execute(
             "UPDATE rust_messages SET data=json_set(data, '$.body_loaded', json('false'))
@@ -150,6 +159,7 @@ impl Storage {
                         message_id: value(3)?.trim_matches(['<', '>']).to_string(),
                         subject: value(4)?,
                         sender: format!("{} <{}>", value(5)?, value(6)?),
+                        reply_to: String::new(),
                         recipients: value(7)?,
                         cc: String::new(),
                         in_reply_to: None,
@@ -161,16 +171,25 @@ impl Storage {
                             .collect(),
                         is_read: row.get::<_, Option<bool>>(10)?.unwrap_or(false),
                         read_revision: 0,
+                        flag_revision: 0,
+                        is_spam: false,
                         is_flagged: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
                         is_draft: false,
-                        body_loaded: !body_text.is_empty() || !body_html.is_empty(),
+                        body_loaded: false,
                         body_text,
                         body_html,
                         attachments: Vec::new(),
+                        attachment_details: Vec::new(),
                         inline_media: Vec::new(),
                         inline_media_loaded: false,
                         unsubscribe: None,
                         parcels: Vec::new(),
+                        calendar_events: Vec::new(),
+                        tickets: Vec::new(),
+                        search_match: false,
+                        list_preview: None,
+                        display_prepared: false,
+                        remote_media: None,
                     },
                 ))
             })?;
@@ -434,6 +453,8 @@ impl Storage {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let revision = Self::next_read_revision(&transaction)?;
         let reads = Self::reads_since(&transaction, account, folder, validity, snapshot_revision)?;
+        let starred =
+            Self::flags_since(&transaction, account, folder, validity, snapshot_revision)?;
         let existing: Vec<Message> = {
             let mut statement = transaction
                 .prepare("SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2")?;
@@ -474,15 +495,23 @@ impl Storage {
         {
             message.uid_validity = Some(validity);
             message.is_read = reads.get(&message.uid).copied().unwrap_or(message.is_read);
+            message.is_flagged = starred
+                .get(&message.uid)
+                .copied()
+                .unwrap_or(message.is_flagged);
             message.read_revision = revision;
+            message.flag_revision = revision;
             if !reset && let Some(old) = existing.iter().find(|m| m.uid == message.uid) {
                 message.body_text = old.body_text.clone();
                 message.body_html = old.body_html.clone();
                 message.attachments = old.attachments.clone();
+                message.attachment_details = old.attachment_details.clone();
                 message.inline_media = old.inline_media.clone();
                 message.inline_media_loaded = old.inline_media_loaded;
                 message.body_loaded = old.body_loaded;
                 message.parcels = old.parcels.clone();
+                message.calendar_events = old.calendar_events.clone();
+                message.tickets = old.tickets.clone();
             }
             transaction.execute(
                 "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",
@@ -680,7 +709,7 @@ mod tests {
         let imported = storage.messages("a", "INBOX").unwrap();
         assert_eq!(imported.len(), 1);
         assert_eq!(imported[0].body_text, "Cached text");
-        assert!(imported[0].body_loaded);
+        assert!(!imported[0].body_loaded);
         assert!(imported[0].timestamp > 0);
         assert_eq!(imported[0].message_id, "id");
         storage.0.execute("DELETE FROM rust_messages", []).unwrap();
@@ -847,6 +876,11 @@ mod tests {
         let body = Message {
             body_loaded: true,
             body_text: "Cached".into(),
+            tickets: vec![crate::models::ticket::Reservation {
+                number: Some("booking-one".into()),
+                name: "Concert".into(),
+                ..Default::default()
+            }],
             ..header.clone()
         };
         storage.store("a", "INBOX", &body).unwrap();
@@ -854,11 +888,67 @@ mod tests {
             .reconcile("a", "INBOX", 1, vec![header.clone()], &[1])
             .unwrap();
         assert!(storage.messages("a", "INBOX").unwrap()[0].body_loaded);
+        assert_eq!(
+            storage.messages("a", "INBOX").unwrap()[0].tickets,
+            body.tickets
+        );
         storage
             .reconcile("a", "INBOX", 2, vec![header], &[1])
             .unwrap();
         assert!(!storage.messages("a", "INBOX").unwrap()[0].body_loaded);
+        assert!(
+            storage.messages("a", "INBOX").unwrap()[0]
+                .tickets
+                .is_empty()
+        );
         storage.reconcile("a", "INBOX", 2, vec![], &[]).unwrap();
         assert!(storage.messages("a", "INBOX").unwrap().is_empty());
+    }
+
+    #[test]
+    fn reloads_old_cached_headers_and_persists_reply_to_from_fetched_body() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rust_messages (
+            account_id TEXT, folder TEXT, uid INTEGER, data TEXT,
+            PRIMARY KEY(account_id, folder, uid));",
+            )
+            .unwrap();
+        let old = Message {
+            uid: 1,
+            message_id: "incoming".into(),
+            body_loaded: true,
+            body_text: "Cached".into(),
+            ..Default::default()
+        };
+        let mut data = serde_json::to_value(&old).unwrap();
+        data.as_object_mut().unwrap().remove("reply_to");
+        connection
+            .execute(
+                "INSERT INTO rust_messages VALUES ('a','INBOX',1,?1)",
+                [data.to_string()],
+            )
+            .unwrap();
+        let mut storage = Storage::initialize(connection).unwrap();
+        let cached = storage.message("a", "INBOX", 1).unwrap().unwrap();
+        assert!(!cached.body_loaded);
+        assert_eq!(cached.body_text, "Cached");
+        let fetched = Message {
+            reply_to: "support@example.com".into(),
+            cc: "copy@example.com".into(),
+            ..old
+        };
+        let refreshed = storage
+            .store_body("a", "INBOX", None, &fetched)
+            .unwrap()
+            .unwrap();
+        assert!(refreshed.body_loaded);
+        assert_eq!(refreshed.reply_to, "support@example.com");
+        assert_eq!(refreshed.cc, "copy@example.com");
+        assert_eq!(
+            storage.message("a", "INBOX", 1).unwrap().unwrap(),
+            refreshed
+        );
     }
 }

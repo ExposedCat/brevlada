@@ -34,8 +34,12 @@ impl State {
             .find(|(index, _)| *index >= sender_index as usize)
             .or_else(|| candidates.last());
         if let Some((index, message)) = next {
-            self.filter_sender(Some(message.clone()));
-            self.next_message.set(Some((*index as u32, 0)));
+            if message.search_match {
+                self.activate_sender(*index as u32);
+            } else {
+                self.filter_sender(Some(message.clone()));
+                self.next_message.set(Some((*index as u32, 0)));
+            }
         } else {
             self.next_message.set(None);
             self.filter_sender(None);

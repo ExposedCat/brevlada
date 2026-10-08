@@ -52,13 +52,24 @@ impl Storage {
         validity: Option<u32>,
         uid: u32,
     ) -> Result<Option<Message>> {
+        Self::record_read_state(transaction, account, folder, validity, uid, true)
+    }
+
+    pub(super) fn record_read_state(
+        transaction: &Transaction<'_>,
+        account: &str,
+        folder: &str,
+        validity: Option<u32>,
+        uid: u32,
+        read: bool,
+    ) -> Result<Option<Message>> {
         let revision = Self::next_read_revision(transaction)?;
         let data: Option<String> = transaction.query_row(
-            "UPDATE rust_messages SET data=json_set(data, '$.is_read', json('true'), '$.read_revision', ?5)
+            "UPDATE rust_messages SET data=json_set(data, '$.is_read', json(?6), '$.read_revision', ?5)
              WHERE account_id=?1 AND folder=?2 AND uid=?3
              AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2) IS ?4
              RETURNING data",
-            params![account, folder, uid, validity, revision], |row| row.get(0),
+            params![account, folder, uid, validity, revision, if read { "true" } else { "false" }], |row| row.get(0),
         ).optional()?;
         if data.is_some() {
             transaction.execute(

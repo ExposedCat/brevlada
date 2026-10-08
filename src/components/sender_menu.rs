@@ -41,6 +41,12 @@ pub fn attach<T: Clone + 'static>(
         move |target, action| activate_menu(target, action),
         is_trusted,
         toggle_trust,
+        |_| {
+            SenderAction::ALL
+                .iter()
+                .map(|(action, _)| action.clone())
+                .collect()
+        },
         |list, _, y| list.row_at_y(y as i32).map(|row| row.index()),
         |list| list.selected_row().map(|row| row.index()),
         |list, index| list.select_row(index.and_then(|index| list.row_at_index(index)).as_ref()),
@@ -54,6 +60,7 @@ pub fn attach_view<T: Clone + 'static>(
     activate: impl Fn(T, SenderAction) + 'static,
     is_trusted: impl Fn(&T) -> bool + 'static,
     toggle_trust: impl Fn(T) + 'static,
+    menu_actions: impl Fn(&T) -> Vec<SenderAction> + 'static,
 ) {
     let sender_at = Rc::new(sender_at);
     let activate = Rc::new(activate);
@@ -74,6 +81,7 @@ pub fn attach_view<T: Clone + 'static>(
         move |target, action| activate(target, action),
         is_trusted,
         toggle_trust,
+        menu_actions,
         |list, x, y| {
             let mut widget = list.pick(x, y, gtk::PickFlags::DEFAULT);
             while let Some(current) = widget {
@@ -100,6 +108,7 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static>(
     activate: impl Fn(T, SenderAction) + 'static,
     is_trusted: impl Fn(&T) -> bool + 'static,
     toggle_trust: impl Fn(T) + 'static,
+    menu_actions: impl Fn(&T) -> Vec<SenderAction> + 'static,
     hit: impl Fn(&W, f64, f64) -> Option<i32> + 'static,
     selected: impl Fn(&W) -> Option<i32> + 'static,
     select: impl Fn(&W, Option<i32>) + 'static,
@@ -131,27 +140,13 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static>(
         popover.insert_action_group("sender", Some(&actions));
         let shortcuts = gtk::ShortcutController::new();
         shortcuts.set_name(Some("message-menu-shortcuts"));
-        for (index, (action, title)) in SenderAction::ALL.iter().enumerate() {
+        for (index, action) in menu_actions(&sender).into_iter().enumerate() {
             let name = format!("action{index}");
-            let title = if bulk {
-                *title
-            } else {
-                match action {
-                    SenderAction::MarkRead => "Mark as read",
-                    SenderAction::Spam => "Mark as spam",
-                    SenderAction::Archive => "Archive",
-                    SenderAction::Delete => "Delete",
-                }
-            };
+            let title = action.title(bulk);
             let entry = gtk::gio::MenuItem::new(None, None);
             entry.set_attribute_value("custom", Some(&name.to_variant()));
-            let icon = match action {
-                SenderAction::MarkRead => "brevlada-mail-read-symbolic",
-                SenderAction::Spam => "mail-mark-junk-symbolic",
-                SenderAction::Archive => "package-x-generic-symbolic",
-                SenderAction::Delete => "user-trash-symbolic",
-            };
-            let shortcut = match (bulk, action) {
+            let icon = action.icon();
+            let shortcut = match (bulk, &action) {
                 (false, SenderAction::Archive) => Some("BackSpace"),
                 (false, SenderAction::Delete) => Some("Delete"),
                 _ => None,
@@ -159,13 +154,12 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static>(
             let item = gtk::gio::SimpleAction::new(&name, None);
             let activate = activate.clone();
             let sender = sender.clone();
-            let action = *action;
             let weak = popover.downgrade();
             item.connect_activate(move |_, _| {
                 if let Some(popover) = weak.upgrade() {
                     popover.popdown();
                 }
-                activate(sender.clone(), action);
+                activate(sender.clone(), action.clone());
             });
             actions.add_action(&item);
             menu.append_item(&entry);
@@ -428,7 +422,10 @@ mod diagnostics {
                 shortcut
             );
             button.emit_by_name::<()>("clicked", &[]);
-            assert_eq!(activated.borrow().last(), Some(&("40".into(), *action)));
+            assert_eq!(
+                activated.borrow().last(),
+                Some(&("40".into(), action.clone()))
+            );
             settle();
             assert!(popover.parent().is_none());
             assert!(list.selected_row().is_none());
@@ -450,7 +447,7 @@ mod diagnostics {
             .unwrap();
         popover.set_visible(false);
         settle();
-        assert_eq!(activated.borrow().len(), 4);
+        assert_eq!(activated.borrow().len(), SenderAction::ALL.len());
         assert!(list.selected_row().is_none());
         assert_eq!(scroll.vadjustment().value(), position);
         bulk.set(false);
@@ -613,6 +610,12 @@ mod diagnostics {
             move |index, action| recorder.borrow_mut().push((index, action)),
             |_| false,
             |_| {},
+            |_| {
+                SenderAction::ALL
+                    .iter()
+                    .map(|(action, _)| action.clone())
+                    .collect()
+            },
         );
         window.present();
         settle();

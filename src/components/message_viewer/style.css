@@ -34,12 +34,45 @@
     box-shadow: 0 2px 4px var(--card-shadow);
 }
 
-.parcel-card {
+.parcel-card,
+.calendar-card,
+.ticket-card {
     border-radius: var(--spacing-md);
     background: var(--headerbar-bg-color);
     border: 1px solid var(--borders);
     padding: var(--spacing-md);
     margin-bottom: var(--spacing-sm);
+}
+
+.calendar-event > .calendar-card {
+    margin-bottom: 0;
+}
+
+.calendar-participants {
+    margin-left: var(--spacing-lg);
+    margin-bottom: var(--spacing-sm);
+}
+
+.calendar-branch-top {
+    min-height: 18px;
+    min-width: 1px;
+    background: var(--borders);
+}
+
+.calendar-branch-stem {
+    min-width: 1px;
+    background: var(--borders);
+}
+
+.calendar-branch-twig {
+    margin-top: 18px;
+    min-width: var(--spacing-md);
+    min-height: 1px;
+    background: var(--borders);
+}
+
+.calendar-participant-header {
+    padding: var(--spacing-sm) 0;
 }
 
 .parcel-timeline {
@@ -74,7 +107,7 @@
 }
 
 .parcel-line {
-    margin-top: 12px;
+    min-width: 24px;
     min-height: 2px;
 }
 

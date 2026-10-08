@@ -20,14 +20,18 @@ pub struct Shell {
     pub viewer: gtk::Box,
     pub viewer_reveal: super::reveal::Reveal,
     pub compose_button: gtk::Button,
-    pub compose: super::compose::Compose,
+    pub composers: gtk::Box,
     pub refresh: gtk::Button,
     pub sync: gtk::Button,
     pub back: gtk::Button,
     pub sender_unread_first: super::sort_menu::SortMenu,
     pub thread_unread_first: super::sort_menu::SortMenu,
     pub search: gtk::SearchEntry,
+    pub search_progress: [gtk::Spinner; 2],
+    pub search_filters: std::rc::Rc<super::search_filters::SearchFilters>,
+    pub thread_search: gtk::SearchEntry,
     pub toast: adw::ToastOverlay,
+    pub settings: gtk::gio::SimpleAction,
 }
 
 impl Shell {
@@ -87,44 +91,32 @@ impl Shell {
         let refresh = button("view-refresh-symbolic", "Refresh messages");
         refresh.set_sensitive(false);
         list_header.pack_start(&refresh);
-        let search_toggle = gtk::ToggleButton::builder()
-            .icon_name("system-search-symbolic")
-            .tooltip_text("Search messages")
-            .hexpand(false)
-            .vexpand(false)
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
-            .build();
-        search_toggle.add_css_class("flat");
-        list_header.pack_start(&search_toggle);
+        middle.append(&list_header);
+        let search_filters = super::search_filters::SearchFilters::new();
+        let search = search_controls(
+            &list_header,
+            &middle,
+            "Search senders and messages",
+            Some(&search_filters.widget),
+        );
         let sender_unread_first = super::sort_menu::SortMenu::new();
         list_header.pack_end(&sender_unread_first.widget);
-        middle.append(&list_header);
-        let search = gtk::SearchEntry::builder()
-            .placeholder_text("Search messages")
-            .width_chars(25)
-            .max_width_chars(40)
-            .build();
-        let search_bar = gtk::SearchBar::builder()
-            .child(&search)
-            .search_mode_enabled(false)
-            .css_classes(["message-list-search-box"])
-            .build();
-        search_bar.connect_entry(&search);
-        search_toggle
-            .bind_property("active", &search_bar, "search-mode-enabled")
-            .bidirectional()
-            .sync_create()
-            .build();
-        let entry = search.clone();
-        search_toggle.connect_toggled(move |toggle| {
-            if toggle.is_active() {
-                entry.grab_focus();
-            }
-        });
-        middle.append(&search_bar);
         let list = super::virtual_list::new();
         let list_scroll = super::virtual_list::scroll(&list);
+        let search_progress = std::array::from_fn(|_| {
+            let spinner = gtk::Spinner::builder()
+                .spinning(true)
+                .visible(false)
+                .halign(gtk::Align::Center)
+                .height_request(20)
+                .width_request(20)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build();
+            spinner.set_tooltip_text(Some("Searching…"));
+            spinner
+        });
+        middle.append(&search_progress[0]);
         let list_stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
         let list_root = super::sender_menu::container(&list_scroll);
         list_root.add_css_class("message-list-root");
@@ -143,6 +135,13 @@ impl Shell {
         let thread_unread_first = super::sort_menu::SortMenu::new();
         thread_header.pack_end(&thread_unread_first.widget);
         thread_sidebar.append(&thread_header);
+        let thread_search = search_controls(
+            &thread_header,
+            &thread_sidebar,
+            "Search this sender’s messages",
+            None,
+        );
+        thread_sidebar.append(&search_progress[1]);
         let thread_list = super::virtual_list::new();
         let thread_load_more = gtk::Button::with_label("Retry loading");
         thread_load_more.add_css_class("message-list-more");
@@ -169,6 +168,8 @@ impl Shell {
             .css_classes(["content-header"])
             .build();
         header.pack_start(&compose_button);
+        let (menu, settings) = super::settings::menu();
+        header.pack_end(&menu);
         let headers = gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical);
         headers.add_widget(&sidebar_header);
         headers.add_widget(&list_header);
@@ -180,9 +181,9 @@ impl Shell {
         let viewer_root = column("message-viewer-root");
         viewer_root.set_hexpand(true);
         viewer_root.set_vexpand(true);
-        let compose = super::compose::Compose::new(&compose_button);
+        let composers = column("compose-container");
         let viewer_content = column("message-viewer-content");
-        viewer_content.append(&compose.widget);
+        viewer_content.append(&composers);
         viewer_content.append(&viewer);
         let viewer_viewport = gtk::Viewport::builder()
             .child(&viewer_content)
@@ -255,16 +256,68 @@ impl Shell {
             viewer,
             viewer_reveal,
             compose_button,
-            compose,
+            composers,
             refresh,
             sync,
             back,
             sender_unread_first,
             thread_unread_first,
             search,
+            search_filters,
+            search_progress,
+            thread_search,
             toast,
+            settings,
         }
     }
+}
+
+fn search_controls(
+    header: &adw::HeaderBar,
+    parent: &gtk::Box,
+    prompt: &str,
+    filters: Option<&gtk::Box>,
+) -> gtk::SearchEntry {
+    let toggle = gtk::ToggleButton::builder()
+        .icon_name("system-search-symbolic")
+        .tooltip_text(prompt)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    header.pack_start(&toggle);
+    let entry = gtk::SearchEntry::builder()
+        .placeholder_text(prompt)
+        .width_chars(1)
+        .hexpand(true)
+        .halign(gtk::Align::Fill)
+        .search_delay(150)
+        .build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    content.set_hexpand(true);
+    if let Some(filters) = filters {
+        content.append(filters);
+    }
+    content.append(&entry);
+    let bar = gtk::SearchBar::builder()
+        .child(&content)
+        .search_mode_enabled(false)
+        .css_classes(["message-list-search-box"])
+        .build();
+    bar.connect_entry(&entry);
+    toggle
+        .bind_property("active", &bar, "search-mode-enabled")
+        .bidirectional()
+        .sync_create()
+        .build();
+    let focus = entry.clone();
+    toggle.connect_toggled(move |toggle| {
+        if toggle.is_active() {
+            focus.grab_focus();
+        }
+    });
+    parent.append(&bar);
+    entry
 }
 
 pub fn no_accounts(sidebar: &gtk::Box) {
@@ -323,6 +376,92 @@ mod diagnostics {
             picked.type_().name()
         );
         assert_eq!(gtk::Window::list_toplevels().len(), 1);
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session to inspect search and filter allocation"]
+    fn search_entries_fill_their_panes_and_filters_stay_above_sender_search() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("org.example.BrevladaSearchDiagnostic")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let shell = Shell::new(&app);
+        shell.account_sidebar.set_visible(false);
+        shell.thread_sidebar.set_visible(true);
+        for entry in [&shell.search, &shell.thread_search] {
+            entry
+                .ancestor(gtk::SearchBar::static_type())
+                .and_downcast::<gtk::SearchBar>()
+                .unwrap()
+                .set_search_mode(true);
+        }
+        shell.window.present();
+        let context = gtk::glib::MainContext::default();
+        let settle = || {
+            let deadline = Instant::now() + Duration::from_millis(400);
+            while Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        settle();
+        for entry in [&shell.search, &shell.thread_search] {
+            let bar = entry.ancestor(gtk::SearchBar::static_type()).unwrap();
+            let bounds = entry.compute_bounds(&shell.window).unwrap();
+            let bar_bounds = bar.compute_bounds(&shell.window).unwrap();
+            eprintln!("search={bounds:?}, bar={bar_bounds:?}");
+            assert!(
+                bar_bounds.width() - bounds.width() <= 16.0,
+                "Search must fill its pane: {} vs {}",
+                entry.width(),
+                bar.width()
+            );
+        }
+        let filters = shell
+            .search_filters
+            .widget
+            .compute_bounds(&shell.window)
+            .unwrap();
+        let entry = shell.search.compute_bounds(&shell.window).unwrap();
+        assert!(filters.y() + filters.height() <= entry.y());
+        if let Ok(path) = std::env::var("BREVLADA_SEARCH_SCREENSHOT") {
+            let paintable = gtk::WidgetPaintable::new(Some(&shell.window));
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(
+                &snapshot,
+                shell.window.width() as f64,
+                shell.window.height() as f64,
+            );
+            shell
+                .window
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None)
+                .save_to_png(path)
+                .unwrap();
+        }
+        // Resizing the list should resize both the entry and filter controls.
+        let pane = shell
+            .search
+            .ancestor(gtk::Paned::static_type())
+            .and_downcast::<gtk::Paned>()
+            .unwrap();
+        pane.set_position(550);
+        settle();
+        assert!(pane.position() >= 550);
+        let bar = shell
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .unwrap();
+        assert!(
+            bar.compute_bounds(&shell.window).unwrap().width()
+                - shell.search.compute_bounds(&shell.window).unwrap().width()
+                <= 16.0
+        );
+        shell.window.destroy();
     }
 
     #[test]

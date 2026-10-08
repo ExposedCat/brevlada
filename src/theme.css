@@ -1,2 +1,55 @@
 .message-expand { margin: 6px 0 6px 12px; }
 .message-list-loading-spinner { min-width: 32px; min-height: 32px; }
+
+.attachment-section { padding: var(--spacing-md); }
+.compose-card .attachment-section { padding: 0; }
+.attachment-toolbar { margin-top: var(--spacing-sm); }
+
+.attachment-grid { margin-top: var(--spacing-md); }
+.attachment-grid > flowboxchild { padding: 0; }
+.attachment-tile { padding: var(--spacing-md); border-spacing: var(--spacing-sm); }
+.attachment-tile.attachment-openable { padding: 0; }
+.attachment-open { padding: var(--spacing-md); min-width: 0; border: 0; border-radius: var(--spacing-md); }
+.attachment-open-content { border-spacing: var(--spacing-sm); }
+.attachment-overlay-actions { margin-right: var(--spacing-md); margin-bottom: var(--spacing-md); }
+
+.ticket-status {
+    border-radius: var(--spacing-md);
+    background: alpha(var(--color-text), 0.06);
+    padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+.ticket-status.ticket-confirmed {
+    color: var(--success-color);
+    background: alpha(var(--success-color), 0.12);
+}
+
+.ticket-status.ticket-cancelled {
+    color: var(--error-color);
+    background: alpha(var(--error-color), 0.12);
+}
+
+.ticket-status.ticket-pending {
+    color: var(--info-color);
+    background: alpha(var(--info-color), 0.12);
+}
+
+.ticket-destinations { margin-top: var(--spacing-md); }
+
+.ticket-passengers {
+    margin-top: 0;
+    padding: var(--spacing-md) 0;
+}
+
+.ticket-stop { padding: var(--spacing-xs) 0; }
+.ticket-stop-line {
+    min-width: 1px;
+    min-height: var(--spacing-sm);
+    background: var(--borders);
+}
+
+.ticket-passengers > flowboxchild { padding: 0; }
+.ticket-copy-actions { opacity: 0; }
+.ticket-passenger:hover .ticket-copy-actions,
+.ticket-passenger:focus-within .ticket-copy-actions { opacity: 1; }
+.detail-popup { margin: var(--spacing-md); }

@@ -43,6 +43,14 @@ impl SenderPane {
             .map_or(&mut [], |session| &mut session.messages)
     }
 
+    pub fn replace(&mut self, original: &Message, replacement: &Message) {
+        for message in self.messages_mut() {
+            if message.uid == original.uid && message.message_id == original.message_id {
+                *message = replacement.clone();
+            }
+        }
+    }
+
     pub fn remove(&mut self, removed: &[Message]) {
         if let Some(session) = self.session.as_mut() {
             session.messages.retain(|message| {
@@ -120,12 +128,13 @@ impl SenderPane {
         if advances {
             session.cursor = cursor;
         }
+        let mut known: std::collections::HashSet<_> = session
+            .messages
+            .iter()
+            .map(|message| (message.uid, message.message_id.clone()))
+            .collect();
         for message in messages {
-            if !session
-                .messages
-                .iter()
-                .any(|old| old.uid == message.uid && old.message_id == message.message_id)
-            {
+            if known.insert((message.uid, message.message_id.clone())) {
                 session.messages.push(message);
             }
         }

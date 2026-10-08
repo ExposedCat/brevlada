@@ -166,11 +166,15 @@ fn execute(
             let fetched = connections.execute_body(account, &queue.cancellation, 0, |mail| {
                 mail.cached_body(folder, *validity, *uid)
             })?;
-            if let Some(message) =
+            if let Some(mut message) =
                 storage.store_body(&account.email, folder, Some(*validity), &fetched)?
             {
                 queue.body_cached(&account.email, folder, *validity, *uid);
-                if queue.visible(&account.email, folder) {
+                if queue.visible(&account.email, folder)
+                    || !message.calendar_events.is_empty()
+                    || !message.tickets.is_empty()
+                {
+                    message.prepare_display();
                     events.send_blocking(Event::CacheBody(
                         account.email.clone(),
                         folder.clone(),

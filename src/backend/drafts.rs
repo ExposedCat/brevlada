@@ -1,127 +1,89 @@
-use super::{mail::Mail, parser, smtp, storage::Storage};
-use crate::models::{
-    Account, Draft,
-    draft::{Saved, Target},
-};
+use super::{mail::Mail, parser, storage::Storage};
+use crate::models::{Account, Draft, draft::Target};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use imap::{Session, types::Flag};
+use imap::Session;
 use std::io::{Read, Write};
-
-pub fn save(
-    account: &Account,
-    draft: &Draft,
-    target: Option<&Target>,
-    storage: &mut Storage,
-) -> Result<Saved> {
-    let mut draft = draft.clone();
-    let mut mail = Mail::connect(account)?;
-    let folder = mail
-        .sync_folders()?
-        .drafts
-        .context("This account has no Drafts folder")?;
-    let previous = target
-        .map(|target| {
-            ensure!(
-                target.folder == folder,
-                "The Drafts folder changed; reload before saving"
-            );
-            let location =
-                resolve(&mut mail.session, target)?.context("Draft is no longer on the server")?;
-            ensure!(
-                mail.session.capabilities()?.has_str("UIDPLUS"),
-                "Mail server needs UIDPLUS support to replace a draft safely"
-            );
-            Ok(location)
-        })
-        .transpose()?;
-    if let Some((validity, uid)) = previous {
-        draft.attachments = attachments(&mut mail.session, &folder, validity, uid)?;
-    }
-    let raw = smtp::draft_message(account, &draft)?;
-    let mut message = parser::parse(0, raw.as_bytes(), true, true)?;
-    message.is_draft = true;
-    // Do not retry APPEND: a lost response can still mean the draft was saved.
-    append(&mut mail.session, &folder, raw.as_bytes())?;
-    let cleanup_error = if let Some((validity, uid)) = previous {
-        let removed = remove_uid(&mut mail.session, &folder, validity, uid);
-        if removed.is_ok()
-            && let Some(target) = target
-        {
-            let mut target = target.clone();
-            target.uid = uid;
-            target.validity = Some(validity);
-            if let Err(error) = storage.delete_draft(&account.email, &target) {
-                eprintln!("Could not remove replaced draft from cache: {error}");
-            }
-        }
-        removed.err().map(|error| error.to_string())
-    } else {
-        None
-    };
-
-    // Once APPEND succeeds, cache failures must not invite saving a duplicate.
-    let cached = (|| -> Result<()> {
-        let (validity, uid) = saved_location(&mut mail.session, &folder, &message.message_id)?;
-        message.uid_validity = Some(validity);
-        message.uid = uid;
-        storage.store_saved_draft(&account.email, &folder, &message)?;
-        Ok(())
-    })();
-    if let Err(error) = cached {
-        eprintln!("Could not cache saved draft: {error}");
-    }
-    Ok(Saved {
-        folder,
-        message,
-        cleanup_error,
-    })
-}
-
-// Locate only the newly appended message; never scan/reconcile the whole mailbox here.
-fn saved_location<T: Read + Write>(
-    session: &mut Session<T>,
-    folder: &str,
-    id: &str,
-) -> Result<(u32, u32)> {
-    let validity = session
-        .select(folder)?
-        .uid_validity
-        .context("Missing UIDVALIDITY")?;
-    let quoted = id.replace('\\', "\\\\").replace('"', "\\\"");
-    let found = session.uid_search(format!("HEADER Message-ID \"{quoted}\""))?;
-    ensure!(!found.is_empty(), "Saved draft UID is not yet available");
-    let sequence = found
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let fetched = session.uid_fetch(sequence, "(UID BODY.PEEK[HEADER])")?;
-    let mut matching = Vec::new();
-    for item in fetched.iter() {
-        if let (Some(uid), Some(header)) = (item.uid, item.header())
-            && found.contains(&uid)
-            && parser::parse(uid, header, true, false)?.message_id == id
-        {
-            matching.push(uid);
-        }
-    }
-    ensure!(
-        matching.len() == 1,
-        "Saved draft identity is ambiguous or unavailable"
-    );
-    Ok((validity, matching[0]))
-}
 
 pub fn prepare_send(account: &Account, draft: &Draft, target: Option<&Target>) -> Result<Draft> {
     let mut draft = draft.clone();
+    if draft.attachments_loaded {
+        return Ok(draft);
+    }
     if let Some(target) = target {
         let mut mail = Mail::connect(account)?;
         let (validity, uid) =
             resolve(&mut mail.session, target)?.context("Draft is no longer on the server")?;
-        draft.attachments = attachments(&mut mail.session, &target.folder, validity, uid)?;
+        let retained = attachments(
+            &mut mail.session,
+            &target.folder,
+            validity,
+            uid,
+            &draft.removed_attachments,
+        )?;
+        draft.attachments.splice(0..0, retained);
+    } else if let Some(source) = &draft.attachment_source {
+        let mut mail = Mail::connect(account)?;
+        let mut source = source.clone();
+        if source.folder.is_empty() {
+            source.folder = mail
+                .sync_folders()?
+                .sent
+                .context("This account has no Sent folder")?;
+        }
+        let retained = forward_attachments(&mut mail.session, &source, &draft.removed_attachments)?;
+        draft.attachments.splice(0..0, retained);
     }
     Ok(draft)
+}
+
+fn forward_attachments<T: Read + Write>(
+    session: &mut Session<T>,
+    source: &Target,
+    removed: &[usize],
+) -> Result<Vec<String>> {
+    let validity = session
+        .examine(&source.folder)?
+        .uid_validity
+        .context("Missing UIDVALIDITY for forwarded message")?;
+    ensure!(
+        source.validity.is_none_or(|expected| expected == validity),
+        "Source mailbox changed; reopen the message before forwarding"
+    );
+    let uid = if source.uid != 0 {
+        source.uid
+    } else {
+        ensure!(
+            !source.message_id.is_empty(),
+            "Forwarded message identity is unavailable"
+        );
+        let id = source.message_id.replace('\\', "\\\\").replace('"', "\\\"");
+        let found = session.uid_search(format!("HEADER Message-ID \"{id}\""))?;
+        ensure!(
+            found.len() == 1,
+            "Forwarded message is missing or ambiguous"
+        );
+        *found.iter().next().unwrap()
+    };
+    let fetched = session.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")?;
+    let bytes = fetched
+        .iter()
+        .find(|item| item.uid == Some(uid) && item.body().is_some())
+        .and_then(|item| item.body())
+        .context("Forwarded message is no longer on the server")?;
+    let header = parser::parse(uid, bytes, true, false)?;
+    ensure!(
+        header.message_id == parser::normalize_message_id(&source.message_id),
+        "Source message changed; reopen it before forwarding"
+    );
+    let mut retained = Vec::new();
+    retain_selected(
+        &mailparse::parse_mail(bytes)?,
+        &mut retained,
+        removed,
+        &mut 0,
+    )?;
+    Ok(retained)
 }
 
 fn attachments<T: Read + Write>(
@@ -129,6 +91,7 @@ fn attachments<T: Read + Write>(
     folder: &str,
     validity: u32,
     uid: u32,
+    removed: &[usize],
 ) -> Result<Vec<String>> {
     ensure!(
         session.select(folder)?.uid_validity == Some(validity),
@@ -142,18 +105,35 @@ fn attachments<T: Read + Write>(
         .context("Draft is no longer on the server")?;
     let mail = mailparse::parse_mail(bytes)?;
     let mut retained = Vec::new();
-    retain_parts(&mail, &mut retained)?;
+    retain_selected(&mail, &mut retained, removed, &mut 0)?;
     Ok(retained)
 }
 
+#[cfg(test)]
 fn retain_parts(mail: &mailparse::ParsedMail<'_>, retained: &mut Vec<String>) -> Result<()> {
+    retain_selected(mail, retained, &[], &mut 0)
+}
+
+fn retain_selected(
+    mail: &mailparse::ParsedMail<'_>,
+    retained: &mut Vec<String>,
+    removed: &[usize],
+    index: &mut usize,
+) -> Result<()> {
+    if crate::models::attachment::name(mail).is_some() {
+        let current = *index;
+        *index += 1;
+        if removed.contains(&current) {
+            return Ok(());
+        }
+    }
     let disposition = mail.get_content_disposition();
     let attachment = disposition.disposition == mailparse::DispositionType::Attachment
         || disposition.params.contains_key("filename")
         || mail.ctype.params.contains_key("name");
     if !attachment && !mail.subparts.is_empty() {
         for child in &mail.subparts {
-            retain_parts(child, retained)?;
+            retain_selected(child, retained, removed, index)?;
         }
     } else if attachment || !matches!(mail.ctype.mimetype.as_str(), "text/plain" | "text/html") {
         let mut part = String::new();
@@ -194,7 +174,7 @@ pub fn delete(account: &Account, target: &Target, storage: &mut Storage) -> Resu
     Ok(())
 }
 
-fn resolve<T: Read + Write>(
+pub(super) fn resolve<T: Read + Write>(
     session: &mut Session<T>,
     target: &Target,
 ) -> Result<Option<(u32, u32)>> {
@@ -239,7 +219,7 @@ fn resolve<T: Read + Write>(
     Ok(Some((validity, uid)))
 }
 
-fn remove_uid<T: Read + Write>(
+pub(super) fn remove_uid<T: Read + Write>(
     session: &mut Session<T>,
     folder: &str,
     validity: u32,
@@ -255,14 +235,6 @@ fn remove_uid<T: Read + Write>(
     );
     session.uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")?;
     session.uid_expunge(uid.to_string())?;
-    Ok(())
-}
-
-fn append<T: Read + Write>(session: &mut Session<T>, folder: &str, raw: &[u8]) -> Result<()> {
-    ensure!(!folder.contains(['\r', '\n']), "Invalid Drafts folder name");
-    // APPEND in imap 2.4 interpolates the mailbox inside quotes.
-    let quoted = folder.replace('\\', "\\\\").replace('"', "\\\"");
-    session.append_with_flags(&quoted, raw, &[Flag::Draft, Flag::Seen])?;
     Ok(())
 }
 
@@ -295,48 +267,77 @@ mod tests {
     }
 
     #[test]
-    fn appends_with_draft_flags_and_reports_rejection_without_retrying() {
-        for (response, success) in [
-            ("a2 OK saved\r\n", true),
-            ("a2 NO quota exceeded\r\n", false),
-        ] {
-            let commands = Arc::new(Mutex::new(Vec::new()));
-            let mut session = imap::Client::new(Stream {
-                responses: Cursor::new(
-                    format!("a1 OK login\r\n+ ready\r\n{response}").into_bytes(),
-                ),
-                commands: commands.clone(),
-            })
-            .login("test", "test")
-            .unwrap();
-            let raw = b"Subject: Unfinished\r\n\r\nHello";
-            assert_eq!(
-                append(&mut session, "Work/\"Drafts\"", raw).is_ok(),
-                success
-            );
-            let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
-            assert_eq!(written.matches("APPEND").count(), 1);
-            assert!(written.contains("APPEND \"Work/\\\"Drafts\\\"\" (\\Draft \\Seen)"));
-            assert!(written.ends_with("Subject: Unfinished\r\n\r\nHello\r\n"));
-        }
+    fn sends_materialized_attachments_without_fetching_or_duplicating_them() {
+        let account = Account {
+            email: "me@example.com".into(),
+            path: String::new(),
+            name: String::new(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        };
+        let source = crate::models::Message {
+            uid: 1,
+            message_id: "draft".into(),
+            attachments: vec!["file.bin".into()],
+            ..Default::default()
+        };
+        let mut draft = Draft::from(&source);
+        draft.attachments_loaded = true;
+        draft.attachments = vec![
+            super::super::attachments::encode("file.bin", "application/octet-stream", &[0, 255])
+                .unwrap(),
+        ];
+        let target = Target::new("Drafts", &source);
+        let prepared = prepare_send(&account, &draft, Some(&target)).unwrap();
+        assert_eq!(prepared.attachments, draft.attachments);
+        assert_eq!(prepared.attachments.len(), 1);
     }
 
     #[test]
-    fn locates_only_the_saved_draft_instead_of_fetching_the_mailbox() {
-        let header = "Message-ID: <new-draft@example.com>\r\n\r\n";
-        let commands = Arc::new(Mutex::new(Vec::new()));
-        let mut session = imap::Client::new(Stream {
-            responses: Cursor::new(format!("a1 OK login\r\n* OK [UIDVALIDITY 7] valid\r\na2 OK select\r\n* SEARCH 42\r\na3 OK search\r\n* 1 FETCH (UID 42 BODY[HEADER] {{{}}}\r\n{header})\r\na4 OK fetch\r\n", header.len()).into_bytes()),
-            commands: commands.clone(),
-        }).login("test", "test").unwrap();
-        assert_eq!(
-            saved_location(&mut session, "Drafts", "new-draft@example.com").unwrap(),
-            (7, 42)
-        );
-        let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
-        assert!(written.contains("UID SEARCH HEADER Message-ID \"new-draft@example.com\""));
-        assert!(written.contains("UID FETCH 42 (UID BODY.PEEK[HEADER])"));
-        assert!(!written.contains("1:*"));
+    fn forwarding_retains_attachments_and_checks_source_identity() {
+        let raw = "Message-ID: <source@example.com>\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nOriginal body\r\n--x\r\nContent-Type: application/octet-stream; name=report.bin\r\nContent-Disposition: attachment; filename=report.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nAP8K\r\n--x--\r\n";
+        for (validity, id, removed, success, count) in [
+            (7, "source@example.com", vec![], true, 1),
+            (7, "source@example.com", vec![0], true, 0),
+            (8, "source@example.com", vec![], false, 0),
+            (7, "other@example.com", vec![], false, 0),
+        ] {
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let mut session = imap::Client::new(Stream {
+                responses: Cursor::new(format!(
+                    "a1 OK login\r\n* OK [UIDVALIDITY {validity}] valid\r\na2 OK examine\r\n* 1 FETCH (UID 42 BODY[] {{{}}}\r\n{raw})\r\na3 OK fetch\r\n", raw.len()
+                ).into_bytes()),
+                commands: commands.clone(),
+            }).login("test", "test").unwrap();
+            let source = Target {
+                folder: "INBOX".into(),
+                uid: 42,
+                validity: Some(7),
+                message_id: id.into(),
+            };
+            let result = forward_attachments(&mut session, &source, &removed);
+            assert_eq!(result.is_ok(), success);
+            if success {
+                let parts = result.unwrap();
+                assert_eq!(parts.len(), count);
+                if count > 0 {
+                    let part = mailparse::parse_mail(parts[0].as_bytes()).unwrap();
+                    assert_eq!(part.get_body_raw().unwrap(), [0, 255, 10]);
+                    assert_eq!(
+                        part.get_content_disposition().params["filename"],
+                        "report.bin"
+                    );
+                }
+            }
+            let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+            assert!(written.contains("EXAMINE \"INBOX\""));
+            assert!(!written.contains("STORE"));
+        }
     }
 
     #[test]

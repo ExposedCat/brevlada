@@ -142,6 +142,14 @@ impl Editor {
         );
     }
 
+    pub fn forward(&self, header: &str, html: &str) {
+        self.set_content(serde_json::json!({
+            "html": "<div><br></div><div><br></div>",
+            "quote": html,
+            "forwardHeader": header,
+        }));
+    }
+
     fn set_content(&self, content: serde_json::Value) {
         *self.pending.borrow_mut() = content;
         if self.ready.get() {
@@ -209,6 +217,46 @@ pub use super::html_formatting::toolbar;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "Requires a graphical session and WebKit"]
+    fn forwards_html_with_literal_headers_and_original_formatting() {
+        gtk::init().unwrap();
+        let buffer = gtk::TextBuffer::new(None);
+        let mode = gtk::ToggleButton::new();
+        mode.set_active(true);
+        let editor = Editor::new(&buffer, &mode, |_, _| {});
+        let header = "From: Sender <sender@example.com>\nSubject: <b>Literal</b>\n";
+        editor.forward(header, "<!doctype html><html><head><style>b { color: rgb(255, 0, 0); }</style></head><body bgcolor='#f6f6f6'><b>Original</b><img src='cid:logo'><script>document.body.textContent='bad'</script></body></html>");
+        let window = gtk::Window::builder().child(&editor.view).build();
+        window.present();
+        gtk::glib::MainContext::default().block_on(async {
+            for _ in 0..250 {
+                if editor.ready.get() { break; }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(editor.ready.get());
+            gtk::glib::timeout_future(std::time::Duration::from_millis(300)).await;
+            let result = editor.view.evaluate_javascript_future(
+                "(() => { const doc = document.querySelector('iframe').contentDocument; return JSON.stringify({header: doc.querySelector('pre').textContent, bold: doc.querySelectorAll('b').length, color: getComputedStyle(doc.querySelector('b')).color, background: getComputedStyle(doc.body).backgroundColor, scripts: doc.querySelectorAll('script').length}); })()",
+                Some(WORLD), None,
+            ).await.unwrap();
+            let result: serde_json::Value = serde_json::from_str(&result.to_str()).unwrap();
+            assert_eq!(result["header"], header);
+            assert_eq!(result["bold"], 1);
+            assert_eq!(result["color"], "rgb(255, 0, 0)");
+            assert_eq!(result["background"], "rgb(246, 246, 246)");
+            assert_eq!(result["scripts"], 0);
+            let (html, text) = editor.message().await.unwrap();
+            assert!(html.contains("&lt;sender@example.com&gt;"));
+            assert!(html.contains("<b>Original</b>"));
+            assert!(html.contains("cid:logo"));
+            assert!(text.contains("Subject: <b>Literal</b>"));
+            assert!(text.contains("Original"));
+        });
+        editor.view.stop_loading();
+        window.destroy();
+    }
 
     #[test]
     #[ignore = "Requires a graphical session; presents an isolated editor without mail workers"]

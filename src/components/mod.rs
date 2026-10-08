@@ -1,13 +1,19 @@
 pub mod active_row;
+mod attachment_actions;
+pub mod attachments;
+pub mod autosave;
 pub mod avatars;
 mod body;
 mod body_layout;
+pub mod calendar;
 pub mod compose;
+mod compose_attachments;
+mod details;
 mod display;
 mod editor_size;
 pub mod expansion;
 pub mod folders;
-mod html;
+pub(crate) mod html;
 mod html_editor;
 mod html_formatting;
 pub mod links;
@@ -17,16 +23,20 @@ mod message_row;
 pub mod motion;
 mod pane_state;
 pub mod parcel;
-mod preview;
+pub(crate) mod preview;
 mod reply_quote;
 pub mod reveal;
 pub mod scroll_position;
+pub mod search_filters;
 pub mod sender_menu;
+pub mod settings;
 pub mod shell;
 pub mod sidebar;
 pub mod sort_menu;
 pub mod states;
 pub mod sync_status;
+#[allow(dead_code)]
+pub mod ticket;
 pub mod viewer;
 pub mod virtual_list;
 use adw::prelude::*;
@@ -50,7 +60,18 @@ pub fn label(text: &str, class: &str) -> gtk::Label {
     widget.set_halign(gtk::Align::Start);
     widget.set_hexpand(true);
     widget.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    widget.add_css_class(class);
+    if !class.is_empty() {
+        widget.add_css_class(class);
+    }
+    widget
+}
+
+pub fn error_label() -> gtk::Label {
+    let widget = label("", "error");
+    widget.set_halign(gtk::Align::Fill);
+    widget.set_ellipsize(gtk::pango::EllipsizeMode::None);
+    widget.set_wrap(true);
+    widget.set_visible(false);
     widget
 }
 
@@ -65,6 +86,19 @@ pub fn button(icon: &str, tooltip: &str) -> gtk::Button {
         .build();
     button.add_css_class("flat");
     button
+}
+
+pub fn action_button(icon: &str, title: &str) -> gtk::Button {
+    let content = horizontal("action-button-content", crate::theme::SMALL_SPACING);
+    content.append(&gtk::Image::from_icon_name(icon));
+    let title = label(title, "");
+    title.set_hexpand(false);
+    content.append(&title);
+    gtk::Button::builder()
+        .child(&content)
+        .halign(gtk::Align::Start)
+        .css_classes(["pill"])
+        .build()
 }
 
 pub fn scroll(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {

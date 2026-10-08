@@ -1,5 +1,7 @@
 pub const WINDOW_WIDTH: i32 = 1400;
 pub const WINDOW_HEIGHT: i32 = 900;
+pub const SETTINGS_WIDTH: i32 = 560;
+pub const SETTINGS_HEIGHT: i32 = 360;
 pub const SIDEBAR_WIDTH: i32 = 300;
 pub const LIST_WIDTH: i32 = 400;
 pub const SPACING: i32 = 12;
@@ -16,12 +18,19 @@ pub const INDENT: i32 = 45;
 pub const SMALL_SPACING: i32 = 6;
 pub const STATE_ICON: i32 = 48;
 pub const AVATAR_SIZE: i32 = 32;
+pub const CALENDAR_AVATAR_SIZE: i32 = 24;
+pub const ATTACHMENT_ICON_SIZE: i32 = 16;
+pub const ATTACHMENT_TILE_WIDTH: i32 = 224;
+pub const ATTACHMENT_NAME_MIN_CHARS: i32 = 10;
+pub const ATTACHMENT_NAME_MAX_CHARS: i32 = 20;
+pub const ATTACHMENT_MAX_COLUMNS: u32 = 6;
 pub const SENDER_AVATAR_SIZE: i32 = 40;
 pub const ACCOUNT_AVATAR_SIZE: i32 = 24;
 pub const AVATAR_PIXELS: u32 = 128;
 /// Brand icons are asked for larger than photos because some services hold a
 /// high-resolution icon and hand back the biggest they have.
 pub const ICON_PIXELS: u32 = 256;
+pub const DRAFT_SAVE_SECONDS: u64 = 2;
 pub const SYNC_SECONDS: u64 = 300;
 pub const MESSAGE_LIMIT: usize = 50;
 pub const CSS: &str = concat!(

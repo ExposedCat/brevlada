@@ -28,7 +28,16 @@ pub fn connect(
     let target = content.downgrade();
     manager.connect_script_message_received(Some("bodySize"), move |_, value| {
         if let (Some(view), Some(content)) = (weak.upgrade(), target.upgrade()) {
-            let height = value.to_int32().max(theme::BODY_HEIGHT);
+            let Some(width) = value.object_get_property("width") else {
+                return;
+            };
+            if !view.is_mapped() || view.width() <= 0 || width.to_int32() != view.width() {
+                return;
+            }
+            let Some(height) = value.object_get_property("height") else {
+                return;
+            };
+            let height = height.to_int32().max(theme::BODY_HEIGHT);
             if height == view.height_request() {
                 ready();
                 return;

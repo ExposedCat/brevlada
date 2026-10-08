@@ -107,6 +107,24 @@ impl Mail {
         has_unread(&mut self.session, folder)
     }
 
+    pub fn delivery_uids(
+        &mut self,
+        folder: &str,
+        validity: Option<u32>,
+        sender: &str,
+        order: &str,
+    ) -> Result<Vec<u32>> {
+        let query = delivery_query(sender, order)?;
+        let mailbox = self.session.examine(folder)?;
+        anyhow::ensure!(
+            validity.is_none() || mailbox.uid_validity == validity,
+            "Mailbox changed while searching delivery updates"
+        );
+        let mut uids: Vec<_> = self.session.uid_search(query)?.into_iter().collect();
+        uids.sort_unstable();
+        Ok(uids)
+    }
+
     pub fn headers(&mut self, folder: &str) -> Result<(u32, Vec<Message>, Vec<u32>)> {
         let mailbox = self.session.select(folder)?;
         let validity = mailbox
@@ -239,10 +257,39 @@ fn has_unread<T: Read + Write>(session: &mut Session<T>, folder: &str) -> Result
     Ok(count.context("Mail server did not return an unread count for the requested folder")? > 0)
 }
 
+fn delivery_query(sender: &str, order: &str) -> Result<String> {
+    let quote = |value: &str| -> Result<String> {
+        anyhow::ensure!(
+            !value.trim().is_empty() && !value.chars().any(char::is_control),
+            "Invalid delivery search value"
+        );
+        Ok(format!(
+            "\"{}\"",
+            value.replace('\\', "\\\\").replace('"', "\\\"")
+        ))
+    };
+    Ok(format!("FROM {} TEXT {}", quote(sender)?, quote(order)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{self, Cursor};
+
+    #[test]
+    fn delivery_search_quotes_values_and_rejects_missing_ids_and_controls() {
+        assert_eq!(
+            delivery_query("shop@example.com", "123").unwrap(),
+            "FROM \"shop@example.com\" TEXT \"123\""
+        );
+        assert_eq!(
+            delivery_query("shop@example.com", "a\"b\\c").unwrap(),
+            "FROM \"shop@example.com\" TEXT \"a\\\"b\\\\c\""
+        );
+        for order in ["", "  ", "123\r\nALL"] {
+            assert!(delivery_query("shop@example.com", order).is_err());
+        }
+    }
 
     #[derive(Debug)]
     struct MockStream(Cursor<Vec<u8>>);

@@ -22,6 +22,15 @@ pub fn key(message: &Message) -> String {
     address(&identity(message).1)
 }
 
+pub fn preview(messages: &[Message]) -> Option<&Message> {
+    if let Some(message) = messages.iter().find(|message| message.search_match) {
+        return Some(message);
+    }
+    messages
+        .iter()
+        .max_by_key(|message| (!message.is_read, message.timestamp, message.uid))
+}
+
 pub fn groups(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
     let mut senders: HashMap<String, Vec<Message>> = HashMap::new();
     for message in messages {
@@ -77,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_subject_does_not_depend_on_read_status_or_cached_body() {
+    fn preview_prefers_first_unread_then_latest_read_regardless_of_cached_body() {
         let mut messages = vec![
             Message {
                 uid: 1,
@@ -98,9 +107,21 @@ mod tests {
             },
         ];
         assert_eq!(groups(&messages, "")[0][0].uid, 2);
+        assert_eq!(preview(&messages).unwrap().uid, 2);
         messages[0].is_read = false;
         messages[1].is_read = true;
         assert_eq!(groups(&messages, "")[0][0].uid, 2);
+        assert_eq!(preview(&messages).unwrap().uid, 1);
+        assert_eq!(preview(&groups(&messages, "latest")[0]).unwrap().uid, 1);
+        messages[1].is_read = false;
+        assert_eq!(preview(&messages).unwrap().uid, 2);
+        messages[1].timestamp = messages[0].timestamp;
+        assert_eq!(preview(&messages).unwrap().uid, 2);
+        for message in &mut messages {
+            message.is_read = true;
+        }
+        assert_eq!(preview(&messages).unwrap().uid, 2);
+        assert!(preview(&[]).is_none());
     }
 
     #[test]

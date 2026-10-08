@@ -9,17 +9,25 @@ pub struct Row {
     pub messages: Vec<Message>,
 }
 
-pub fn item(list: &gtk::ListView, position: u32) -> Option<Row> {
-    model(list)
+pub fn with_item<T>(
+    list: &gtk::ListView,
+    position: u32,
+    inspect: impl FnOnce(&Row) -> T,
+) -> Option<T> {
+    let object = model(list)
         .item(position)?
         .downcast::<glib::BoxedAnyObject>()
-        .ok()
-        .map(|item| item.borrow::<Row>().clone())
+        .ok()?;
+    Some(inspect(&object.borrow::<Row>()))
+}
+
+pub fn item(list: &gtk::ListView, position: u32) -> Option<Row> {
+    with_item(list, position, Clone::clone)
 }
 
 pub fn position(list: &gtk::ListView, key: &str) -> Option<u32> {
     (0..model(list).n_items())
-        .find(|&position| item(list, position).is_some_and(|row| row.key == key))
+        .find(|&position| with_item(list, position, |row| row.key == key).unwrap_or(false))
 }
 
 pub fn identify(row: &impl IsA<gtk::Widget>, key: &str) {
@@ -80,6 +88,24 @@ pub fn focus_selected(list: &gtk::ListView) {
     }
 }
 
+pub fn reveal(list: &gtk::ListView, position: u32) {
+    let key = with_item(list, position, |row| row.key.clone());
+    selection(list).set_selected(position);
+    list.scroll_to(position, gtk::ListScrollFlags::SELECT, None);
+    let laid_out = std::cell::Cell::new(false);
+    list.add_tick_callback(move |list, _| {
+        if !laid_out.replace(true) {
+            return glib::ControlFlow::Continue;
+        }
+        if selected(list) == Some(position)
+            && with_item(list, position, |row| row.key.clone()) == key
+        {
+            list.scroll_to(position, gtk::ListScrollFlags::SELECT, None);
+        }
+        glib::ControlFlow::Break
+    });
+}
+
 pub fn replace(list: &gtk::ListView, count: usize, selected: Option<usize>) {
     let rows: Vec<_> = (0..count)
         .map(|index| Row {
@@ -87,10 +113,21 @@ pub fn replace(list: &gtk::ListView, count: usize, selected: Option<usize>) {
             messages: Vec::new(),
         })
         .collect();
-    update(list, &rows, &[], selected);
+    update_owned(list, rows, &[], selected);
 }
 
+#[cfg(test)]
 pub fn update(list: &gtk::ListView, rows: &[Row], changed: &[usize], selected: Option<usize>) {
+    update_owned(list, rows.to_vec(), changed, selected);
+}
+
+/// Move worker results into the list model without copying message bodies on GTK.
+pub fn update_owned(
+    list: &gtk::ListView,
+    rows: Vec<Row>,
+    changed: &[usize],
+    selected: Option<usize>,
+) {
     let restore_focus = list
         .root()
         .and_then(|root| root.focus())
@@ -99,6 +136,11 @@ pub fn update(list: &gtk::ListView, rows: &[Row], changed: &[usize], selected: O
                 && !focus.is::<gtk::Popover>()
                 && focus.ancestor(gtk::Popover::static_type()).is_none()
         });
+    // Keep focus off rows while splicing: removing the focused row otherwise
+    // makes GTK focus (and scroll to) the first row in the list.
+    if restore_focus && let Some(root) = list.root() {
+        root.set_focus(Some(list));
+    }
     let model = model(list);
     let objects: Vec<_> = (0..model.n_items())
         .map(|position| {
@@ -124,17 +166,18 @@ pub fn update(list: &gtk::ListView, rows: &[Row], changed: &[usize], selected: O
         .zip(&objects)
         .map(|(key, object)| (key.as_str(), object))
         .collect();
+    let changed_set: HashSet<_> = changed.iter().copied().collect();
     let additions: Vec<_> = rows
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(index, row)| {
-            if !changed.contains(&index)
+            if !changed_set.contains(&index)
                 && let Some(object) = by_key.get(row.key.as_str())
             {
-                object.replace(row.clone());
+                object.replace(row);
                 (*object).clone()
             } else {
-                glib::BoxedAnyObject::new(row.clone())
+                glib::BoxedAnyObject::new(row)
             }
         })
         .collect();

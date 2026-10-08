@@ -21,6 +21,7 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
     // Keep that minimum from propagating into the card's layout.
     let content = gtk::ScrolledWindow::builder()
         .child(&view)
+        .opacity(0.0)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::External)
         .height_request(theme::BODY_HEIGHT)
@@ -32,31 +33,38 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
         .vhomogeneous(false)
         .build();
     stack.add_named(&loading(), Some("loading"));
-    stack.add_named(&content, Some("content"));
     stack.set_visible_child_name("loading");
+    let overlay = gtk::Overlay::builder()
+        .child(&content)
+        .vexpand(false)
+        .build();
+    overlay.add_overlay(&stack);
+    overlay.set_measure_overlay(&stack, true);
     let target = stack.downgrade();
+    let loaded = content.downgrade();
     super::body_layout::connect(&view, &content, &manager, move || {
         if let Some(stack) = target.upgrade()
             && stack.visible_child_name().as_deref() != Some("error")
+            && let Some(content) = loaded.upgrade()
         {
-            stack.set_visible_child_name("content");
+            content.set_opacity(1.0);
+            stack.set_visible(false);
         }
     });
-    let target = stack.downgrade();
     view.connect_load_changed(move |view, event| {
-        if event == webkit6::LoadEvent::Finished
-            && let Some(stack) = target.upgrade()
-            && stack.visible_child_name().as_deref() != Some("error")
-        {
-            stack.set_visible_child_name("content");
+        if event == webkit6::LoadEvent::Finished {
             super::body_layout::observe(view);
         }
     });
-    let document = std::rc::Rc::new(super::html::document(message, hide_quotes, media));
+    let document: std::rc::Rc<std::cell::RefCell<Option<String>>> = Default::default();
     let target = stack.downgrade();
+    let loaded = content.downgrade();
     let html = document.clone();
     view.connect_load_failed(move |view, _, _, failure| {
         if let Some(stack) = target.upgrade() {
+            if let Some(content) = loaded.upgrade() {
+                content.set_opacity(0.0);
+            }
             let weak = view.downgrade();
             let target = stack.downgrade();
             let html = html.clone();
@@ -65,7 +73,9 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
                 std::rc::Rc::new(move || {
                     if let (Some(view), Some(stack)) = (weak.upgrade(), target.upgrade()) {
                         stack.set_visible_child_name("loading");
-                        view.load_html(&html, Some("about:blank"));
+                        if let Some(html) = html.borrow().as_ref() {
+                            view.load_html(html, Some("about:blank"));
+                        }
                     }
                 }),
             );
@@ -74,13 +84,18 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
             }
             stack.add_named(&row, Some("error"));
             stack.set_visible_child_name("error");
+            stack.set_visible(true);
         }
         true
     });
     let target = stack.downgrade();
+    let loaded = content.downgrade();
     let html = document.clone();
     view.connect_web_process_terminated(move |view, _| {
         if let Some(stack) = target.upgrade() {
+            if let Some(content) = loaded.upgrade() {
+                content.set_opacity(0.0);
+            }
             let weak = view.downgrade();
             let target = stack.downgrade();
             let html = html.clone();
@@ -89,7 +104,9 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
                 std::rc::Rc::new(move || {
                     if let (Some(view), Some(stack)) = (weak.upgrade(), target.upgrade()) {
                         stack.set_visible_child_name("loading");
-                        view.load_html(&html, Some("about:blank"));
+                        if let Some(html) = html.borrow().as_ref() {
+                            view.load_html(html, Some("about:blank"));
+                        }
                     }
                 }),
             );
@@ -98,6 +115,7 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
             }
             stack.add_named(&row, Some("error"));
             stack.set_visible_child_name("error");
+            stack.set_visible(true);
         }
     });
     view.connect_map(super::body_layout::observe);
@@ -123,11 +141,25 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
         }
         false
     });
-    view.load_html(&document, Some("about:blank"));
+    let (prepared, receiver) = async_channel::bounded(1);
+    let source = message.clone();
+    std::thread::spawn(move || {
+        let html = super::html::document(&source, hide_quotes, media);
+        let _ = prepared.send_blocking(html);
+    });
+    let weak = view.downgrade();
+    gtk::glib::spawn_future_local(async move {
+        if let Ok(html) = receiver.recv().await
+            && let Some(view) = weak.upgrade()
+        {
+            view.load_html(&html, Some("about:blank"));
+            *document.borrow_mut() = Some(html);
+        }
+    });
 
     let frame = gtk::Frame::builder()
         .vexpand(false)
-        .child(&stack)
+        .child(&overlay)
         .hexpand(true)
         .css_classes(["html-viewer-frame"])
         .build();
@@ -189,41 +221,75 @@ pub fn error(message: &str, retry: std::rc::Rc<dyn Fn()>) -> gtk::Widget {
 mod diagnostics {
     use super::*;
 
-    #[test]
-    #[ignore = "Requires a graphical session and WebKit"]
-    fn short_message_keeps_its_content_height() {
-        gtk::init().unwrap();
-        let message = Message {
-            body_text: "Hello".into(),
-            body_loaded: true,
-            ..Default::default()
-        };
-        let (body, view) = view(&message, false, false);
-        let viewer = super::super::column("message-container");
-        viewer.append(&body);
-        let content = super::super::column("message-viewer-content");
-        content.append(&viewer);
-        let viewport = gtk::Viewport::builder().child(&content).build();
-        let scroll = super::super::scroll(&viewport);
-        let window = gtk::Window::builder()
-            .default_width(700)
-            .default_height(600)
-            .child(&scroll)
-            .build();
-        window.present();
-        let context = gtk::glib::MainContext::default();
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    fn drain(context: &gtk::glib::MainContext, duration: std::time::Duration) {
+        let until = std::time::Instant::now() + duration;
         while std::time::Instant::now() < until {
             while context.pending() {
                 context.iteration(false);
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(view.is_mapped() && !view.is_loading());
-        assert_eq!(view.height_request(), theme::BODY_HEIGHT);
-        assert_eq!(view.height(), theme::BODY_HEIGHT);
-        assert!(body.height() < 80, "short body height: {}", body.height());
-        window.close();
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session and WebKit"]
+    fn short_message_keeps_its_content_height() {
+        gtk::init().unwrap();
+        for message in [
+            Message {
+                body_text: "Hello".into(),
+                body_loaded: true,
+                ..Default::default()
+            },
+            Message {
+                body_text: "A short message should wrap to the actual card width. ".repeat(4),
+                body_loaded: true,
+                ..Default::default()
+            },
+            Message {
+                body_html: format!(
+                    "<p>Hello</p><blockquote>{}</blockquote>",
+                    "<p>Older reply</p>".repeat(100)
+                ),
+                body_loaded: true,
+                ..Default::default()
+            },
+        ] {
+            let (body, view) = view(&message, false, false);
+            let peak_request = std::rc::Rc::new(std::cell::Cell::new(theme::BODY_HEIGHT));
+            let peak = peak_request.clone();
+            view.connect_height_request_notify(move |view| {
+                peak.set(peak.get().max(view.height_request()));
+            });
+            let peak_allocation = std::rc::Rc::new(std::cell::Cell::new(0));
+            let peak = peak_allocation.clone();
+            body.add_tick_callback(move |body, _| {
+                peak.set(peak.get().max(body.height()));
+                gtk::glib::ControlFlow::Continue
+            });
+            let viewer = super::super::column("message-container");
+            viewer.append(&body);
+            let content = super::super::column("message-viewer-content");
+            content.append(&viewer);
+            let viewport = gtk::Viewport::builder().child(&content).build();
+            let scroll = super::super::scroll(&viewport);
+            let window = gtk::Window::builder()
+                .default_width(700)
+                .default_height(600)
+                .child(&scroll)
+                .build();
+            window.present();
+            let context = gtk::glib::MainContext::default();
+            drain(&context, std::time::Duration::from_secs(3));
+            assert!(view.is_mapped() && !view.is_loading());
+            assert_eq!(view.parent().unwrap().opacity(), 1.0);
+            assert_eq!(view.height(), view.height_request());
+            assert_eq!(peak_request.get(), view.height_request());
+            assert_eq!(peak_allocation.get(), body.height());
+            assert!(body.height() < 160, "short body height: {}", body.height());
+            window.close();
+            drain(&context, std::time::Duration::from_millis(250));
+        }
     }
 
     #[test]
@@ -253,13 +319,7 @@ mod diagnostics {
         let context = gtk::glib::MainContext::default();
         for width in [700, 450] {
             window.set_default_size(width, 400);
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            while std::time::Instant::now() < until {
-                while context.pending() {
-                    context.iteration(false);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            drain(&context, std::time::Duration::from_secs(3));
             assert!(
                 view.height_request() > 1000,
                 "measured height: {}",
@@ -274,5 +334,6 @@ mod diagnostics {
             assert!(scroll.vadjustment().upper() > 1000.0);
         }
         window.close();
+        drain(&context, std::time::Duration::from_millis(250));
     }
 }

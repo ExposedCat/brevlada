@@ -90,6 +90,9 @@ html, body {
     min-height: 0 !important;
     max-height: none !important;
 }
+#brevlada-content[data-plain-text='true'] {
+    padding: 12px;
+}
 #brevlada-content > :first-child {
     margin-top: 0;
 }

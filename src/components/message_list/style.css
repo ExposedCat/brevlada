@@ -188,3 +188,7 @@ popover.mail-actions .mail-action {
 popover.mail-actions .mail-action-shortcut {
     margin-left: var(--spacing-lg);
 }
+
+.message-row-spam-icon {
+    color: var(--error-color);
+}

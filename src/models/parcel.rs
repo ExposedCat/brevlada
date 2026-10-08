@@ -1,7 +1,10 @@
-use super::Message;
-use scraper::{ElementRef, Html, Selector};
+use super::{Message, schema::microdata};
+use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+mod history;
+pub use history::{Identifier, identifier, sequence};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Parcel {
@@ -106,7 +109,21 @@ pub fn parse_message(message: &Message) -> Vec<Parcel> {
     } else {
         "In transit"
     };
+    static ORDER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\bOrder\s*(?:number|id|#)\s*:?\s*#?\s*([A-Za-z0-9][A-Za-z0-9-]*)")
+            .unwrap()
+    });
+    let order_number = ORDER
+        .captures(&text)
+        .or_else(|| ORDER.captures(&message.subject))
+        .map(|capture| capture[1].to_owned());
     let mut details = Map::new();
+    if let Some(number) = &order_number {
+        details.insert(
+            "partOfOrder".into(),
+            serde_json::json!({"orderNumber": number}),
+        );
+    }
     details.insert("trackingNumber".into(), tracking_number.into());
     if let Some(item) = &item {
         details.insert("itemShipped".into(), item.clone().into());
@@ -125,53 +142,10 @@ pub fn parse_message(message: &Message) -> Vec<Parcel> {
         carrier,
         tracking_url,
         order_url: None,
-        order_number: None,
+        order_number,
         steps: Vec::new(),
         details: Value::Object(details),
     }]
-}
-
-fn microdata(element: &ElementRef<'_>) -> Value {
-    let mut map = Map::new();
-    if let Some(kind) = element.value().attr("itemtype") {
-        map.insert(
-            "@type".into(),
-            Value::String(kind.rsplit('/').next().unwrap_or(kind).into()),
-        );
-    }
-    for child in element.descendants().skip(1).filter_map(ElementRef::wrap) {
-        let Some(property) = child.value().attr("itemprop") else {
-            continue;
-        };
-        let nearest_scope = child
-            .ancestors()
-            .filter_map(ElementRef::wrap)
-            .find(|ancestor| ancestor.value().attr("itemscope").is_some());
-        if nearest_scope.is_none_or(|scope| scope.id() != element.id()) {
-            continue;
-        }
-        let value = if child.value().attr("itemscope").is_some() {
-            microdata(&child)
-        } else {
-            let text = ["content", "href", "src", "datetime"]
-                .iter()
-                .find_map(|name| child.value().attr(name))
-                .map(str::to_owned)
-                .unwrap_or_else(|| child.text().collect::<String>().trim().to_owned());
-            Value::String(text)
-        };
-        if let Some(previous) = map.get_mut(property) {
-            if let Value::Array(items) = previous {
-                items.push(value);
-            } else {
-                let old = std::mem::replace(previous, Value::Null);
-                *previous = Value::Array(vec![old, value]);
-            }
-        } else {
-            map.insert(property.to_owned(), value);
-        }
-    }
-    Value::Object(map)
 }
 
 fn collect(value: &Value, parcels: &mut Vec<Parcel>) {
@@ -227,7 +201,7 @@ fn from_value(value: &Value) -> Parcel {
         .as_array()
         .map(|items| items.iter().collect())
         .unwrap_or_else(|| {
-            if statuses.is_object() {
+            if statuses.is_object() || statuses.is_string() {
                 vec![statuses]
             } else {
                 Vec::new()
@@ -236,7 +210,15 @@ fn from_value(value: &Value) -> Parcel {
     let steps = statuses
         .into_iter()
         .map(|event| Step {
-            name: name(event),
+            name: name(event).map(|name| match name.as_str() {
+                "http://schema.org/Delivered" | "https://schema.org/Delivered" => {
+                    "Delivered".into()
+                }
+                "http://schema.org/InTransit" | "https://schema.org/InTransit" => {
+                    "In transit".into()
+                }
+                _ => name,
+            }),
             date: field(event, "startDate").or_else(|| field(event, "availableFrom")),
             location: name(&event["location"]),
         })
@@ -254,7 +236,7 @@ fn from_value(value: &Value) -> Parcel {
         carrier: name(&value["carrier"]).or_else(|| name(&value["provider"])),
         tracking_url: field(value, "trackingUrl").or(tracking_action_url),
         order_url: field(order, "url"),
-        order_number: field(order, "orderNumber"),
+        order_number: field(order, "orderNumber").or_else(|| field(value, "orderNumber")),
         steps,
         details: value.clone(),
     }
@@ -263,6 +245,32 @@ fn from_value(value: &Value) -> Parcel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_single_status_and_explicit_order_id() {
+        let parcels = parse(
+            r#"<script type="application/ld+json">{"@type":"ParcelDelivery","orderNumber":"123","deliveryStatus":"https://schema.org/Delivered"}</script>"#,
+        );
+        assert_eq!(parcels[0].order_number.as_deref(), Some("123"));
+        assert_eq!(parcels[0].steps[0].name.as_deref(), Some("Delivered"));
+    }
+
+    #[test]
+    fn uses_explicit_ugreen_order_number_without_using_tracking_as_order_id() {
+        let mut message = Message {
+            sender: "service.eu@ugreen.com".into(),
+            subject: "Your order USB hub has been delivered.".into(),
+            body_html: "<p>Order number: #EU-123 Tracking number: XX12345678</p>".into(),
+            body_loaded: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_message(&message)[0].order_number.as_deref(),
+            Some("EU-123")
+        );
+        message.body_html = "<p>Tracking number: XX12345678</p>".into();
+        assert!(parse_message(&message)[0].order_number.is_none());
+    }
 
     #[test]
     fn extracts_parcel_and_timeline_from_json_ld_graph() {

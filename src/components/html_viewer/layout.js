@@ -1,6 +1,10 @@
 (() => {
     const root = document.getElementById('brevlada-content');
-    if (!root || window.brevladaLayout) return;
+    if (!root) return;
+    if (window.brevladaLayout) {
+        window.brevladaLayout.refresh();
+        return;
+    }
     const trimTrailing = node => {
         while (node.lastChild) {
             const child = node.lastChild;
@@ -30,15 +34,19 @@
     trimTrailing(root);
     let frame = 0;
     let previous = -1;
+    let previousWidth = -1;
     const measure = () => {
         frame = 0;
+        const width = window.innerWidth;
+        if (width <= 0) return;
         const bounds = root.getBoundingClientRect();
         const body = document.body.getBoundingClientRect();
         const bottom = parseFloat(getComputedStyle(document.body).paddingBottom) || 0;
         const height = Math.ceil(bounds.top - body.top + Math.max(bounds.height, root.scrollHeight) + bottom);
-        if (height > 0 && height !== previous) {
+        if (height > 0 && (height !== previous || width !== previousWidth)) {
             previous = height;
-            window.webkit.messageHandlers.bodySize.postMessage(height);
+            previousWidth = width;
+            window.webkit.messageHandlers.bodySize.postMessage({height, width});
         }
     };
     const schedule = () => {
@@ -52,7 +60,10 @@
     document.addEventListener('load', schedule, true);
     window.addEventListener('resize', schedule);
     if (document.fonts) document.fonts.ready.then(schedule);
-    window.brevladaLayout = {resize, mutation};
+    window.brevladaLayout = {resize, mutation, refresh: () => {
+        previous = -1;
+        schedule();
+    }};
     measure();
     schedule();
 })();

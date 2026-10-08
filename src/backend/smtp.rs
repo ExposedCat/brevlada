@@ -63,6 +63,7 @@ impl<S: Read + Write> Client<S> {
 }
 
 pub fn send(account: &Account, draft: &Draft) -> Result<Message> {
+    super::attachments::validate(&draft.attachments)?;
     let settings = account
         .smtp
         .as_ref()
@@ -337,12 +338,16 @@ mod tests {
             smtp: None,
         };
         let draft = Draft {
+            attachments_loaded: true,
             to: "other@example.com".into(),
             cc: String::new(),
             subject: "Re: topic".into(),
             text: "Reply".into(),
             html: Some("<p>Reply</p>".into()),
             attachments: Vec::new(),
+            attachment_names: Vec::new(),
+            removed_attachments: Vec::new(),
+            attachment_source: None,
             in_reply_to: Some("incoming@example.com".into()),
             references: vec!["original@example.com".into(), "incoming@example.com".into()],
         };

@@ -3,6 +3,9 @@ use scraper::{Html, Selector};
 use std::sync::LazyLock;
 
 pub fn has_remote_media(message: &Message) -> bool {
+    if let Some(remote) = message.remote_media {
+        return remote;
+    }
     if !message.body_loaded || message.body_html.is_empty() {
         return false;
     }
@@ -24,7 +27,8 @@ pub fn has_remote_media(message: &Message) -> bool {
 }
 
 pub fn document(message: &Message, hide_quotes: bool, media: bool) -> String {
-    let body = if message.body_html.is_empty() {
+    let plain_text_body = message.body_html.is_empty();
+    let body = if plain_text_body {
         plain_text(&message.body_text, hide_quotes)
     } else {
         normalized_html(&message.body_html)
@@ -46,7 +50,7 @@ pub fn document(message: &Message, hide_quotes: bool, media: bool) -> String {
         body
     };
     format!(
-        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:;\"></head><body><div id='brevlada-content' data-hide-quotes='{hide_quotes}'>{body}</div><style>{}</style></body></html>",
+        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:;\"></head><body><div id='brevlada-content' data-plain-text='{plain_text_body}' data-hide-quotes='{hide_quotes}'>{body}</div><style>{}</style></body></html>",
         theme::HTML_CSS,
     )
 }

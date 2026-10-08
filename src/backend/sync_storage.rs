@@ -49,7 +49,8 @@ impl Storage {
         limit: usize,
     ) -> Result<Vec<Message>> {
         let mut statement = self.0.prepare(
-            "SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2
+            "SELECT json_set(data, '$.inline_media', json('[]'), '$.inline_media_loaded', json('false'))
+             FROM rust_messages WHERE account_id=?1 AND folder=?2
              AND instr(lower(json_extract(data, '$.sender')), ?3) > 0
              AND (?4 IS NULL OR (json_extract(data, '$.timestamp'), uid) < (?4, ?5))
              ORDER BY json_extract(data, '$.timestamp') DESC, uid DESC LIMIT ?6",
@@ -84,6 +85,9 @@ impl Storage {
             }
         }
         matched.truncate(limit);
+        for message in &mut matched {
+            message.prepare_display();
+        }
         Ok(matched)
     }
 
@@ -95,7 +99,7 @@ impl Storage {
         limit: usize,
     ) -> Result<Vec<Message>> {
         let mut statement = self.0.prepare(
-            "SELECT json_set(data, '$.body_text', '', '$.body_html', '', '$.attachments', json('[]'))
+            "SELECT json_set(data, '$.body_text', '', '$.body_html', '', '$.attachments', json('[]'), '$.calendar_events', json('[]'), '$.tickets', json('[]'))
              FROM rust_messages WHERE account_id=?1 AND folder=?2
              AND NOT coalesce(json_extract(data, '$.body_loaded'), 0)
              AND (?3 IS NULL OR (json_extract(data, '$.timestamp'), uid) < (?3, ?4))
@@ -151,6 +155,8 @@ impl Storage {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let revision = Self::next_read_revision(&transaction)?;
         let reads = Self::reads_since(&transaction, account, folder, validity, snapshot_revision)?;
+        let starred =
+            Self::flags_since(&transaction, account, folder, validity, snapshot_revision)?;
         let previous: Option<u32> = transaction
             .query_row(
                 "SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2",
@@ -186,9 +192,9 @@ impl Storage {
         }
         for item in flags.iter().filter(|item| existing.contains(&item.uid)) {
             transaction.execute(
-                "UPDATE rust_messages SET data=json_set(data, '$.is_read', json(?4), '$.is_flagged', json(?5), '$.is_draft', json(?6), '$.read_revision', ?7)
+                "UPDATE rust_messages SET data=json_set(data, '$.is_read', json(?4), '$.is_flagged', json(?5), '$.is_draft', json(?6), '$.read_revision', ?7, '$.flag_revision', ?7)
                  WHERE account_id=?1 AND folder=?2 AND uid=?3",
-                params![account, folder, item.uid, if reads.get(&item.uid).copied().unwrap_or(item.read) { "true" } else { "false" }, if item.flagged { "true" } else { "false" }, if item.draft { "true" } else { "false" }, revision]
+                params![account, folder, item.uid, if reads.get(&item.uid).copied().unwrap_or(item.read) { "true" } else { "false" }, if starred.get(&item.uid).copied().unwrap_or(item.flagged) { "true" } else { "false" }, if item.draft { "true" } else { "false" }, revision]
             )?;
         }
         transaction.execute(
@@ -240,6 +246,7 @@ impl Storage {
         {
             let mut message = message.clone();
             message.read_revision = revision;
+            message.flag_revision = revision;
             transaction.execute(
                 "INSERT OR IGNORE INTO rust_messages VALUES (?1,?2,?3,?4)",
                 params![
@@ -298,17 +305,21 @@ impl Storage {
             message.message_id = fetched.message_id.clone();
         }
         message.uid_validity = validity;
+        message.reply_to = fetched.reply_to.clone();
         message.cc = fetched.cc.clone();
         message.in_reply_to = fetched.in_reply_to.clone();
         message.body_text = fetched.body_text.clone();
         message.body_html = fetched.body_html.clone();
         message.attachments = fetched.attachments.clone();
+        message.attachment_details = fetched.attachment_details.clone();
         if fetched.inline_media_loaded {
             message.inline_media = fetched.inline_media.clone();
             message.inline_media_loaded = true;
         }
         message.unsubscribe = fetched.unsubscribe.clone().or(message.unsubscribe);
         message.parcels = fetched.parcels.clone();
+        message.calendar_events = fetched.calendar_events.clone();
+        message.tickets = fetched.tickets.clone();
         message.body_loaded = fetched.body_loaded;
         transaction.execute(
             "UPDATE rust_messages SET data=?4 WHERE account_id=?1 AND folder=?2 AND uid=?3",
@@ -465,6 +476,12 @@ mod tests {
         let fetched = Message {
             body_loaded: true,
             body_text: "Cached body".into(),
+            tickets: vec![crate::models::ticket::Reservation {
+                name: "Express".into(),
+                kind: crate::models::ticket::Kind::Train,
+                number: Some("booking-one".into()),
+                ..Default::default()
+            }],
             ..header.clone()
         };
         let read = Message {
@@ -478,6 +495,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(stored.is_read && stored.is_flagged && stored.body_loaded);
+        assert_eq!(stored.tickets, fetched.tickets);
         let marked = storage
             .mark_read_cached("a", "INBOX", Some(7), 2)
             .unwrap()

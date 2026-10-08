@@ -1,13 +1,20 @@
 pub mod action_target;
+pub mod attachment;
+pub mod calendar;
 pub mod conversation;
 pub mod draft;
 pub mod parcel;
 pub mod pending_actions;
 pub mod read_state;
+pub mod response;
+mod schema;
+pub mod search;
 pub mod sender_action;
 pub mod sender_pane;
 pub mod senders;
+pub mod settings;
 pub mod sync;
+pub mod ticket;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -39,12 +46,16 @@ pub struct SmtpSettings {
 
 #[derive(Clone, Debug)]
 pub struct Draft {
+    pub attachments_loaded: bool,
     pub to: String,
     pub cc: String,
     pub subject: String,
     pub text: String,
     pub html: Option<String>,
     pub attachments: Vec<String>,
+    pub attachment_names: Vec<String>,
+    pub removed_attachments: Vec<usize>,
+    pub attachment_source: Option<draft::Target>,
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
 }
@@ -63,6 +74,8 @@ pub struct Message {
     pub message_id: String,
     pub subject: String,
     pub sender: String,
+    #[serde(default)]
+    pub reply_to: String,
     pub recipients: String,
     #[serde(default)]
     pub cc: String,
@@ -78,9 +91,15 @@ pub struct Message {
     pub is_draft: bool,
     #[serde(default)]
     pub is_flagged: bool,
+    #[serde(default)]
+    pub is_spam: bool,
+    #[serde(default)]
+    pub flag_revision: i64,
     pub body_text: String,
     pub body_html: String,
     pub attachments: Vec<String>,
+    #[serde(default)]
+    pub attachment_details: Vec<attachment::Details>,
     #[serde(default)]
     pub inline_media: Vec<InlineMedia>,
     #[serde(default)]
@@ -90,7 +109,20 @@ pub struct Message {
     #[serde(default)]
     pub parcels: Vec<parcel::Parcel>,
     #[serde(default)]
+    pub calendar_events: Vec<calendar::Event>,
+    #[serde(default)]
+    pub tickets: Vec<ticket::Reservation>,
+    #[serde(default)]
     pub body_loaded: bool,
+    /// Prepared on a cache worker; never persisted or recomputed while scrolling.
+    #[serde(skip)]
+    pub list_preview: Option<String>,
+    #[serde(skip)]
+    pub display_prepared: bool,
+    #[serde(skip)]
+    pub remote_media: Option<bool>,
+    #[serde(skip)]
+    pub search_match: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -108,11 +140,81 @@ pub struct InlineMedia {
 }
 
 impl Message {
+    pub fn prepare_display(&mut self) {
+        if self.display_prepared {
+            return;
+        }
+        if self.tickets.is_empty() && !self.body_html.is_empty() {
+            self.tickets = ticket::parse(&self.body_html);
+        }
+        if self.body_loaded {
+            if self.parcels.is_empty() {
+                self.parcels = parcel::parse_message(self);
+            }
+            self.calendar_events = calendar::events(self);
+        }
+        if self.body_loaded || !self.body_text.is_empty() || !self.body_html.is_empty() {
+            self.list_preview = Some(crate::components::preview::message(self));
+        }
+        self.remote_media = Some(crate::components::html::has_remote_media(self));
+        self.display_prepared = true;
+    }
+
+    /// List rows carry identities, flags, and a short preview, never body payloads.
+    pub fn list_header(&self, preview: bool) -> Self {
+        let text = if preview {
+            self.list_preview
+                .clone()
+                .unwrap_or_else(|| self.body_text.chars().take(161).collect())
+        } else {
+            String::new()
+        };
+        Self {
+            uid: self.uid,
+            uid_validity: self.uid_validity,
+            message_id: self.message_id.clone(),
+            subject: self.subject.clone(),
+            sender: self.sender.clone(),
+            reply_to: self.reply_to.clone(),
+            recipients: self.recipients.clone(),
+            cc: self.cc.clone(),
+            in_reply_to: self.in_reply_to.clone(),
+            references: self.references.clone(),
+            timestamp: self.timestamp,
+            date: self.date.clone(),
+            is_read: self.is_read,
+            read_revision: self.read_revision,
+            is_flagged: self.is_flagged,
+            flag_revision: self.flag_revision,
+            is_spam: self.is_spam,
+            is_draft: self.is_draft,
+            body_text: text,
+            list_preview: preview.then(|| self.list_preview.clone()).flatten(),
+            calendar_events: self.calendar_events.clone(),
+            tickets: self.tickets.clone(),
+            display_prepared: true,
+            search_match: self.search_match,
+            ..Default::default()
+        }
+    }
+
+    /// Searching needs body text, but not inline images, attachment data or cards.
+    pub fn search_document(&self) -> Self {
+        Self {
+            body_text: self.body_text.clone(),
+            body_html: self.body_html.clone(),
+            body_loaded: self.body_loaded,
+            display_prepared: self.display_prepared,
+            remote_media: self.remote_media,
+            ..self.list_header(true)
+        }
+    }
+
     pub fn matches(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
         }
-        [&self.sender, &self.subject, &self.body_text]
+        search::fields(self)
             .iter()
             .any(|v| v.to_lowercase().contains(query))
     }
@@ -121,11 +223,12 @@ impl Message {
 pub fn threads(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
     let matched: Vec<&Message> = messages.iter().filter(|m| m.matches(query)).collect();
     let mut parents: Vec<usize> = (0..matched.len()).collect();
-    fn root(parents: &mut [usize], index: usize) -> usize {
-        if parents[index] != index {
-            parents[index] = root(parents, parents[index]);
+    fn root(parents: &mut [usize], mut index: usize) -> usize {
+        while parents[index] != index {
+            parents[index] = parents[parents[index]];
+            index = parents[index];
         }
-        parents[index]
+        index
     }
     fn union(parents: &mut [usize], a: usize, b: usize) {
         let a = root(parents, a);
@@ -195,6 +298,20 @@ pub fn subject_key(subject: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_subject_history_does_not_recurse_through_parent_chain() {
+        let messages: Vec<_> = (1..=20000)
+            .map(|uid| Message {
+                uid,
+                subject: "Same topic".into(),
+                ..Default::default()
+            })
+            .collect();
+        let groups = threads(&messages, "");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 20000);
+    }
 
     #[test]
     fn joins_reference_bridges_and_sorts_unread_first() {

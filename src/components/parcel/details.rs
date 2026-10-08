@@ -11,6 +11,33 @@ pub(super) struct Detail {
     pub url: Option<String>,
 }
 
+pub(super) fn address(value: &Value) -> Option<String> {
+    fn text(value: &Value) -> Option<String> {
+        let text = value
+            .as_str()
+            .or_else(|| value.get("name").and_then(Value::as_str))?
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!text.is_empty()).then_some(text)
+    }
+
+    if value.is_string() {
+        return text(value);
+    }
+    let parts: Vec<_> = [
+        "streetAddress",
+        "addressLocality",
+        "addressRegion",
+        "postalCode",
+        "addressCountry",
+    ]
+    .into_iter()
+    .filter_map(|key| value.get(key).and_then(text))
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
 pub(super) fn date(value: &str) -> String {
     date_in_timezone(value, &chrono::Local)
 }

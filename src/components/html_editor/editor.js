@@ -12,7 +12,7 @@ function cleanHTML(html) {
     }
     return parsed.body.innerHTML;
 }
-function quoteDocument(html) {
+function quoteDocument(html, forwardHeader) {
     const parsed = new DOMParser().parseFromString(html, 'text/html');
     parsed.querySelectorAll('script,link,meta,base,iframe,object,embed,form,input,button,textarea,select').forEach(node => node.remove());
     for (const node of parsed.querySelectorAll('*')) {
@@ -27,6 +27,11 @@ function quoteDocument(html) {
     const defaults = parsed.createElement('style');
     defaults.textContent = quoteStyle;
     policy.after(defaults);
+    if (forwardHeader !== undefined) {
+        const header = parsed.createElement('pre');
+        header.textContent = forwardHeader;
+        parsed.body.prepend(header);
+    }
     return '<!doctype html>' + parsed.documentElement.outerHTML;
 }
 function selectAllContent() {
@@ -77,7 +82,7 @@ function setContent(content) {
         const frame = document.createElement('iframe');
         frame.title = 'Quoted message';
         frame.setAttribute('sandbox', 'allow-same-origin');
-        frame.srcdoc = quoteDocument(content.quote);
+        frame.srcdoc = quoteDocument(content.quote, content.forwardHeader);
         frame.addEventListener('load', () => {
             const doc = frame.contentDocument;
             if (!doc?.body) return;
@@ -115,7 +120,7 @@ document.body.addEventListener('paste', event => {
     const html = event.clipboardData.getData('text/html');
     if (html) document.execCommand('insertHTML', false, cleanHTML(html));
     else document.execCommand('insertText', false, event.clipboardData.getData('text/plain'));
-    report();
+    report(true);
 });
 document.body.addEventListener('drop', event => event.preventDefault());
 document.body.addEventListener('keydown', event => {

@@ -26,13 +26,37 @@ impl State {
                 } else {
                     ui::sender_row(group, &state.avatars)
                 };
+                if !threads && let Some(location) = state.search_locations.borrow().get(&data.key) {
+                    row.set_tooltip_text(Some(&format!(
+                        "{} · {}",
+                        location.account, location.folder
+                    )));
+                    if let Some(content) = row
+                        .first_child()
+                        .and_then(|avatar| avatar.next_sibling())
+                        .and_downcast::<gtk::Box>()
+                    {
+                        let caption = if state.search_filters.selected_accounts().len() > 1 {
+                            format!("{} · {}", location.account, location.folder)
+                        } else {
+                            location.folder.clone()
+                        };
+                        let account = ui::label(&caption, "dim-label");
+                        account.add_css_class("caption");
+                        content.append(&account);
+                    }
+                }
                 let active = if threads {
                     &state.active_thread_row
                 } else {
                     &state.active_sender_row
                 };
                 active.bind(&row, data.key.clone());
-                if threads && let Some(message) = group.first() {
+                if threads
+                    && let Some(message) = group
+                        .iter()
+                        .find(|message| !models::calendar::is_reply(message))
+                {
                     state.request_preview(message);
                 }
                 ui::virtual_list::identify(&row, &data.key);
@@ -48,14 +72,7 @@ impl State {
         let weak = Rc::downgrade(state);
         state.list.connect_activate(move |_, position| {
             if let Some(state) = weak.upgrade() {
-                if state.rendering.get() {
-                    return;
-                }
-                let message = ui::virtual_list::item(&state.list, position)
-                    .and_then(|row| row.messages.first().cloned());
-                if let Some(message) = message {
-                    state.filter_sender(Some(message));
-                }
+                state.activate_sender(position);
             }
         });
         let weak = Rc::downgrade(state);
@@ -71,5 +88,36 @@ impl State {
                 }
             }
         });
+    }
+
+    pub(super) fn activate_sender(self: &Rc<Self>, position: u32) {
+        if self.rendering.get() {
+            return;
+        }
+        let Some((key, location, message, matches)) =
+            ui::virtual_list::with_item(&self.list, position, |row| {
+                let message = models::senders::preview(&row.messages).cloned();
+                let matches = message
+                    .as_ref()
+                    .is_some_and(|message| message.search_match)
+                    .then(|| row.messages.clone());
+                (
+                    row.key.clone(),
+                    self.search_locations.borrow().get(&row.key).cloned(),
+                    message,
+                    matches,
+                )
+            })
+        else {
+            return;
+        };
+        if !self.select_search_location(location.as_ref()) {
+            return;
+        }
+        if let Some(matches) = matches {
+            self.open_search_sender(key, matches);
+        } else if let Some(message) = message {
+            self.filter_sender(Some(message));
+        }
     }
 }

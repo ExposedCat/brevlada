@@ -6,11 +6,18 @@ use models::{
 
 pub(super) type Key = (String, String, String);
 
+pub(super) struct OpenComposer {
+    pub compose: Rc<ui::compose::Compose>,
+    account: Account,
+    generation: u64,
+    selection: u64,
+}
+
 pub(super) struct Editor {
     pub widget: gtk::Box,
     pub compose: Rc<ui::compose::Compose>,
-    account: Account,
-    source: RefCell<SentMessage>,
+    pub(super) account: Account,
+    pub(super) source: RefCell<SentMessage>,
     pub(super) loaded: Cell<bool>,
     confirming: Cell<bool>,
     status: gtk::Box,
@@ -52,12 +59,21 @@ mod diagnostics {
             .unwrap()
             .next_sibling()
             .unwrap()
+            .next_sibling()
+            .unwrap()
             .downcast()
             .unwrap()
     }
 
     fn action(compose: &ui::compose::Compose, index_from_end: usize) -> gtk::Button {
-        let mut widget = compose.widget.first_child().unwrap().last_child().unwrap();
+        let mut widget = compose
+            .widget
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .last_child()
+            .unwrap();
         for _ in 0..index_from_end {
             widget = widget.prev_sibling().unwrap();
         }
@@ -107,6 +123,242 @@ mod diagnostics {
             .unwrap()
     }
 
+    fn response_button(widget: &gtk::Widget, icon: &str) -> Option<gtk::Button> {
+        if let Some(button) = widget.downcast_ref::<gtk::Button>()
+            && button.icon_name().as_deref() == Some(icon)
+        {
+            return Some(button.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(button) = response_button(&widget, icon) {
+                return Some(button);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session for multiple composers"]
+    fn new_messages_and_replies_keep_independent_drafts_and_original_accounts() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("org.example.BrevladaMultipleDraftDiagnostic")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let shell = ui::shell::Shell::new(&app);
+        let window = shell.window.clone();
+        let (worker, commands) = worker::Worker::recording();
+        let state = State::new(
+            shell,
+            worker,
+            ui::expansion::Expansion::default(),
+            ui::avatars::Avatars::new(|_| {}),
+        );
+        *state.account.borrow_mut() = Some(Account {
+            email: "me@example.com".into(),
+            path: String::new(),
+            name: String::new(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        });
+        *state.folder.borrow_mut() = "INBOX".into();
+        let incoming = Message {
+            uid: 1,
+            message_id: "incoming".into(),
+            subject: "Topic".into(),
+            sender: "other@example.com".into(),
+            body_text: "Original message".into(),
+            body_loaded: true,
+            is_read: true,
+            ..Default::default()
+        };
+        *state.messages.borrow_mut() = vec![incoming.clone()];
+        state.show_thread(vec![incoming]);
+        while commands.try_recv().is_ok() {}
+        state.compose_button.emit_clicked();
+        let first = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        subject(&first).set_text("First draft");
+        body(&first.widget.clone().upcast())
+            .unwrap()
+            .buffer()
+            .set_text("Keep this body");
+        state.compose_button.emit_clicked();
+        let second = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        assert!(subject(&second).text().is_empty());
+        assert!(!Rc::ptr_eq(&first, &second));
+        let reply = response_button(
+            &state.cards.borrow()[&1].widget.clone().upcast(),
+            "mail-reply-sender-symbolic",
+        )
+        .unwrap();
+        reply.emit_clicked();
+        let first_reply = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        subject(&first_reply).set_text("Edited reply");
+        reply.emit_clicked();
+        let second_reply = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        assert_eq!(subject(&second_reply).text(), "Re: Topic");
+        assert_eq!(subject(&first_reply).text(), "Edited reply");
+        assert_eq!(subject(&first).text(), "First draft");
+        assert_eq!(state.open_composers.borrow().len(), 4);
+
+        // Navigation before submitting must not retarget older drafts.
+        state.account.borrow_mut().as_mut().unwrap().email = "another@example.com".into();
+        state.generation.set(state.generation.get() + 1);
+        state.selection.set(state.selection.get() + 1);
+        state.open_group.borrow_mut().clear();
+        state.related_sent.borrow_mut().clear();
+        state.render_conversation();
+        for compose in [&first, &second, &first_reply, &second_reply] {
+            assert_eq!(
+                compose.widget.parent(),
+                Some(state.composers.clone().upcast())
+            );
+        }
+        action(&first, 1).emit_clicked();
+        action(&first_reply, 1).emit_clicked();
+        let Command::Compose {
+            request: first_request,
+            account,
+            draft: first_draft,
+            target: None,
+        } = command(&commands)
+        else {
+            panic!("Expected first send")
+        };
+        assert_eq!(account.email, "me@example.com");
+        assert_eq!(first_draft.subject, "First draft");
+        assert_eq!(first_draft.text, "Keep this body");
+        assert!(first_draft.references.is_empty());
+        assert!(first_draft.in_reply_to.is_none());
+        let Command::Compose {
+            request: reply_request,
+            account,
+            draft: reply_draft,
+            target: None,
+        } = command(&commands)
+        else {
+            panic!("Expected reply send")
+        };
+        assert_eq!(account.email, "me@example.com");
+        assert_eq!(reply_draft.subject, "Edited reply");
+        assert_eq!(reply_draft.in_reply_to.as_deref(), Some("incoming"));
+        assert_eq!(reply_draft.references, vec!["incoming"]);
+        state.compose_button.emit_clicked();
+        let newest = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        assert_eq!(state.open_composers.borrow().len(), 5);
+        state.event(Event::Composed(reply_request, Err("Offline".into())));
+        assert!(first_reply.widget.is_sensitive());
+        assert!(!first.widget.is_sensitive());
+        assert_eq!(subject(&first_reply).text(), "Edited reply");
+        state.event(Event::Composed(
+            first_request,
+            Ok(Outcome {
+                message: Message {
+                    message_id: "sent-first".into(),
+                    body_loaded: true,
+                    is_read: true,
+                    ..Default::default()
+                },
+                cleanup_error: None,
+            }),
+        ));
+        assert!(first.widget.parent().is_none());
+        assert_eq!(state.open_composers.borrow().len(), 4);
+        assert!(state.related_sent.borrow().is_empty());
+        action(&second, 0).emit_clicked();
+        assert!(second.widget.parent().is_none());
+        assert_eq!(state.open_composers.borrow().len(), 3);
+        for compose in [&first_reply, &second_reply, &newest] {
+            assert!(compose.widget.get_visible());
+            assert!(compose.widget.parent().is_some());
+        }
+        subject(&newest).set_text("New message");
+        body(&newest.widget.clone().upcast())
+            .unwrap()
+            .buffer()
+            .set_text("Hello");
+        action(&newest, 1).emit_clicked();
+        let Command::Compose { account, draft, .. } = command(&commands) else {
+            panic!("Expected new account send")
+        };
+        assert_eq!(account.email, "another@example.com");
+        assert!(draft.references.is_empty());
+        // Repeated response clicks while the body loads must also stay distinct.
+        let loading = Message {
+            uid: 2,
+            message_id: "loading".into(),
+            subject: "Loading".into(),
+            sender: "other@example.com".into(),
+            is_read: true,
+            ..Default::default()
+        };
+        state.messages.borrow_mut().push(loading.clone());
+        state.show_thread(vec![loading.clone()]);
+        let card = state.cards.borrow()[&2].clone();
+        let reply =
+            response_button(&card.widget.clone().upcast(), "mail-reply-sender-symbolic").unwrap();
+        reply.emit_clicked();
+        reply.emit_clicked();
+        response_button(&card.widget.clone().upcast(), "mail-forward-symbolic")
+            .unwrap()
+            .emit_clicked();
+        assert!(card.is_response_pending());
+        card.error("Offline");
+        assert!(card.is_response_pending());
+        let count = state.open_composers.borrow().len();
+        card.update(&Message {
+            body_loaded: true,
+            body_text: "Loaded body".into(),
+            ..loading
+        });
+        assert!(!card.is_response_pending());
+        assert_eq!(state.open_composers.borrow().len(), count + 3);
+        let open = state.open_composers.borrow();
+        assert_eq!(subject(&open[count].compose).text(), "Re: Loading");
+        assert_eq!(subject(&open[count + 1].compose).text(), "Re: Loading");
+        assert_eq!(subject(&open[count + 2].compose).text(), "Fwd: Loading");
+        window.close();
+    }
+
     #[test]
     #[ignore = "Requires a graphical session for editable drafts and deletion dialogs"]
     fn drafts_update_immediately_keep_independent_edits_and_confirm_targeted_deletion() {
@@ -152,33 +404,11 @@ mod diagnostics {
         state.show_thread(vec![incoming]);
         let incoming_card = state.cards.borrow()[&1].widget.clone();
         while commands.try_recv().is_ok() {}
-        state.compose.show("other@example.com");
-        subject(&state.compose).set_text("New subject");
-        body(&state.compose.widget.clone().upcast())
-            .unwrap()
-            .buffer()
-            .set_text("New draft body");
-        action(&state.compose, 1).emit_clicked();
-        pump();
-        let Command::Compose {
-            request,
-            draft: submitted,
-            save: true,
-            target: None,
-            ..
-        } = command(&commands)
-        else {
-            panic!("Expected new draft")
-        };
-        assert!(submitted.references.contains(&"incoming".into()));
         let first = draft("first", 10);
-        state.event(Event::Composed(
-            request,
-            Ok(Outcome::Saved(models::draft::Saved {
-                folder: first.folder.clone(),
-                message: first.message.clone(),
-                cleanup_error: None,
-            })),
+        state.event(Event::RelatedSent(
+            state.generation.get(),
+            state.selection.get(),
+            vec![first.clone()],
         ));
         let first_editor =
             state.draft_editors.borrow()[&state.draft_key("Drafts", "first")].clone();
@@ -186,11 +416,10 @@ mod diagnostics {
             first_editor.widget.parent(),
             Some(state.viewer.clone().upcast())
         );
-        assert!(!state.compose.widget.get_visible());
         assert_eq!(state.cards.borrow()[&1].widget, incoming_card);
         assert!(
             commands.try_recv().is_err(),
-            "Saving a draft must not reload existing messages"
+            "Loading a cached draft must not reload existing messages"
         );
         assert_eq!(subject(&first_editor.compose).text(), "Re: Topic");
 
@@ -270,7 +499,7 @@ mod diagnostics {
             ..
         } = command(&commands)
         else {
-            panic!("Expected first save")
+            panic!("Expected first send")
         };
         let Command::Compose {
             request: second_request,
@@ -279,7 +508,7 @@ mod diagnostics {
             ..
         } = command(&commands)
         else {
-            panic!("Expected second save")
+            panic!("Expected second send")
         };
         assert_eq!(first_target.uid, 10);
         assert_eq!(second_target.uid, 11);
@@ -290,28 +519,11 @@ mod diagnostics {
             Some("<p><b>Formatted draft</b></p>")
         );
         assert_eq!(second_submit.text.trim(), "Formatted draft");
-        state.event(Event::Composed(
-            second_request,
-            Err("Quota exceeded".into()),
-        ));
+        state.event(Event::Composed(second_request, Err("Offline".into())));
         assert!(second_editor.compose.widget.is_sensitive());
         assert!(!first_editor.compose.widget.is_sensitive());
-        let mut replacement = draft("replacement", 12);
-        replacement.message.subject = first_submit.subject;
-        state.event(Event::Composed(
-            first_request,
-            Ok(Outcome::Saved(models::draft::Saved {
-                folder: replacement.folder.clone(),
-                message: replacement.message.clone(),
-                cleanup_error: None,
-            })),
-        ));
-        assert!(Rc::ptr_eq(
-            &first_editor,
-            &state.draft_editors.borrow()[&state.draft_key("Drafts", "replacement")]
-        ));
-        assert_eq!(state.cards.borrow()[&1].widget, incoming_card);
-        assert_eq!(first_editor.target().uid, 12);
+        state.event(Event::Composed(first_request, Err("Offline".into())));
+        assert!(first_editor.compose.widget.is_sensitive());
         assert_eq!(subject(&first_editor.compose).text(), "First edited");
 
         action(&second_editor.compose, 0).emit_clicked();
@@ -356,29 +568,28 @@ mod diagnostics {
         state.event(Event::DraftDeleted(request, Ok(())));
         assert!(second_editor.widget.parent().is_none());
 
-        action(&first_editor.compose, 2).emit_clicked();
+        action(&first_editor.compose, 1).emit_clicked();
         pump();
         let Command::Compose {
             request,
-            save: false,
             target: Some(target),
             ..
         } = command(&commands)
         else {
             panic!("Expected send")
         };
-        assert_eq!(target.message_id, "replacement");
+        assert_eq!(target.message_id, "first");
         state.event(Event::Composed(
             request,
-            Ok(Outcome::Sent(
-                Message {
+            Ok(Outcome {
+                message: Message {
                     message_id: "sent".into(),
                     body_loaded: true,
                     is_read: true,
                     ..Default::default()
                 },
-                None,
-            )),
+                cleanup_error: None,
+            }),
         ));
         assert!(first_editor.widget.parent().is_none());
         assert!(state.sent_cards.borrow().contains_key("sent"));
@@ -398,17 +609,20 @@ mod diagnostics {
             request, account, ..
         } = command(&commands)
         else {
-            panic!("Expected save after switching views")
+            panic!("Expected send after switching views")
         };
         assert_eq!(account.email, "me@example.com");
-        let late_saved = draft("late-saved", 21);
         state.event(Event::Composed(
             request,
-            Ok(Outcome::Saved(models::draft::Saved {
-                folder: late_saved.folder,
-                message: late_saved.message,
+            Ok(Outcome {
+                message: Message {
+                    message_id: "late-sent".into(),
+                    body_loaded: true,
+                    is_read: true,
+                    ..Default::default()
+                },
                 cleanup_error: None,
-            })),
+            }),
         ));
         assert!(state.related_sent.borrow().is_empty());
         assert!(late_editor.widget.parent().is_none());
@@ -416,28 +630,18 @@ mod diagnostics {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum Operation {
-    Save,
-    Send,
-    Delete,
-}
-
 pub(super) struct Pending {
-    compose: Rc<ui::compose::Compose>,
-    editor: Option<Rc<Editor>>,
-    account: String,
-    generation: u64,
-    selection: u64,
-    operation: Operation,
+    pub(super) compose: Rc<ui::compose::Compose>,
+    pub(super) editor: Option<Rc<Editor>>,
+    pub(super) account: String,
+    pub(super) generation: u64,
+    pub(super) selection: u64,
 }
 
-struct Submission {
-    request: u64,
-    account: Account,
-    target: Option<Target>,
-    anchor: Option<String>,
-    save: bool,
+pub(super) struct Submission {
+    pub(super) request: u64,
+    pub(super) account: Account,
+    pub(super) target: Option<Target>,
 }
 
 pub(super) struct Local {
@@ -463,6 +667,55 @@ impl Editor {
 }
 
 impl State {
+    pub(super) fn new_composer(
+        self: &Rc<Self>,
+        receiver: &str,
+        response: Option<(&Message, &str, models::response::Action)>,
+    ) -> Option<Rc<ui::compose::Compose>> {
+        let Some(account) = self.account.borrow().clone() else {
+            self.toast
+                .add_toast(adw::Toast::new("Select an account first"));
+            return None;
+        };
+        let compose = Rc::new(ui::compose::Compose::new(&self.compose_button));
+        self.open_composers.borrow_mut().push(OpenComposer {
+            compose: compose.clone(),
+            account: account.clone(),
+            generation: self.generation.get(),
+            selection: self.selection.get(),
+        });
+        self.connect_composer(&compose, None);
+        let weak = Rc::downgrade(self);
+        let composer = Rc::downgrade(&compose);
+        compose.connect_cancel(move || {
+            if let (Some(state), Some(compose)) = (weak.upgrade(), composer.upgrade()) {
+                state.close_composer(&compose);
+                state.compose_button.grab_focus();
+            }
+        });
+        self.composers.prepend(&compose.widget);
+        if let Some((message, folder, action)) = response {
+            compose.respond(message, &account.email, folder, action);
+        } else {
+            compose.show(receiver);
+        }
+        let adjustment = self.viewer_scroll.vadjustment();
+        adjustment.set_value(adjustment.lower());
+        Some(compose)
+    }
+
+    fn close_composer(self: &Rc<Self>, compose: &Rc<ui::compose::Compose>) {
+        compose.finish_send(true);
+        compose.autosave.reset();
+        if compose.widget.parent().as_ref() == Some(self.composers.upcast_ref()) {
+            self.composers.remove(&compose.widget);
+        }
+        self.open_composers
+            .borrow_mut()
+            .retain(|open| !Rc::ptr_eq(&open.compose, compose));
+        self.render_conversation();
+    }
+
     pub(super) fn draft_key(&self, folder: &str, id: &str) -> Key {
         (
             self.account
@@ -480,6 +733,7 @@ impl State {
         let existing = self.draft_editors.borrow().get(&key).cloned();
         let editor = existing.unwrap_or_else(|| {
             let compose = Rc::new(ui::compose::Compose::new(&self.compose_button));
+            compose.discard_on_close();
             if !message.body_loaded {
                 compose.load_draft(&Draft::from(message));
             }
@@ -545,6 +799,9 @@ impl State {
         });
         if message.body_loaded && !editor.loaded.replace(message.body_loaded) {
             editor.compose.load_draft(&Draft::from(message));
+            editor
+                .compose
+                .set_draft_target(Target::new(folder, message));
             editor.compose.set_ready(true);
             editor.compose.widget.set_sensitive(true);
             editor.status.set_visible(false);
@@ -589,9 +846,14 @@ impl State {
                 .contains(&self.draft_key(folder, &message.message_id))
         });
         items.sort_by_key(|(_, _, message)| std::cmp::Reverse((message.timestamp, message.uid)));
+        // Stay within the same visible batch as the conversation renderer.
+        items.truncate(self.conversation_limit.get());
         let mut desired = Vec::new();
         for (sent, folder, message) in &items {
             if message.is_draft {
+                if self.draft_in_composer(folder, &message.message_id) {
+                    continue;
+                }
                 let editor = self.draft_editor(folder, message);
                 desired.push((true, editor.widget.clone().upcast::<gtk::Widget>()));
                 if !message.body_loaded && !editor.loaded.get() {
@@ -650,87 +912,69 @@ impl State {
         compose: &Rc<ui::compose::Compose>,
         editor: Option<&Rc<Editor>>,
     ) {
-        for save in [false, true] {
-            let weak = Rc::downgrade(self);
-            let composer = Rc::downgrade(compose);
-            let target = editor.map(Rc::downgrade);
-            let callback = move || -> ui::compose::Complete {
-                let (Some(state), Some(compose)) = (weak.upgrade(), composer.upgrade()) else {
-                    return Box::new(|_| {});
-                };
-                let Some(submission) = state.prepare_composer(
-                    compose,
-                    target.as_ref().and_then(std::rc::Weak::upgrade),
-                    save,
-                ) else {
-                    return Box::new(|_| {});
-                };
-                let weak = Rc::downgrade(&state);
-                Box::new(move |draft| {
-                    if let Some(state) = weak.upgrade() {
-                        state.submit_composer(submission, draft);
-                    }
-                })
+        let weak = Rc::downgrade(self);
+        let composer = Rc::downgrade(compose);
+        let target = editor.map(Rc::downgrade);
+        self.connect_autosave(compose, editor);
+        compose.connect_send(move || -> ui::compose::Complete {
+            let (Some(state), Some(compose)) = (weak.upgrade(), composer.upgrade()) else {
+                return Box::new(|_| {});
             };
-            if save {
-                compose.connect_save(callback);
-            } else {
-                compose.connect_send(callback);
-            }
-        }
+            let Some(submission) =
+                state.prepare_composer(compose, target.as_ref().and_then(std::rc::Weak::upgrade))
+            else {
+                return Box::new(|_| {});
+            };
+            let weak = Rc::downgrade(&state);
+            Box::new(move |draft| {
+                if let Some(state) = weak.upgrade() {
+                    state.submit_composer(submission, draft);
+                }
+            })
+        });
     }
 
-    fn next_composer_request(&self) -> u64 {
+    pub(super) fn next_composer_request(&self) -> u64 {
         let request = self.composer_request.get() + 1;
         self.composer_request.set(request);
         request
     }
 
-    fn prepare_composer(
+    pub(super) fn prepare_composer(
         self: &Rc<Self>,
         compose: Rc<ui::compose::Compose>,
         editor: Option<Rc<Editor>>,
-        save: bool,
     ) -> Option<Submission> {
+        let open = self.open_composers.borrow();
+        let origin = open.iter().find(|open| Rc::ptr_eq(&open.compose, &compose));
         let account = editor
             .as_ref()
             .map(|editor| editor.account.clone())
-            .or_else(|| self.account.borrow().clone());
+            .or_else(|| origin.map(|open| open.account.clone()));
         let Some(account) = account else {
-            compose.finish_send(false);
-            self.toast
-                .add_toast(adw::Toast::new("Select an account first"));
+            compose.send_failed("Select an account first");
             return None;
         };
         let request = self.next_composer_request();
-        let target = editor.as_ref().map(|editor| editor.target());
-        let anchor = self
-            .open_group
-            .borrow()
-            .iter()
-            .find(|message| !message.is_draft && !message.message_id.is_empty())
-            .map(|message| message.message_id.clone());
+        let target = compose
+            .draft_target()
+            .or_else(|| editor.as_ref().map(|editor| editor.target()));
+        let generation = origin.map_or(self.generation.get(), |open| open.generation);
+        let selection = origin.map_or(self.selection.get(), |open| open.selection);
         self.composer_pending.borrow_mut().insert(
             request,
             Pending {
                 compose,
                 editor,
                 account: account.email.clone(),
-                generation: self.generation.get(),
-                selection: self.selection.get(),
-                operation: if save {
-                    Operation::Save
-                } else {
-                    Operation::Send
-                },
+                generation,
+                selection,
             },
         );
         Some(Submission {
             request,
             account,
             target,
-            anchor,
-            save,
         })
     }
 
@@ -739,24 +983,14 @@ impl State {
             request,
             account,
             target,
-            anchor,
-            save,
         } = submission;
-        let result = draft.and_then(|mut draft| {
-            if save
-                && target.is_none()
-                && draft.references.is_empty()
-                && let Some(anchor) = anchor
-            {
-                draft.references.push(anchor);
-            }
+        let result = draft.and_then(|draft| {
             self.sender
                 .send(Command::Compose {
                     account,
                     draft,
                     target,
                     request,
-                    save,
                 })
                 .map_err(|error| error.to_string())
         });
@@ -781,6 +1015,9 @@ impl State {
         dialog.connect_response(None, move |_, response| {
             if let Some(editor) = target.upgrade() {
                 editor.confirming.set(false);
+                if response != "delete" {
+                    editor.compose.autosave.resume();
+                }
                 if response == "delete"
                     && let Some(state) = weak.upgrade()
                 {
@@ -818,7 +1055,6 @@ impl State {
                 account: account.email.clone(),
                 generation: self.generation.get(),
                 selection: self.selection.get(),
-                operation: Operation::Delete,
             },
         );
         self.remove_draft(&editor);
@@ -832,7 +1068,7 @@ impl State {
         }
     }
 
-    fn pending_visible(&self, pending: &Pending) -> bool {
+    pub(super) fn pending_visible(&self, pending: &Pending) -> bool {
         pending.generation == self.generation.get()
             && pending.selection == self.selection.get()
             && self
@@ -853,45 +1089,21 @@ impl State {
         let visible = self.pending_visible(&pending);
         match result {
             Err(error) => {
-                pending.compose.finish_send(false);
-                let verb = if matches!(pending.operation, Operation::Save) {
-                    "save draft"
-                } else {
-                    "send message"
-                };
-                self.toast
-                    .add_toast(adw::Toast::new(&format!("Could not {verb}: {error}")));
+                pending.compose.send_failed(&error);
             }
             Ok(outcome) => {
-                let (item, cleanup_error, saved) = match outcome {
-                    Outcome::Saved(saved) => (
-                        SentMessage {
-                            folder: saved.folder,
-                            message: saved.message,
-                        },
-                        saved.cleanup_error,
-                        true,
-                    ),
-                    Outcome::Sent(message, error) => (
-                        SentMessage {
-                            folder: String::new(),
-                            message,
-                        },
-                        error,
-                        false,
-                    ),
+                if let Some(target) = pending.compose.draft_target() {
+                    self.forget_saved_draft(&pending.account, &target);
+                }
+                let item = SentMessage {
+                    folder: String::new(),
+                    message: outcome.message,
                 };
                 if let Some(editor) = &pending.editor {
                     self.remove_draft(editor);
-                }
-                if saved && let Some(editor) = &pending.editor {
-                    *editor.source.borrow_mut() = item.clone();
-                    editor.compose.finish_send(false);
-                    self.draft_editors
-                        .borrow_mut()
-                        .insert(editor.key(), editor.clone());
-                } else {
                     pending.compose.finish_send(true);
+                } else {
+                    self.close_composer(&pending.compose);
                 }
                 let key = (
                     pending.account.clone(),
@@ -911,19 +1123,17 @@ impl State {
                         .borrow_mut()
                         .retain(|old| old.message.message_id != item.message.message_id);
                     self.related_sent.borrow_mut().push(item);
-                    if saved {
-                        self.update_draft_widgets();
-                    } else {
-                        self.render_conversation();
-                    }
+                    self.render_conversation();
                 }
-                let message = if saved { "Draft saved" } else { "Message sent" };
-                self.toast.add_toast(adw::Toast::new(&match cleanup_error {
-                    Some(error) => {
-                        format!("{message}, but could not remove the previous draft: {error}")
-                    }
-                    None => message.into(),
-                }));
+                self.toast
+                    .add_toast(adw::Toast::new(&match outcome.cleanup_error {
+                        Some(error) => {
+                            format!(
+                                "Message sent, but could not remove the previous draft: {error}"
+                            )
+                        }
+                        None => "Message sent".into(),
+                    }));
             }
         }
     }
@@ -939,6 +1149,7 @@ impl State {
                     .borrow_mut()
                     .insert(editor.key(), editor.clone());
                 editor.compose.finish_send(false);
+                editor.compose.autosave.resume();
                 if self.pending_visible(&pending) {
                     self.related_sent
                         .borrow_mut()

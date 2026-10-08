@@ -38,7 +38,9 @@ GPU rendering, network access for IMAP/SMTP and avatar downloads, and access to
 the org.gnome.OnlineAccounts session-bus service for accounts and credentials.
 Online Accounts access is service-wide; Flatpak cannot scope this permission
 to an individual mail account. The desktop portal opens external links.
-No host/home filesystem, shared IPC, audio, secret-service, unrestricted D-Bus,
+Only Downloads/Brevlada is writable for opening and reusing email attachments.
+Saving elsewhere uses the desktop file picker. No broad host/home filesystem,
+shared IPC, audio, secret-service, unrestricted D-Bus,
 or host-command permissions are needed. The Rust extension is build-only.
 
 GNOME Online Accounts and xdg-desktop-portal must be available on the host.
@@ -109,6 +111,29 @@ plain text remains available for search. GtkListView recycles offscreen sender a
 thread rows.
 Preview fetches also cache the full text/HTML body without marking mail read.
 Opening a message marks it read. Attachments are listed by name, not cached as files.
+
+Both search panes match case-insensitive substrings in subjects, From/Reply-To,
+To/Cc, plain text, and visible HTML text. Sender rows preview the newest unread
+message, falling back to the newest message when all are read. Search results
+group matching messages by sender, show the match count, and preview the newest
+match's subject. Opening a result shows only that sender's matching messages;
+later sender pages and cache updates refresh both the matches and their count.
+The sender search controls sit above the full-width
+entry: accounts defaults to the current account and supports multiple selections
+in the current folder; Subject, From, Reply-To, To, Cc and Body are all enabled
+by default. Optional From/To dates have calendar pickers, include both endpoint
+days in the local timezone, and accept empty bounds for any date. Account results
+stay separate and open in their owning account/folder. Without a current account,
+selected accounts search their inboxes. Adding accounts appends new matching
+senders while keeping displayed results in place. Closing search clears its text
+and sender selection, and disables filtering until search is opened again.
+Messages has an independent search limited to the selected sender, including older cached mail beyond its loaded page.
+When opened from sender search, it narrows that sender's matching messages. Search
+uses cached content; bodies become searchable as background caching completes.
+Typing is debounced for 150 ms. A dedicated worker shares snapshots, reuses
+normalized text and sender groups, and discards superseded requests. Cache
+updates are coalesced, and result rows move into the GTK model without copying
+message bodies.
 
 Sender avatars are resolved once per address and cached in rust_avatars, with
 "this sender has no avatar" cached too so misses are not retried on every launch.

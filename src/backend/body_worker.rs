@@ -64,6 +64,7 @@ fn load(
     if !queue.current(request.selection) {
         return Ok(());
     }
+    message.prepare_display();
     if !request.mark_read {
         events.send_blocking(Event::Preview(
             request.generation,
@@ -89,6 +90,7 @@ fn load(
                 request.uid,
             )?
             .context("Mailbox changed while marking message read")?;
+        message.prepare_display();
         if queue.current(request.selection) {
             events.send_blocking(Event::Body(request.generation, request.selection, message))?;
         }

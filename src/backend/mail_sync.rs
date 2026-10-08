@@ -40,6 +40,13 @@ pub(super) fn apply_flags(
     drafts: Option<&str>,
 ) {
     message.is_flagged = flags.contains(&Flag::Flagged);
+    message.is_spam = flags
+        .iter()
+        .any(|flag| matches!(flag, Flag::Custom(value) if value.eq_ignore_ascii_case("$Junk")))
+        || named_folder(
+            folder,
+            &["spam", "junk", "junk mail", "junk e-mail", "bulk mail"],
+        );
     message.is_draft = is_draft(folder, flags, drafts);
     ensure_draft_id(message, folder);
 }

@@ -9,6 +9,7 @@ searchbar > revealer > box {
 .message-list-search-box > revealer > box {
   border-bottom: none;
   box-shadow: none;
+  padding: 6px;
 }
 
 .message-list-search-box searchentry {
@@ -16,18 +17,6 @@ searchbar > revealer > box {
 }
 
 scrolledwindow {
-    background: none;
-}
-
-row {
-    background: none;
-}
-
-row:hover {
-    background: none;
-}
-
-row:selected {
     background: none;
 }
 
@@ -60,4 +49,61 @@ row:selected {
 
 .message-state {
     padding: 24px;
+}
+
+.message-search-filters menubutton > button {
+  padding: 4px 8px;
+}
+
+calendar.search-calendar {
+  background: alpha(@window_fg_color, 0.035);
+  color: @window_fg_color;
+  border: none;
+  border-radius: 12px;
+  padding: 8px;
+}
+
+calendar.search-calendar > header,
+calendar.search-calendar > grid {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+calendar.search-calendar > header {
+  padding-bottom: 6px;
+}
+
+calendar.search-calendar > header > button {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px;
+}
+
+calendar.search-calendar > header > button:hover,
+calendar.search-calendar > grid > label.day-number:hover {
+  background: alpha(@window_fg_color, 0.08);
+}
+
+calendar.search-calendar > grid > label {
+  padding: 4px;
+  border-radius: 8px;
+}
+
+calendar.search-calendar > grid > label.day-name {
+  color: alpha(@window_fg_color, 0.65);
+  font-size: 0.85em;
+}
+
+calendar.search-calendar > grid > label.day-number:selected {
+  background: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
+calendar.search-calendar > grid > label.other-month {
+  color: alpha(@window_fg_color, 0.35);
 }

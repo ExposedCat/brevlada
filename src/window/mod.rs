@@ -1,14 +1,24 @@
 mod actions;
+mod autosave;
+mod calendar;
+mod conversation;
 mod drafts;
 mod events;
 mod lists;
 mod message_navigation;
+mod parcel_history;
 mod previews;
 mod read_state;
 mod rendering;
+#[cfg(test)]
+mod response_tests;
+mod search;
+mod search_sender;
 mod sender_actions;
 mod sender_pane;
+mod settings;
 mod sorting;
+mod tickets;
 use crate::{
     backend::worker::{self, BodyRequest, Command, Event},
     components as ui,
@@ -44,10 +54,15 @@ struct State {
     sender_pane: RefCell<models::sender_pane::SenderPane>,
     selected: RefCell<Vec<u32>>,
     next_message: Cell<Option<(u32, u32)>>,
+    search_message: RefCell<Option<(u32, String)>>,
+    search_sender: RefCell<Option<search_sender::SenderMatches>>,
     deferred_read_sort: RefCell<HashSet<u32>>,
     cards: RefCell<HashMap<u32, ui::viewer::Card>>,
     sent_cards: RefCell<HashMap<String, ui::viewer::Card>>,
     related_sent: RefCell<Vec<models::SentMessage>>,
+    parcel_history: RefCell<HashMap<(String, models::parcel::Identifier), Vec<Message>>>,
+    calendar_history: RefCell<HashMap<String, Vec<Message>>>,
+    calendar_pending: RefCell<HashSet<(String, String, Option<String>)>>,
     draft_editors: RefCell<HashMap<drafts::Key, Rc<drafts::Editor>>>,
     draft_removed: RefCell<HashSet<drafts::Key>>,
     draft_local: RefCell<HashMap<drafts::Key, drafts::Local>>,
@@ -56,6 +71,7 @@ struct State {
     sent_pending: RefCell<HashSet<String>>,
     open_group: RefCell<Vec<Message>>,
     trusted_senders: RefCell<HashMap<String, HashSet<String>>>,
+    settings: RefCell<models::settings::Settings>,
     downloaded_media: RefCell<HashSet<(String, String, u32, String)>>,
     sidebar: gtk::Box,
     account_sidebar: ui::motion::Sidebar,
@@ -75,19 +91,38 @@ struct State {
     viewer_scroll: gtk::ScrolledWindow,
     viewer: gtk::Box,
     viewer_reveal: ui::reveal::Reveal,
+    conversation_limit: Cell<usize>,
+    conversation_more: gtk::Button,
     list_stack: gtk::Stack,
     toast: adw::ToastOverlay,
     navigation_selection: ui::sidebar::Selection,
     expansion: ui::expansion::Expansion,
     avatars: Rc<ui::avatars::Avatars>,
     compose_button: gtk::Button,
-    compose: Rc<ui::compose::Compose>,
+    composers: gtk::Box,
+    open_composers: RefCell<Vec<drafts::OpenComposer>>,
     refresh: gtk::Button,
     sync: gtk::Button,
     back: gtk::Button,
     sender_unread_first: ui::sort_menu::SortMenu,
     thread_unread_first: ui::sort_menu::SortMenu,
     search: gtk::SearchEntry,
+    search_filters: Rc<ui::search_filters::SearchFilters>,
+    search_locations: RefCell<HashMap<String, crate::backend::search::Location>>,
+    search_cache_revision: Cell<u64>,
+    search_progress: [gtk::Spinner; 2],
+    search_running: [Cell<bool>; 2],
+    search_show_progress: [Cell<bool>; 2],
+    search_background_refresh: [Rc<Cell<bool>>; 2],
+    search_refresh_again: [Cell<bool>; 2],
+    search_multiaccount: Cell<bool>,
+    search_preserve_results: [Cell<bool>; 2],
+    search_published_queries: RefCell<[String; 2]>,
+    search_account_order: RefCell<Option<Vec<String>>>,
+    thread_search: gtk::SearchEntry,
+    search_worker: crate::backend::search::Search,
+    search_snapshots: RefCell<[Option<std::sync::Arc<Vec<Message>>>; 2]>,
+    search_refresh_pending: [Rc<Cell<bool>>; 2],
 }
 
 fn load_trusted_senders() -> HashMap<String, HashSet<String>> {
@@ -123,16 +158,23 @@ fn load_downloaded_media() -> HashSet<(String, String, u32, String)> {
 pub fn create(app: &adw::Application) {
     let shell = ui::shell::Shell::new(app);
     let window = shell.window.clone();
+    let settings = shell.settings.clone();
     let (sender, events) = worker::start(glib::user_data_dir().join("brevlada/emails.db"));
     let queue = sender.avatars();
     let avatars = ui::avatars::Avatars::new(move |email| queue.push(email.to_owned()));
     let state = State::new(shell, sender, ui::expansion::Expansion::load(), avatars);
+    state.connect_settings(
+        &window,
+        &settings,
+        glib::user_config_dir().join("brevlada/settings.json"),
+    );
     state.remember_sorting(glib::user_config_dir().join("brevlada/sorting.json"));
     for threads in [false, true] {
         let lookup = Rc::downgrade(&state);
         let activate = Rc::downgrade(&state);
         let trust_lookup = Rc::downgrade(&state);
         let trust_toggle = Rc::downgrade(&state);
+        let menu_lookup = Rc::downgrade(&state);
         ui::sender_menu::attach_view(
             if threads {
                 &state.thread_list
@@ -168,35 +210,72 @@ pub fn create(app: &adw::Application) {
                             .collect(),
                     )
                 };
-                Some((target, bulk))
+                let location = if threads {
+                    None
+                } else {
+                    state.search_locations.borrow().get(&row.key).cloned()
+                };
+                Some(((target, location, row.messages), bulk))
             },
-            move |sender, action| {
-                if let Some(state) = activate.upgrade() {
+            move |(sender, location, _), action| {
+                if let Some(state) = activate.upgrade()
+                    && state.select_search_location(location.as_ref())
+                {
                     state.sender_action(sender, action);
                 }
             },
-            move |target| {
+            move |(target, location, _)| {
                 let Some(state) = trust_lookup.upgrade() else {
                     return false;
                 };
                 match target {
-                    models::action_target::ActionTarget::Sender(sender) => state.is_trusted(sender),
+                    models::action_target::ActionTarget::Sender(sender) => {
+                        if let Some(location) = location {
+                            state
+                                .trusted_senders
+                                .borrow()
+                                .get(&location.account)
+                                .is_some_and(|senders| senders.contains(sender))
+                        } else {
+                            state.is_sender_trusted(sender)
+                        }
+                    }
                     _ => false,
                 }
             },
-            move |target| {
+            move |(target, location, _)| {
                 if let Some(state) = trust_toggle.upgrade()
                     && let models::action_target::ActionTarget::Sender(sender) = target
+                    && state.select_search_location(location.as_ref())
                 {
                     state.toggle_trust(&sender);
                 }
+            },
+            move |(target, location, messages)| {
+                menu_lookup.upgrade().map_or_else(Vec::new, |state| {
+                    if let Some(location) = location {
+                        let current = state
+                            .account
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|account| account.email == location.account)
+                            && *state.folder.borrow() == location.folder;
+                        if !current {
+                            return sender_actions::menu_actions_for_messages(
+                                &location.folder,
+                                messages,
+                            );
+                        }
+                    }
+                    state.menu_actions(target)
+                })
             },
         );
     }
     let weak = Rc::downgrade(&state);
     state.back.connect_clicked(move |_| {
         if let Some(state) = weak.upgrade() {
-            state.filter_sender(None);
+            state.close_sender_pane();
         }
     });
     let weak = Rc::downgrade(&state);
@@ -210,12 +289,6 @@ pub fn create(app: &adw::Application) {
         if let Some(state) = weak.upgrade() {
             button.set_sensitive(false);
             state.sender.sync();
-        }
-    });
-    let weak = Rc::downgrade(&state);
-    state.search.connect_search_changed(move |_| {
-        if let Some(state) = weak.upgrade() {
-            state.render_list();
         }
     });
     let weak = Rc::downgrade(&state);
@@ -332,6 +405,10 @@ impl State {
     }
 
     fn is_trusted(&self, sender: &str) -> bool {
+        self.settings.borrow().trust_all_senders || self.is_sender_trusted(sender)
+    }
+
+    fn is_sender_trusted(&self, sender: &str) -> bool {
         self.account.borrow().as_ref().is_some_and(|account| {
             self.trusted_senders
                 .borrow()
@@ -378,7 +455,7 @@ impl State {
             .filter(|message| models::senders::key(message) == sender)
         {
             if let Some(card) = self.cards.borrow().get(&message.uid) {
-                card.set_trusted(trusted || own);
+                card.set_trusted(trusted || own || self.settings.borrow().trust_all_senders);
             }
         }
     }
@@ -407,15 +484,24 @@ impl State {
             viewer,
             viewer_reveal,
             compose_button,
-            compose,
+            composers,
             refresh,
             sync,
             back,
             sender_unread_first,
             thread_unread_first,
             search,
+            search_filters,
+            search_progress,
+            thread_search,
             toast,
+            settings: _,
         } = shell;
+        let (search_worker, search_results) = crate::backend::search::Search::start();
+        let conversation_more = gtk::Button::with_label("Load older messages");
+        conversation_more.set_halign(gtk::Align::Center);
+        conversation_more.set_margin_top(theme::SMALL_SPACING);
+        conversation_more.set_margin_bottom(theme::SPACING);
         let state = Rc::new(State {
             sender,
             account: RefCell::new(None),
@@ -437,10 +523,15 @@ impl State {
             sender_pane: RefCell::default(),
             selected: RefCell::new(Vec::new()),
             next_message: Cell::new(None),
+            search_message: RefCell::default(),
+            search_sender: RefCell::default(),
             deferred_read_sort: RefCell::default(),
             cards: RefCell::new(HashMap::new()),
             sent_cards: RefCell::new(HashMap::new()),
             related_sent: RefCell::new(Vec::new()),
+            parcel_history: RefCell::default(),
+            calendar_history: RefCell::default(),
+            calendar_pending: RefCell::default(),
             draft_editors: RefCell::default(),
             draft_removed: RefCell::default(),
             draft_local: RefCell::default(),
@@ -449,6 +540,7 @@ impl State {
             sent_pending: RefCell::new(HashSet::new()),
             open_group: RefCell::new(Vec::new()),
             trusted_senders: RefCell::new(load_trusted_senders()),
+            settings: RefCell::default(),
             downloaded_media: RefCell::new(load_downloaded_media()),
             sidebar,
             account_sidebar,
@@ -467,24 +559,56 @@ impl State {
             viewer_scroll,
             viewer,
             viewer_reveal,
+            conversation_limit: Cell::new(25),
+            conversation_more,
             list_stack,
             toast,
             navigation_selection: ui::sidebar::Selection::default(),
             expansion,
             avatars,
             compose_button,
-            compose: Rc::new(compose),
+            composers,
+            open_composers: RefCell::default(),
             refresh,
             sync,
             back,
             sender_unread_first,
             thread_unread_first,
             search,
+            search_filters,
+            search_progress,
+            search_running: Default::default(),
+            search_show_progress: Default::default(),
+            search_background_refresh: Default::default(),
+            search_refresh_again: Default::default(),
+            search_multiaccount: Cell::new(false),
+            search_preserve_results: Default::default(),
+            search_published_queries: Default::default(),
+            thread_search,
+            search_worker,
+            search_locations: RefCell::default(),
+            search_cache_revision: Cell::new(0),
+            search_account_order: RefCell::new(None),
+            search_snapshots: RefCell::new([None, None]),
+            search_refresh_pending: [Rc::default(), Rc::default()],
         });
+        let weak = Rc::downgrade(&state);
+        state.conversation_more.connect_clicked(move |_| {
+            if let Some(state) = weak.upgrade() {
+                state
+                    .conversation_limit
+                    .set(state.conversation_limit.get() + 25);
+                ui::scroll_position::preserve_offset(&state.viewer_scroll, || {
+                    state.render_conversation()
+                });
+            }
+        });
+        state.connect_search(search_results);
         for toggle in [&state.sender_unread_first, &state.thread_unread_first] {
             let weak = Rc::downgrade(&state);
             toggle.connect_changed(move || {
                 if let Some(state) = weak.upgrade() {
+                    *state.search_account_order.borrow_mut() = None;
                     state.render_list();
                 }
             });
@@ -494,7 +618,7 @@ impl State {
         ui::mail_shortcuts::attach_open_message(
             &window,
             &state.thread_list,
-            &state.compose.widget,
+            &state.composers,
             move |action| {
                 let Some(state) = weak.upgrade() else {
                     return false;
@@ -520,17 +644,19 @@ impl State {
             if let Some(state) = weak.upgrade() {
                 // A later manual visibility change overrides the automatic collapse.
                 state.restore_accounts_on_back.set(false);
+                state.refresh_account_title();
             }
         });
-        state.connect_composer(&state.compose, None);
         let weak = Rc::downgrade(&state);
         state.compose_button.connect_clicked(move |_| {
             if let Some(state) = weak.upgrade() {
-                state
-                    .compose
-                    .show(state.sender_pane.borrow().sender().unwrap_or_default());
-                let adjustment = state.viewer_scroll.vadjustment();
-                adjustment.set_value(adjustment.lower());
+                let receiver = state
+                    .sender_pane
+                    .borrow()
+                    .sender()
+                    .unwrap_or_default()
+                    .to_owned();
+                state.new_composer(&receiver, None);
             }
         });
         state
@@ -580,7 +706,7 @@ mod diagnostics {
 
     #[test]
     #[ignore = "Requires a graphical session for the composer and draft cards"]
-    fn saves_unfinished_drafts_preserves_failed_edits_and_labels_injected_drafts() {
+    fn sending_preserves_failed_edits_and_labels_injected_drafts() {
         gtk::init().unwrap();
         adw::init().unwrap();
         let app = adw::Application::builder()
@@ -615,30 +741,53 @@ mod diagnostics {
             body_loaded: true,
             ..Default::default()
         };
-        state.compose.reply(&received, "other@example.com");
-        let header = state.compose.widget.first_child().unwrap();
+        let compose = state
+            .new_composer(
+                "",
+                Some((&received, "INBOX", models::response::Action::Reply)),
+            )
+            .unwrap();
+        let header = compose
+            .widget
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap();
+        let error = compose
+            .widget
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap();
+        assert!(error.has_css_class("error"));
+        assert!(!error.get_visible());
         let subject = header
             .next_sibling()
             .unwrap()
             .downcast::<gtk::Entry>()
             .unwrap();
-        subject.set_text("");
-        let save = header
+        compose.load_draft(&models::Draft {
+            to: "other@example.com".into(),
+            subject: String::new(),
+            text: "Reply body".into(),
+            in_reply_to: Some("incoming".into()),
+            references: vec!["incoming".into()],
+            ..models::Draft::from(&received)
+        });
+        let send = header
             .last_child()
             .unwrap()
             .prev_sibling()
             .unwrap()
             .downcast::<gtk::Button>()
             .unwrap();
-        let send = save
-            .prev_sibling()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap();
         assert!(!send.is_sensitive());
-        save.emit_clicked();
-        save.emit_clicked();
-        assert!(!state.compose.widget.is_sensitive());
+        assert_eq!(send.tooltip_text().as_deref(), Some("Send"));
+        assert!(commands.try_recv().is_err());
+        subject.set_text("Re: Topic");
+        send.emit_clicked();
+        send.emit_clicked();
+        assert!(!compose.widget.is_sensitive());
         let context = gtk::glib::MainContext::default();
         while context.pending() {
             context.iteration(false);
@@ -647,21 +796,22 @@ mod diagnostics {
             account,
             draft,
             request,
-            save: true,
             ..
         } = commands.try_recv().unwrap()
         else {
-            panic!("Expected draft save")
+            panic!("Expected message send")
         };
         assert_eq!(account.email, "account@example.com");
         assert_eq!(draft.to, "other@example.com");
-        assert!(draft.subject.is_empty());
+        assert_eq!(draft.subject, "Re: Topic");
         assert_eq!(draft.in_reply_to.as_deref(), Some("incoming"));
         assert!(draft.references.contains(&"incoming".into()));
         assert!(commands.try_recv().is_err());
-        state.event(Event::Composed(request, Err("Quota exceeded".into())));
-        assert!(state.compose.widget.is_sensitive());
-        assert!(state.compose.widget.get_visible());
+        state.event(Event::Composed(request, Err("Offline".into())));
+        assert!(compose.widget.is_sensitive());
+        assert!(compose.widget.get_visible());
+        assert!(error.get_visible());
+        assert_eq!(error.text(), "Could not send message: Offline");
         assert_eq!(
             header
                 .first_child()
@@ -671,31 +821,36 @@ mod diagnostics {
                 .text(),
             "other@example.com"
         );
-        subject.set_text("Re: Topic");
-        save.emit_clicked();
+        subject.set_text("Updated topic");
+        send.emit_clicked();
+        send.emit_clicked();
+        assert!(!error.get_visible());
         while context.pending() {
             context.iteration(false);
         }
-        let Command::Compose { request, .. } = commands.try_recv().unwrap() else {
-            panic!("Expected save")
+        let Command::Compose { request, draft, .. } = commands.try_recv().unwrap() else {
+            panic!("Expected send")
         };
+        assert_eq!(draft.subject, "Updated topic");
+        assert_eq!(draft.text, "Reply body");
+        assert_eq!(draft.in_reply_to.as_deref(), Some("incoming"));
+        assert!(commands.try_recv().is_err());
         state.event(Event::Composed(
             request,
-            Ok(models::draft::Outcome::Saved(models::draft::Saved {
-                folder: "Drafts".into(),
+            Ok(models::draft::Outcome {
                 cleanup_error: None,
                 message: Message {
-                    uid: 5,
-                    message_id: "saved".into(),
-                    is_draft: true,
+                    message_id: "sent".into(),
                     body_loaded: true,
+                    is_read: true,
                     subject: "Re: Topic".into(),
                     recipients: "other@example.com".into(),
                     ..Default::default()
                 },
-            })),
+            }),
         ));
-        assert!(!state.compose.widget.get_visible());
+        assert!(!compose.widget.get_visible());
+        assert!(!error.get_visible());
         assert!(subject.text().is_empty());
         *state.messages.borrow_mut() = vec![received.clone()];
         state.show_thread(vec![received]);
@@ -715,7 +870,8 @@ mod diagnostics {
                 },
             }],
         ));
-        assert!(state.sent_cards.borrow().is_empty());
+        assert!(!state.sent_cards.borrow().contains_key("draft"));
+        assert!(state.sent_cards.borrow().contains_key("sent"));
         let key = state.draft_key("Drafts", "draft");
         let editors = state.draft_editors.borrow();
         assert_eq!(
@@ -769,6 +925,822 @@ mod diagnostics {
     }
 
     #[test]
+    #[ignore = "Requires a graphical session for account-aware sender activation"]
+    fn search_result_activation_uses_its_owning_account_and_folder() {
+        let state = unread_test_state("org.example.BrevladaSearchAccountDiagnostic");
+        let mut other = state.account.borrow().clone().unwrap();
+        other.email = "other@example.com".into();
+        let message = Message {
+            uid: 1,
+            sender: "sender@example.com".into(),
+            search_match: true,
+            ..Default::default()
+        };
+        state.folder_boxes.borrow_mut().insert(
+            other.email.clone(),
+            (other.clone(), gtk::Box::new(gtk::Orientation::Vertical, 0)),
+        );
+        state.folder_cache.borrow_mut().insert(
+            (other.email.clone(), "Archive".into()),
+            vec![message.clone()],
+        );
+        state.publish_search_groups(
+            false,
+            "",
+            vec![vec![message]],
+            vec![Some(crate::backend::search::Location {
+                account: other.email.clone(),
+                folder: "Archive".into(),
+            })],
+        );
+        state.list.emit_by_name::<()>("activate", &[&0u32]);
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, other.email);
+        assert_eq!(*state.folder.borrow(), "Archive");
+        assert_eq!(
+            state.sender_pane.borrow().sender(),
+            Some("sender@example.com")
+        );
+        assert_eq!(
+            state
+                .search_sender
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
+        assert_eq!(ui::virtual_list::groups(&state.thread_list)[0][0].uid, 1);
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session for search pane navigation"]
+    fn back_restores_accounts_after_search_results_switch_mailboxes() {
+        let state = unread_test_state("org.example.BrevladaSearchBackDiagnostic");
+        let first = state.account.borrow().clone().unwrap();
+        let second = Account {
+            email: "second@example.com".into(),
+            ..first.clone()
+        };
+        for account in [&first, &second] {
+            state.folder_boxes.borrow_mut().insert(
+                account.email.clone(),
+                (
+                    account.clone(),
+                    gtk::Box::new(gtk::Orientation::Vertical, 0),
+                ),
+            );
+        }
+        let bar = state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap();
+        bar.set_search_mode(true);
+        state.search.set_text("sender");
+        state.cancel_search(false);
+        state.publish_search_groups(
+            false,
+            "sender",
+            (1..=3)
+                .map(|uid| {
+                    vec![Message {
+                        uid,
+                        sender: format!("sender{uid}@example.com"),
+                        search_match: true,
+                        ..Default::default()
+                    }]
+                })
+                .collect(),
+            [&first, &second, &second]
+                .into_iter()
+                .zip(["INBOX", "INBOX", "Archive"])
+                .map(|(account, folder)| {
+                    Some(crate::backend::search::Location {
+                        account: account.email.clone(),
+                        folder: folder.into(),
+                    })
+                })
+                .collect(),
+        );
+
+        state.account_sidebar.set_visible(true);
+        for position in [0, 0, 1, 2] {
+            state.activate_sender(position);
+            assert!(!state.account_sidebar.get_visible());
+            assert!(state.thread_sidebar.get_visible());
+            assert!(state.restore_accounts_on_back.get());
+        }
+        state.filter_sender(None);
+        assert!(state.account_sidebar.get_visible());
+        assert!(!state.thread_sidebar.get_visible());
+        assert!(!state.back.get_visible());
+        assert!(state.sender_search_active());
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 3);
+
+        // A pane hidden before activation stays hidden after Back.
+        state.account_sidebar.set_visible(false);
+        for position in [0, 1] {
+            state.activate_sender(position);
+        }
+        state.filter_sender(None);
+        assert!(!state.account_sidebar.get_visible());
+
+        // Manual visibility changes also override restoration across mailboxes.
+        state.account_sidebar.set_visible(true);
+        state.activate_sender(0);
+        state.account_sidebar.set_visible(true);
+        state.account_sidebar.set_visible(false);
+        state.activate_sender(1);
+        state.filter_sender(None);
+        assert!(!state.account_sidebar.get_visible());
+
+        state.account_sidebar.set_visible(true);
+        state.activate_sender(0);
+        let thread_bar = state
+            .thread_search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap();
+        thread_bar.set_search_mode(true);
+        state.thread_search.set_text("sender");
+        state.close_sender_pane();
+        assert!(state.account_sidebar.get_visible());
+        assert!(!state.thread_sidebar.get_visible());
+        assert!(!state.back.get_visible());
+        assert!(!state.sender_search_active());
+        assert!(!state.search_open(true));
+        assert!(state.search.text().is_empty());
+        assert!(state.thread_search.text().is_empty());
+        assert!(!state.search_running[0].get());
+        assert!(!state.search_running[1].get());
+        assert!(state.search_sender.borrow().is_none());
+        assert!(state.search_locations.borrow().is_empty());
+    }
+
+    #[test]
+    #[ignore = "Requires GTK and an isolated XDG_DATA_HOME matching BREVLADA_SEARCH_TEST_DATA"]
+    fn account_search_without_current_appends_results_and_closing_restores_normal_loading() {
+        let isolated = std::env::var_os("BREVLADA_SEARCH_TEST_DATA")
+            .expect("Set isolated test data directory");
+        assert_eq!(glib::user_data_dir(), std::path::PathBuf::from(isolated));
+        let state = unread_test_state("org.example.BrevladaSearchLifecycleDiagnostic");
+        let window = state
+            .toast
+            .root()
+            .and_downcast::<adw::ApplicationWindow>()
+            .unwrap();
+        window.present();
+        let first = state.account.borrow().clone().unwrap();
+        let second = Account {
+            email: "second@example.com".into(),
+            ..first.clone()
+        };
+        *state.account.borrow_mut() = None;
+        state.folder.borrow_mut().clear();
+        let alpha = Message {
+            uid: 1,
+            timestamp: 1,
+            sender: "alpha@example.com".into(),
+            ..Default::default()
+        };
+        let beta = Message {
+            uid: 1,
+            timestamp: 2,
+            sender: "beta@example.com".into(),
+            ..Default::default()
+        };
+        let storage = crate::backend::storage::Storage::open(
+            &glib::user_data_dir().join("brevlada/emails.db"),
+        )
+        .unwrap();
+        storage.store(&first.email, "INBOX", &alpha).unwrap();
+        storage.store(&second.email, "INBOX", &beta).unwrap();
+        state.event(Event::Accounts(vec![first.clone(), second.clone()]));
+        // A stale label from a previously displayed account cannot become the
+        // title when the sidebar closes without a selected mailbox.
+        state.account_title.set_label(&first.email);
+        state.account_sidebar.set_visible(false);
+        assert!(state.account_title.text().is_empty());
+        let bar = state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap();
+        bar.set_search_mode(true);
+        assert_eq!(state.account_title.text(), "All accounts");
+        assert!(state.account_title.get_visible());
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 0);
+        assert!(!state.search_running[0].get());
+        state.search.set_text("example.com");
+        assert!(state.search_running[0].get());
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("state")
+        );
+        let accounts = state
+            .search_filters
+            .widget
+            .first_child()
+            .unwrap()
+            .first_child()
+            .and_downcast::<gtk::MenuButton>()
+            .unwrap()
+            .popover()
+            .unwrap()
+            .child()
+            .and_downcast::<gtk::Box>()
+            .unwrap();
+        assert_eq!(state.search_filters.selected_accounts().len(), 2);
+        let wait = |predicate: &dyn Fn() -> bool| {
+            let context = glib::MainContext::default();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !predicate() && std::time::Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(predicate(), "Search did not finish");
+        };
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::model(&state.list).n_items() == 2
+        });
+        wait(&|| labels(state.list.clone().upcast()).contains(&format!("{} · INBOX", first.email)));
+        assert!(labels(state.list.clone().upcast()).contains(&format!("{} · INBOX", second.email)));
+        assert!(state.account.borrow().is_none());
+        assert_eq!(state.account_title.text(), "All accounts");
+        let second_check = accounts
+            .last_child()
+            .unwrap()
+            .prev_sibling()
+            .and_downcast::<gtk::CheckButton>()
+            .unwrap();
+        second_check.set_active(false);
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::model(&state.list).n_items() == 1
+        });
+        wait(&|| labels(state.list.clone().upcast()).contains(&"INBOX".into()));
+        assert!(!labels(state.list.clone().upcast()).contains(&format!("{} · INBOX", first.email)));
+        let retained = ui::virtual_list::item(&state.list, 0).unwrap().key;
+        second_check.set_active(true);
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::model(&state.list).n_items() == 2
+        });
+        assert_eq!(
+            ui::virtual_list::item(&state.list, 0).unwrap().key,
+            retained
+        );
+        let groups = ui::virtual_list::groups(&state.list);
+        assert_eq!(groups[0][0].sender, alpha.sender);
+        assert_eq!(groups[1][0].sender, beta.sender);
+        let row = ui::virtual_list::model(&state.list).item(0).unwrap();
+        let loader_shows = Rc::new(Cell::new(0));
+        let observed = loader_shows.clone();
+        let loader_observer = state.search_progress[0].connect_visible_notify(move |spinner| {
+            if spinner.is_visible() {
+                observed.set(observed.get() + 1);
+            }
+        });
+        state.list.emit_by_name::<()>("activate", &[&1u32]);
+        assert!(
+            !state.search_running[0].get(),
+            "Opening a result must not restart search"
+        );
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, second.email);
+        assert_eq!(state.search_filters.selected_accounts().len(), 2);
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 2);
+        wait(&|| !state.search_running[0].get());
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 2);
+        assert_eq!(ui::virtual_list::model(&state.list).item(0).unwrap(), row);
+        state.event(Event::Messages(
+            state.generation.get(),
+            vec![beta.clone()],
+            false,
+        ));
+        state.show_thread(vec![beta.clone()]);
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + Duration::from_millis(350);
+        while std::time::Instant::now() < deadline {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            loader_shows.get(),
+            0,
+            "Opening mail must not show search progress"
+        );
+        assert_eq!(ui::virtual_list::model(&state.list).item(0).unwrap(), row);
+        state.search_progress[0].disconnect(loader_observer);
+        state.search.set_text(&alpha.sender);
+        state.filter_sender(Some(alpha.clone()));
+        state.render_list(); // Queue a refresh that must not revive a closed search.
+        bar.set_search_mode(false);
+        assert!(state.search.text().is_empty());
+        assert!(state.sender_pane.borrow().sender().is_none());
+        assert!(!state.sender_search_active());
+        state.select(first, "INBOX".into());
+        state.event(Event::Messages(
+            state.generation.get(),
+            vec![alpha.clone()],
+            false,
+        ));
+        state.event(Event::CacheList(
+            second.email.clone(),
+            "INBOX".into(),
+            vec![beta],
+        ));
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        while std::time::Instant::now() < deadline {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!state.sender_search_active());
+        assert!(state.search_locations.borrow().is_empty());
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 1);
+        assert_eq!(
+            ui::virtual_list::groups(&state.list)[0][0].sender,
+            alpha.sender
+        );
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("list")
+        );
+        let archived = Message {
+            uid: 1,
+            timestamp: 3,
+            sender: "archived@example.com".into(),
+            ..Default::default()
+        };
+        storage.store(&second.email, "Archive", &archived).unwrap();
+        bar.set_search_mode(true);
+        state.search.set_text("archived@example.com");
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::model(&state.list).n_items() == 1
+        });
+        assert_eq!(
+            state
+                .search_locations
+                .borrow()
+                .values()
+                .next()
+                .unwrap()
+                .folder,
+            "Archive"
+        );
+        let folder_choices = state
+            .search_filters
+            .widget
+            .first_child()
+            .unwrap()
+            .last_child()
+            .and_downcast::<gtk::MenuButton>()
+            .unwrap()
+            .popover()
+            .unwrap()
+            .child()
+            .unwrap();
+        let current_folder = folder_choices
+            .last_child()
+            .and_downcast::<gtk::CheckButton>()
+            .unwrap();
+        assert!(current_folder.is_sensitive());
+        current_folder.set_active(true);
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::model(&state.list).n_items() == 0
+        });
+        assert_eq!(state.search_filters.folder().as_deref(), Some("INBOX"));
+        state.search.set_text("example.com");
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::model(&state.list).n_items() == 2
+        });
+        // Only the second account has Archive. Navigation updates Current Folder
+        // and searching that path must ignore the first account's Inbox.
+        state.select(second, "Archive".into());
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::model(&state.list).n_items() == 1
+        });
+        assert_eq!(state.search_filters.folder().as_deref(), Some("Archive"));
+        assert_eq!(
+            ui::virtual_list::groups(&state.list)[0][0].sender,
+            archived.sender
+        );
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session to verify streamed search feedback"]
+    fn sender_search_streams_with_spinner_and_cancels_on_folder_change() {
+        let state = unread_test_state("org.example.BrevladaStreamDiagnostic");
+        let account = state.account.borrow().clone().unwrap();
+        state
+            .search_filters
+            .set_accounts(std::slice::from_ref(&account));
+        state.search_filters.set_current(Some(&account.email));
+        *state.messages.borrow_mut() = (1..=1500)
+            .map(|uid| Message {
+                uid,
+                timestamp: uid as i64,
+                sender: format!("sender{uid}@example.com"),
+                subject: if uid == 1500 {
+                    "Needle".into()
+                } else {
+                    "Unrelated".into()
+                },
+                body_html: "<p>Other cached HTML text</p>".repeat(128),
+                ..Default::default()
+            })
+            .collect();
+        let window = state
+            .toast
+            .root()
+            .and_downcast::<adw::ApplicationWindow>()
+            .unwrap();
+        window.present();
+        let bar = state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap();
+        bar.set_search_mode(true);
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 0);
+        assert!(labels(state.list_stack.clone().upcast()).contains(&"Enter a search query".into()));
+        state.search.set_text("needle");
+        assert!(state.search_running[0].get());
+        assert!(!state.search_progress[0].is_visible());
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("state")
+        );
+        let context = glib::MainContext::default();
+        let wait = |predicate: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !predicate() && std::time::Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(predicate(), "Search feedback did not arrive");
+        };
+        wait(&|| ui::virtual_list::model(&state.list).n_items() == 1);
+        assert!(
+            state.search_running[0].get(),
+            "First hit must precede scan completion"
+        );
+        assert!(state.search_progress[0].is_visible());
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("list")
+        );
+        wait(&|| labels(state.list.clone().upcast()).contains(&"INBOX".into()));
+        assert!(
+            !labels(state.list.clone().upcast()).contains(&format!("{} · INBOX", account.email))
+        );
+        state.render_list(); // A cache refresh must not restart an unfinished scan.
+        assert!(state.search_running[0].get());
+        assert!(state.search_progress[0].is_visible());
+        assert!(state.search_refresh_again[0].get());
+        let archived = Message {
+            uid: 1,
+            sender: "archive@example.com".into(),
+            subject: "Needle".into(),
+            ..Default::default()
+        };
+        state
+            .folder_cache
+            .borrow_mut()
+            .insert((account.email.clone(), "Archive".into()), vec![archived]);
+        state.select(account, "Archive".into());
+        wait(&|| {
+            !state.search_running[0].get()
+                && ui::virtual_list::groups(&state.list)
+                    .first()
+                    .is_some_and(|group| group[0].sender == "archive@example.com")
+        });
+        assert!(!state.search_progress[0].is_visible());
+        wait(&|| labels(state.list.clone().upcast()).contains(&"Archive".into()));
+        state.search.set_text("no matches");
+        wait(&|| !state.search_running[0].get());
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 0);
+        assert!(labels(state.list_stack.clone().upcast()).contains(&"No senders found".into()));
+        bar.set_search_mode(false);
+        assert!(!state.search_running[0].get());
+        assert!(!state.search_progress[0].is_visible());
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "Requires GTK to verify large histories and stable search refreshes"]
+    fn large_histories_keep_rows_light_and_search_refreshes_visible() {
+        let state = unread_test_state("org.example.BrevladaLargeHistoryDiagnostic");
+        let account = state.account.borrow().clone().unwrap();
+        state
+            .search_filters
+            .set_accounts(std::slice::from_ref(&account));
+        state.search_filters.set_current(Some(&account.email));
+        let messages: Vec<_> = (1..=5000)
+            .map(|uid| Message {
+                uid,
+                timestamp: uid as i64,
+                message_id: format!("message-{uid}"),
+                sender: "busy@example.com".into(),
+                subject: format!("Message {uid}"),
+                is_read: true,
+                body_text: "Cached text ".repeat(1024),
+                body_html: "<p>Cached HTML</p>".repeat(1024),
+                list_preview: Some("Cached text".into()),
+                display_prepared: true,
+                remote_media: Some(false),
+                ..Default::default()
+            })
+            .collect();
+        *state.messages.borrow_mut() = messages;
+        let started = std::time::Instant::now();
+        state.render_list();
+        eprintln!(
+            "5,000 cached messages, sender render: {:?}",
+            started.elapsed()
+        );
+        let sender_row = ui::virtual_list::model(&state.list).item(0).unwrap();
+        assert!(
+            ui::virtual_list::groups(&state.list)
+                .iter()
+                .flatten()
+                .all(|message| message.body_text.is_empty()
+                    && message.body_html.is_empty()
+                    && message.inline_media.is_empty())
+        );
+        let latest = state.messages.borrow().last().unwrap().clone();
+        state.filter_sender(Some(latest.clone()));
+        let page = state.sender_pane.borrow_mut().request().unwrap().ticket;
+        let started = std::time::Instant::now();
+        let batch = state
+            .messages
+            .borrow()
+            .iter()
+            .rev()
+            .take(25)
+            .cloned()
+            .collect();
+        state.event(Event::SenderPage(state.generation.get(), page, batch, true));
+        eprintln!("First sender page: {:?}", started.elapsed());
+        assert_eq!(ui::virtual_list::model(&state.thread_list).n_items(), 25);
+        assert!(
+            ui::virtual_list::groups(&state.thread_list)
+                .iter()
+                .flatten()
+                .all(|message| message.body_html.is_empty() && message.body_text.len() < 200)
+        );
+        let untouched = ui::virtual_list::model(&state.thread_list).item(1).unwrap();
+        let mut changed = latest;
+        changed.body_loaded = true;
+        changed.display_prepared = true;
+        changed.body_html.push_str("<p>New body</p>");
+        let started = std::time::Instant::now();
+        state.update_body(&changed);
+        eprintln!(
+            "Opening one cached body in 5,000 messages: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            ui::virtual_list::model(&state.list).item(0).unwrap(),
+            sender_row
+        );
+        assert_eq!(
+            ui::virtual_list::model(&state.thread_list).item(1).unwrap(),
+            untouched
+        );
+        let groups = vec![
+            vec![Message {
+                uid: 10,
+                sender: "a@example.com".into(),
+                ..Default::default()
+            }],
+            vec![Message {
+                uid: 20,
+                sender: "b@example.com".into(),
+                ..Default::default()
+            }],
+        ];
+        let location = crate::backend::search::Location {
+            account: account.email,
+            folder: "INBOX".into(),
+        };
+        let bar = state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap();
+        bar.set_search_mode(true);
+        state.search.set_text("example.com");
+        state.cancel_search(false);
+        state.publish_search_groups(
+            false,
+            "example.com",
+            groups.clone(),
+            vec![Some(location.clone()); 2],
+        );
+        let retained = ui::virtual_list::model(&state.list).item(1).unwrap();
+        state.begin_search(false, true);
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 2);
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("list")
+        );
+        state.publish_search_groups(
+            false,
+            "example.com",
+            groups[..1].to_vec(),
+            vec![Some(location)],
+        );
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 2);
+        assert_eq!(
+            ui::virtual_list::model(&state.list).item(1).unwrap(),
+            retained
+        );
+        state.cancel_search(false);
+        bar.set_search_mode(false);
+    }
+
+    #[test]
+    #[ignore = "Requires GTK to verify bounded conversation rendering"]
+    fn long_conversations_render_in_batches_and_keep_existing_cards() {
+        let state = unread_test_state("org.example.BrevladaLongConversationDiagnostic");
+        let messages: Vec<_> = (1..=2000)
+            .map(|uid| Message {
+                uid,
+                message_id: format!("message-{uid}"),
+                timestamp: uid as i64,
+                sender: "busy@example.com".into(),
+                subject: "Same conversation".into(),
+                is_read: true,
+                body_loaded: true,
+                body_text: "Cached body".repeat(1024),
+                display_prepared: true,
+                list_preview: Some("Cached body".into()),
+                remote_media: Some(false),
+                ..Default::default()
+            })
+            .collect();
+        *state.messages.borrow_mut() = messages;
+        let headers: Vec<_> = state
+            .messages
+            .borrow()
+            .iter()
+            .map(|message| message.list_header(true))
+            .collect();
+        let started = std::time::Instant::now();
+        state.show_thread(headers);
+        eprintln!("Open 2,000-message conversation: {:?}", started.elapsed());
+        assert_eq!(state.cards.borrow().len(), 25);
+        assert!(state.conversation_more.parent().is_some());
+        let first = state.cards.borrow().get(&2000).unwrap().widget.clone();
+        state.conversation_more.emit_clicked();
+        assert_eq!(state.cards.borrow().len(), 50);
+        assert_eq!(state.cards.borrow().get(&2000).unwrap().widget, first);
+        assert_eq!(first.parent(), Some(state.viewer.clone().upcast()));
+        state.new_selection();
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session for asynchronous search and sender navigation"]
+    fn independent_searches_include_cached_history_and_cancel_on_navigation() {
+        let state = unread_test_state("org.example.BrevladaSearchDiagnostic");
+        let old = Message {
+            uid: 1,
+            timestamp: 1,
+            sender: "Alice <alice@example.com>".into(),
+            recipients: "Receiver <receiver@example.com>".into(),
+            cc: "Copy <copy@example.com>".into(),
+            subject: "Older subject".into(),
+            body_text: "A needle in cached history".into(),
+            ..Default::default()
+        };
+        let latest = Message {
+            uid: 80,
+            timestamp: 80,
+            subject: "Latest subject".into(),
+            body_text: "New message".into(),
+            ..old.clone()
+        };
+        let other = Message {
+            uid: 90,
+            timestamp: 90,
+            sender: "Bob <bob@example.com>".into(),
+            body_text: "A needle from another sender".into(),
+            ..Default::default()
+        };
+        *state.messages.borrow_mut() = vec![old, latest.clone(), other.clone()];
+        state.render_list();
+        let wait = |predicate: &dyn Fn() -> bool| {
+            let context = glib::MainContext::default();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !predicate() && std::time::Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(predicate(), "Search did not finish");
+        };
+        state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap()
+            .set_search_mode(true);
+        state.search.set_text("latest");
+        wait(&|| ui::virtual_list::model(&state.list).n_items() == 1);
+        state.filter_sender(Some(latest.clone()));
+        let ticket = sender_ticket(&state);
+        state.event(Event::SenderPage(
+            state.generation.get(),
+            ticket,
+            vec![latest],
+            true,
+        ));
+        assert_eq!(ui::virtual_list::model(&state.thread_list).n_items(), 1);
+        state
+            .thread_search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap()
+            .set_search_mode(true);
+        for query in ["needle", "older", "receiver", "copy", "alice"] {
+            state.thread_search.set_text(query);
+            state
+                .thread_search
+                .emit_by_name::<()>("search-changed", &[]);
+            wait(&|| {
+                let groups = ui::virtual_list::groups(&state.thread_list);
+                groups.iter().flatten().any(|message| message.uid == 1)
+                    && groups.iter().flatten().all(|message| message.uid != 90)
+            });
+            assert_eq!(state.search.text(), "latest");
+            assert_eq!(ui::virtual_list::model(&state.list).n_items(), 1);
+            state.thread_search.set_text("missing");
+            state
+                .thread_search
+                .emit_by_name::<()>("search-changed", &[]);
+            wait(&|| ui::virtual_list::model(&state.thread_list).n_items() == 0);
+        }
+        state.search.set_text("");
+        state.search.emit_by_name::<()>("search-changed", &[]);
+        state.thread_search.set_text("");
+        state
+            .thread_search
+            .emit_by_name::<()>("search-changed", &[]);
+        let mut cached = state.messages.borrow()[0].clone();
+        cached.body_text.clear();
+        cached.body_html = "<p>HTML cache arrival</p>".into();
+        cached.cc = "New copy recipient".into();
+        state.apply_cached_body(cached);
+        state.thread_search.set_text("arrival");
+        state
+            .thread_search
+            .emit_by_name::<()>("search-changed", &[]);
+        wait(&|| {
+            ui::virtual_list::groups(&state.thread_list)
+                .iter()
+                .flatten()
+                .any(|message| message.uid == 1)
+        });
+        state.thread_search.set_text("new copy");
+        state
+            .thread_search
+            .emit_by_name::<()>("search-changed", &[]);
+        wait(&|| {
+            ui::virtual_list::groups(&state.thread_list)
+                .iter()
+                .flatten()
+                .any(|message| message.uid == 1)
+        });
+        state.thread_search.set_text("needle");
+        state
+            .thread_search
+            .emit_by_name::<()>("search-changed", &[]);
+        state.filter_sender(Some(other));
+        assert!(state.thread_search.text().is_empty());
+        let context = glib::MainContext::default();
+        for _ in 0..50 {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.sender_pane.borrow().sender(), Some("bob@example.com"));
+        assert_eq!(ui::virtual_list::model(&state.thread_list).n_items(), 0);
+        state.search.set_text("missing");
+        state.search.emit_by_name::<()>("search-changed", &[]);
+        state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap()
+            .set_search_mode(false);
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 2);
+        for _ in 0..50 {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 2);
+    }
+
+    #[test]
     #[ignore = "Requires a graphical session for GTK row recycling"]
     fn repeated_search_sort_and_open_keeps_one_sender_and_rejects_old_pages() {
         let state = unread_test_state("org.example.BrevladaNavigationDiagnostic");
@@ -806,6 +1778,7 @@ mod diagnostics {
                 .set_text(if cycle % 2 == 0 { "even" } else { "odd" });
             state.sender_unread_first.set_unread_first(cycle % 3 == 0);
             state.render_list();
+            settle();
             let first = ui::virtual_list::item(&state.list, 0).unwrap().messages[0].clone();
             state.list.emit_by_name::<()>("activate", &[&0u32]);
             let old_ticket = sender_ticket(&state);
@@ -1709,8 +2682,20 @@ mod diagnostics {
             .unwrap();
         assert!(compose_header.has_css_class("content-header"));
         state.compose_button.emit_clicked();
-        assert!(state.compose.widget.get_visible());
-        let header = state.compose.widget.first_child().unwrap();
+        let compose = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        assert!(compose.widget.get_visible());
+        let header = compose
+            .widget
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap();
         let receiver = header
             .first_child()
             .unwrap()
@@ -1719,26 +2704,28 @@ mod diagnostics {
         assert_eq!(receiver.text(), "ada@example.com");
         receiver.set_text("edited@example.com");
         state.compose_button.emit_clicked();
+        let second_compose = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        assert!(!Rc::ptr_eq(&compose, &second_compose));
+        assert_eq!(state.open_composers.borrow().len(), 2);
         assert_eq!(receiver.text(), "edited@example.com");
         let cancel = header
             .last_child()
             .unwrap()
             .downcast::<gtk::Button>()
             .unwrap();
-        let draft = cancel
+        let send = cancel
             .prev_sibling()
             .unwrap()
             .downcast::<gtk::Button>()
             .unwrap();
-        let send = draft
-            .prev_sibling()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap();
-        for button in [&draft, &cancel] {
-            assert!(button.icon_name().is_some());
-            assert!(button.label().is_none());
-        }
+        assert!(cancel.icon_name().is_some());
+        assert!(cancel.label().is_none());
         assert!(!send.is_sensitive());
         assert!(labels(send.clone().upcast()).contains(&"Send".into()));
         let subject = header
@@ -1789,15 +2776,32 @@ mod diagnostics {
         subject.set_text("Subject");
         assert!(send.is_sensitive());
         send.emit_clicked();
-        draft.emit_clicked();
-        assert!(state.compose.widget.get_visible());
+        assert!(compose.widget.get_visible());
         assert_eq!(receiver.text(), "edited@example.com");
         cancel.emit_clicked();
-        assert!(!state.compose.widget.get_visible());
+        assert!(!compose.widget.get_visible());
         assert!(receiver.text().is_empty());
+        assert!(second_compose.widget.get_visible());
         state.compose_button.emit_clicked();
-        assert_eq!(receiver.text(), "ada@example.com");
-        cancel.emit_clicked();
+        let third_compose = state
+            .open_composers
+            .borrow()
+            .last()
+            .unwrap()
+            .compose
+            .clone();
+        assert_eq!(
+            third_compose
+                .widget
+                .first_child()
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::Entry>()
+                .unwrap()
+                .text(),
+            "ada@example.com"
+        );
         state.event(Event::SenderPage(
             state.generation.get(),
             sender_ticket(&state),
