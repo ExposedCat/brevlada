@@ -16,6 +16,8 @@ mod calendar;
 mod concurrency_tests;
 #[path = "sync_history.rs"]
 mod history;
+#[path = "notification_storage.rs"]
+mod notifications;
 #[path = "read_storage.rs"]
 mod reads;
 #[path = "sender_storage.rs"]
@@ -74,6 +76,12 @@ impl Storage {
             account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER,
             PRIMARY KEY(account_id, folder));
             CREATE TABLE IF NOT EXISTS rust_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rust_notification_folders (
+            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
+            last_uid INTEGER NOT NULL, PRIMARY KEY(account_id,folder));
+            CREATE TABLE IF NOT EXISTS rust_notification_pending (
+            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
+            uid INTEGER NOT NULL, PRIMARY KEY(account_id,folder,uid_validity,uid));
             CREATE TABLE IF NOT EXISTS rust_read_changes (
             account_id TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL,
             uid_validity INTEGER, revision INTEGER NOT NULL,

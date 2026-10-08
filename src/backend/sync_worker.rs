@@ -100,6 +100,7 @@ fn execute(
                 events.send_blocking(Event::SentCacheChanged(account.email.clone()))?;
             }
             if missing.is_empty() {
+                publish_notifications(storage, events, job, validity)?;
                 if !queue.headers_only(&account.email, folder) {
                     enqueue_bodies(storage, queue, job, validity, None)?;
                 }
@@ -124,6 +125,7 @@ fn execute(
                 mail.header_batch(folder, *validity, &uids[*offset..end])
             })?;
             storage.store_headers(&account.email, folder, *validity, &messages)?;
+            publish_notifications(storage, events, job, *validity)?;
             if end == uids.len() {
                 queue.headers_cached(&account.email, folder, *validity);
                 if queue.is_outgoing(&account.email, folder) {
@@ -183,6 +185,24 @@ fn execute(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn publish_notifications(
+    storage: &Storage,
+    events: &async_channel::Sender<Event>,
+    job: &Job,
+    validity: u32,
+) -> Result<()> {
+    let messages = storage.pending_notifications(&job.account.email, &job.folder, validity)?;
+    if !messages.is_empty() {
+        events.send_blocking(Event::NewMail(
+            job.account.email.clone(),
+            job.folder.clone(),
+            validity,
+            messages,
+        ))?;
     }
     Ok(())
 }

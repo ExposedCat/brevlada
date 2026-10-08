@@ -4,6 +4,7 @@ mod calendar;
 mod conversation;
 mod drafts;
 mod events;
+mod lifecycle;
 mod lists;
 mod message_navigation;
 mod parcel_history;
@@ -35,7 +36,7 @@ use std::{
 };
 
 struct State {
-    sender: worker::Worker,
+    sender: Rc<worker::Worker>,
     sender_actions: RefCell<models::pending_actions::PendingActions>,
     account: RefCell<Option<Account>>,
     folder: RefCell<String>,
@@ -67,7 +68,6 @@ struct State {
     draft_removed: RefCell<HashSet<drafts::Key>>,
     draft_local: RefCell<HashMap<drafts::Key, drafts::Local>>,
     composer_pending: RefCell<HashMap<u64, drafts::Pending>>,
-    composer_request: Cell<u64>,
     sent_pending: RefCell<HashSet<String>>,
     open_group: RefCell<Vec<Message>>,
     trusted_senders: RefCell<HashMap<String, HashSet<String>>>,
@@ -155,11 +155,11 @@ fn load_downloaded_media() -> HashSet<(String, String, u32, String)> {
     }
 }
 
-pub fn create(app: &adw::Application) {
+pub fn create(app: &adw::Application, engine: &Rc<crate::application::Engine>) {
     let shell = ui::shell::Shell::new(app);
     let window = shell.window.clone();
     let settings = shell.settings.clone();
-    let (sender, events) = worker::start(glib::user_data_dir().join("brevlada/emails.db"));
+    let sender = engine.worker.clone();
     let queue = sender.avatars();
     let avatars = ui::avatars::Avatars::new(move |email| queue.push(email.to_owned()));
     let state = State::new(shell, sender, ui::expansion::Expansion::load(), avatars);
@@ -329,7 +329,6 @@ pub fn create(app: &adw::Application) {
         if !state.loading.get() {
             state.load();
         }
-        state.sender.sync();
         glib::ControlFlow::Continue
     });
     let owner = RefCell::new(Some(state.clone()));
@@ -348,7 +347,21 @@ pub fn create(app: &adw::Application) {
     });
     let status_timer = RefCell::new(Some(status_timer));
     let timer = RefCell::new(Some(timer));
-    window.connect_close_request(move |_| {
+    let engine_on_close = engine.clone();
+    let closing = Rc::new(Cell::new(false));
+    let close_ready = Rc::new(Cell::new(false));
+    window.connect_close_request(move |window| {
+        if closing.get() {
+            return glib::Propagation::Stop;
+        }
+        let state = owner.borrow().clone();
+        if !close_ready.get()
+            && let Some(state) = state
+            && lifecycle::flush_before_close(&state, window, &closing, &close_ready)
+        {
+            return glib::Propagation::Stop;
+        }
+        engine_on_close.detach();
         owner.borrow_mut().take();
         if let Some(timer) = timer.borrow_mut().take() {
             timer.remove();
@@ -359,11 +372,8 @@ pub fn create(app: &adw::Application) {
         glib::Propagation::Proceed
     });
     let weak = Rc::downgrade(&state);
-    glib::spawn_future_local(async move {
-        while let Ok(event) = events.recv().await {
-            let Some(state) = weak.upgrade() else {
-                break;
-            };
+    engine.attach(move |event| {
+        if let Some(state) = weak.upgrade() {
             state.event(event);
         }
     });
@@ -462,7 +472,7 @@ impl State {
 
     fn new(
         shell: ui::shell::Shell,
-        sender: worker::Worker,
+        sender: impl Into<Rc<worker::Worker>>,
         expansion: ui::expansion::Expansion,
         avatars: Rc<ui::avatars::Avatars>,
     ) -> Rc<Self> {
@@ -503,7 +513,7 @@ impl State {
         conversation_more.set_margin_top(theme::SMALL_SPACING);
         conversation_more.set_margin_bottom(theme::SPACING);
         let state = Rc::new(State {
-            sender,
+            sender: sender.into(),
             account: RefCell::new(None),
             folder: RefCell::new(String::new()),
             generation: Cell::new(0),
@@ -536,7 +546,6 @@ impl State {
             draft_removed: RefCell::default(),
             draft_local: RefCell::default(),
             composer_pending: RefCell::default(),
-            composer_request: Cell::new(0),
             sent_pending: RefCell::new(HashSet::new()),
             open_group: RefCell::new(Vec::new()),
             trusted_senders: RefCell::new(load_trusted_senders()),

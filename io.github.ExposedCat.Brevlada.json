@@ -29,6 +29,7 @@
             "build-commands": [
                 "cargo build --frozen --release",
                 "install -Dm755 target/release/brevlada /app/bin/brevlada",
+                "install -Dm644 data/io.github.ExposedCat.Brevlada.service /app/share/dbus-1/services/io.github.ExposedCat.Brevlada.service",
                 "install -Dm644 data/io.github.ExposedCat.Brevlada.desktop /app/share/applications/io.github.ExposedCat.Brevlada.desktop",
                 "install -Dm644 data/io.github.ExposedCat.Brevlada.metainfo.xml /app/share/metainfo/io.github.ExposedCat.Brevlada.metainfo.xml",
                 "install -Dm644 resources/brevlada-mail-read-symbolic.svg /app/share/icons/hicolor/scalable/apps/io.github.ExposedCat.Brevlada.svg",

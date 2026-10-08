@@ -1,9 +1,27 @@
 use super::{accounts, avatar_queue::AvatarQueue, connections::Connections, storage::Storage};
 use crate::models::{Account, Draft, Message, SentMessage};
 use anyhow::Result;
-use std::{path::PathBuf, sync::mpsc};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+};
 
 pub enum Command {
+    FlushNotifications,
+    NotificationsHandled {
+        account: String,
+        folder: String,
+        validity: u32,
+        uids: Vec<u32>,
+    },
+    OpenNotification {
+        account: String,
+        validity: u32,
+        uid: u32,
+    },
     CalendarHistory {
         account: Account,
         uid: String,
@@ -91,6 +109,8 @@ pub enum Command {
 }
 
 pub enum Event {
+    NewMail(String, String, u32, Vec<Message>),
+    NotificationOpened(String, Result<Option<Message>, String>),
     CalendarHistory(u64, String, Result<Vec<Message>, String>),
     CalendarReplied {
         account: String,
@@ -163,6 +183,7 @@ pub struct BodyRequest {
 }
 
 pub struct Worker {
+    request: AtomicU64,
     commands: mpsc::Sender<Command>,
     cache_commands: mpsc::Sender<Command>,
     parcel_commands: mpsc::Sender<Command>,
@@ -182,6 +203,7 @@ impl Worker {
         let (commands, receiver) = mpsc::channel();
         (
             Self {
+                request: AtomicU64::default(),
                 background: super::sync_queue::SyncQueue::default(),
                 cache_commands: commands.clone(),
                 parcel_commands: commands.clone(),
@@ -210,9 +232,16 @@ impl Worker {
             .send(command)
             .map_err(|_| anyhow::anyhow!("Mail service stopped"))
     }
+    pub fn next_request(&self) -> u64 {
+        self.request.fetch_add(1, Ordering::Relaxed) + 1
+    }
     pub fn register(&self, account: Account, expanded: bool) {
         self.avatars.register(account.clone());
         self.background.register(account, expanded);
+    }
+    pub fn retain_accounts(&self, accounts: &[Account]) {
+        self.background.retain_accounts(accounts);
+        self.avatars.retain_accounts(accounts);
     }
     /// Handle used by the sender list to ask for avatars as rows appear.
     pub fn avatars(&self) -> AvatarQueue {
@@ -240,6 +269,12 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl Worker {
+    pub fn stop(&self) {
         self.bodies.close();
         self.background.close();
         self.avatars.close();
@@ -271,6 +306,7 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     start_cache_reads(path, cache_receiver, events);
     (
         Worker {
+            request: AtomicU64::default(),
             commands: sender,
             cache_commands: cache_sender,
             parcel_commands: parcel_sender,
@@ -416,6 +452,36 @@ fn execute(
     background: &super::sync_queue::SyncQueue,
 ) -> Result<()> {
     match command {
+        Command::FlushNotifications => {
+            for (account, folder, validity) in storage.notification_folders()? {
+                let messages = storage.pending_notifications(&account, &folder, validity)?;
+                if !messages.is_empty() {
+                    events.send_blocking(Event::NewMail(account, folder, validity, messages))?;
+                }
+            }
+        }
+        Command::NotificationsHandled {
+            account,
+            folder,
+            validity,
+            uids,
+        } => {
+            storage.acknowledge_notifications(&account, &folder, validity, &uids)?;
+        }
+        Command::OpenNotification {
+            account,
+            validity,
+            uid,
+        } => {
+            let result = (|| -> Result<Option<Message>> {
+                if storage.validity(&account, "INBOX")? != Some(validity) {
+                    return Ok(None);
+                }
+                storage.message(&account, "INBOX", uid)
+            })()
+            .map_err(|error| error.to_string());
+            events.send_blocking(Event::NotificationOpened(account, result))?;
+        }
         Command::CalendarReply {
             account,
             message,
@@ -710,6 +776,7 @@ mod tests {
         let (events, results) = async_channel::unbounded();
         start_cache_reads(path.clone(), cache_receiver, events);
         let worker = Worker {
+            request: AtomicU64::default(),
             parcel_commands: commands.clone(),
             commands,
             cache_commands,

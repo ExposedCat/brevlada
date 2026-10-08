@@ -5,6 +5,7 @@ use std::{io::ErrorKind, path::Path};
 #[serde(default)]
 pub struct Settings {
     pub trust_all_senders: bool,
+    pub background_service: bool,
 }
 
 impl Settings {
@@ -30,6 +31,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn background_defaults_off_for_existing_settings_and_preserves_privacy() {
+        let mut settings: Settings = serde_json::from_str("{\"trust_all_senders\":true}").unwrap();
+        assert!(!settings.background_service);
+        settings.background_service = true;
+        let restored: Settings =
+            serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert!(restored.background_service && restored.trust_all_senders);
+    }
+
+    #[test]
     fn trust_all_senders_defaults_off_and_persists_both_states() {
         let directory = std::env::temp_dir().join(format!(
             "brevlada-settings-{}",
@@ -43,7 +54,12 @@ mod tests {
                 .trust_all_senders
         );
         for trust_all_senders in [true, false] {
-            Settings { trust_all_senders }.save(&path).unwrap();
+            Settings {
+                trust_all_senders,
+                ..Settings::default()
+            }
+            .save(&path)
+            .unwrap();
             assert_eq!(
                 Settings::load(&path).unwrap().trust_all_senders,
                 trust_all_senders

@@ -20,6 +20,17 @@ struct Pending {
 pub struct AvatarQueue(Arc<(Mutex<Pending>, Condvar)>);
 
 impl AvatarQueue {
+    pub fn retain_accounts(&self, accounts: &[Account]) {
+        let mut pending = self.0.0.lock().unwrap();
+        pending.accounts.retain(|existing| {
+            accounts
+                .iter()
+                .any(|account| account.email == existing.email)
+        });
+        pending
+            .unauthorized
+            .retain(|email| accounts.iter().any(|account| &account.email == email));
+    }
     pub fn register(&self, account: Account) {
         let mut pending = self.0.0.lock().unwrap();
         if let Some(existing) = pending

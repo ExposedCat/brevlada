@@ -36,7 +36,11 @@ impl State {
                 .connect_active_notify(move |row| {
                     if let Some(state) = weak.upgrade() {
                         state.settings.borrow_mut().trust_all_senders = row.is_active();
-                        if let Err(error) = state.settings.borrow().save(&path) {
+                        let saved = Settings::load(&path).and_then(|mut settings| {
+                            settings.trust_all_senders = row.is_active();
+                            settings.save(&path)
+                        });
+                        if let Err(error) = saved {
                             eprintln!("Could not save settings: {error}");
                             state
                                 .toast

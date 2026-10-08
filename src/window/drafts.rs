@@ -935,9 +935,7 @@ impl State {
     }
 
     pub(super) fn next_composer_request(&self) -> u64 {
-        let request = self.composer_request.get() + 1;
-        self.composer_request.set(request);
-        request
+        self.sender.next_request()
     }
 
     pub(super) fn prepare_composer(

@@ -139,6 +139,10 @@ impl Autosave {
         self.paused.get()
     }
 
+    pub fn needs_flush(&self) -> bool {
+        self.busy.get() || self.saved.get() != self.revision.get()
+    }
+
     pub fn resume(self: &Rc<Self>) {
         self.paused.set(false);
         self.flush.set(false);

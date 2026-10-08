@@ -165,6 +165,22 @@ impl Storage {
             )
             .optional()?
             .flatten();
+        Self::observe_notifications(
+            &transaction,
+            account,
+            folder,
+            validity,
+            previous,
+            &flags
+                .iter()
+                .map(|item| {
+                    (
+                        item.uid,
+                        !reads.get(&item.uid).copied().unwrap_or(item.read) && !item.draft,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )?;
         if previous != Some(validity) {
             transaction.execute(
                 "DELETE FROM rust_messages WHERE account_id=?1 AND folder=?2",

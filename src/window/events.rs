@@ -3,6 +3,23 @@ use super::*;
 impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
         match event {
+            Event::NotificationOpened(email, result) => match result {
+                Ok(Some(message)) => {
+                    let account = self
+                        .folder_boxes
+                        .borrow()
+                        .get(&email)
+                        .map(|(account, _)| account.clone());
+                    if let Some(account) = account {
+                        self.select(account, "INBOX".into());
+                        self.open_search_sender(models::senders::key(&message), vec![message]);
+                    }
+                }
+                Ok(None) => self
+                    .toast
+                    .add_toast(adw::Toast::new("This message is no longer available")),
+                Err(error) => self.toast.add_toast(adw::Toast::new(&error)),
+            },
             Event::CalendarHistory(generation, uid, result)
                 if generation == self.generation.get() =>
             {
@@ -354,8 +371,8 @@ impl State {
                     ui::shell::no_accounts(&self.sidebar);
                 }
                 for account in accounts {
-                    self.sender.register(
-                        account.clone(),
+                    self.sender.expanded(
+                        &account.email,
                         self.expansion.for_account(&account.email).is_expanded(""),
                     );
                     let unread = ui::sidebar::Unread::default();

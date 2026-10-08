@@ -75,6 +75,27 @@ The SQLite cache remains at $XDG_DATA_HOME/brevlada/emails.db, defaulting to
 once into Rust tables and retained. New cache records use account, folder,
 and UID together; UIDVALIDITY changes invalidate the affected folder cache.
 
+Background service
+
+Settings > General > Background service is off by default. Enabling it keeps
+mail checking alive after Brevlada's window closes. Brevlada does not start
+automatically at login. The Flatpak requests background access through the
+desktop portal with autostart disabled; permission failures restore the previous
+setting. Native builds keep the application alive without an autostart entry.
+Neither needs additional Flatpak sandbox permissions.
+Quit from the application menu or Ctrl+Q stops checking until the next launch.
+Closing the window waits for unsaved drafts to finish saving.
+
+New unread inbox arrivals produce desktop notifications. Clicking one opens its
+message. Notification checkpoints and pending arrivals are stored separately
+from downloaded headers and bodies, so interrupted downloads and offline
+arrivals are handled across restarts. A newly added account establishes a silent
+baseline; an existing cache supplies the baseline when upgrading. A UIDVALIDITY
+change establishes a new baseline because the old message IDs are invalid.
+
+Checking uses the existing five-minute sync cycle, including retries after a
+network failure and refreshing Online Accounts. IMAP IDLE is not implemented.
+
 Interactive folder/message loads and background caching run on separate workers.
 Background caching starts for all accounts at launch and checks again every five
 minutes. Four background workers allow up to two active requests per account.

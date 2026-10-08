@@ -83,7 +83,7 @@ impl State {
         self.visible_limit.set(theme::MESSAGE_LIMIT);
         self.has_more_senders.set(false);
         self.sender.focus(&account.email, &folder);
-        self.generation.set(self.generation.get() + 1);
+        self.generation.set(self.sender.next_request());
         self.new_selection();
         self.calendar_history.borrow_mut().clear();
         self.search_filters.set_current(Some(&account.email));
@@ -306,7 +306,7 @@ impl State {
     }
 
     pub(super) fn new_selection(&self) {
-        let selection = self.selection.get() + 1;
+        let selection = self.sender.next_request();
         self.selection.set(selection);
         self.sender.select(selection);
         self.pending.borrow_mut().clear();

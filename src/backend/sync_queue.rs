@@ -87,6 +87,7 @@ impl Job {
 #[derive(Default)]
 struct Pending {
     accounts: HashMap<String, Account>,
+    removed_accounts: HashSet<String>,
     expanded: HashSet<String>,
     folders: HashMap<String, Vec<String>>,
     sent: HashMap<String, String>,
@@ -123,7 +124,7 @@ impl Pending {
     }
 
     fn enqueue(&mut self, job: Job) {
-        if self.closed {
+        if self.closed || self.removed_accounts.contains(&job.account.email) {
             return;
         }
         if matches!(job.task, Task::Scan)
@@ -301,12 +302,43 @@ impl SyncQueue {
 
     pub fn register(&self, account: Account, expanded: bool) {
         self.expanded(&account.email, expanded);
-        self.state
-            .0
-            .lock()
-            .unwrap()
+        let mut state = self.state.0.lock().unwrap();
+        state.removed_accounts.remove(&account.email);
+        state.accounts.insert(account.email.clone(), account);
+    }
+
+    pub fn retain_accounts(&self, accounts: &[Account]) {
+        let live: HashSet<_> = accounts
+            .iter()
+            .map(|account| account.email.as_str())
+            .collect();
+        let mut state = self.state.0.lock().unwrap();
+        let removed: Vec<_> = state
             .accounts
-            .insert(account.email.clone(), account);
+            .keys()
+            .filter(|email| !live.contains(email.as_str()))
+            .cloned()
+            .collect();
+        state.removed_accounts.extend(removed);
+        state
+            .accounts
+            .retain(|email, _| live.contains(email.as_str()));
+        state.expanded.retain(|email| live.contains(email.as_str()));
+        state
+            .folders
+            .retain(|email, _| live.contains(email.as_str()));
+        state.sent.retain(|email, _| live.contains(email.as_str()));
+        state
+            .drafts
+            .retain(|email, _| live.contains(email.as_str()));
+        state
+            .jobs
+            .retain(|job| live.contains(job.account.email.as_str()));
+        let running: HashSet<_> = state.running.keys().cloned().collect();
+        state
+            .known
+            .retain(|key| live.contains(key.0.as_str()) || running.contains(key));
+        self.state.1.notify_all();
     }
 
     pub fn expanded(&self, email: &str, expanded: bool) {
