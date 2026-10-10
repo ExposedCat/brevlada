@@ -1,6 +1,8 @@
 mod application;
 mod backend;
 mod background;
+#[cfg(test)]
+mod bench;
 mod components;
 mod models;
 mod theme;
