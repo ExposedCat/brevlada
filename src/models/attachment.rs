@@ -1,4 +1,7 @@
-use mailparse::{DispositionType, MailHeaderMap, ParsedMail};
+use mailparse::{
+    DispositionType, MailHeader, MailHeaderMap, ParsedContentDisposition, ParsedContentType,
+    ParsedMail,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -10,14 +13,21 @@ pub struct Details {
 }
 
 pub fn name(mail: &ParsedMail<'_>) -> Option<String> {
-    let disposition = mail.get_content_disposition();
+    part_name(&mail.get_content_disposition(), &mail.ctype, &mail.headers)
+}
+
+pub fn part_name(
+    disposition: &ParsedContentDisposition,
+    ctype: &ParsedContentType,
+    headers: &[MailHeader<'_>],
+) -> Option<String> {
     let filename = disposition
         .params
         .get("filename")
-        .or_else(|| mail.ctype.params.get("name"))
+        .or_else(|| ctype.params.get("name"))
         .cloned();
     if disposition.disposition != DispositionType::Attachment
-        && mail.headers.get_first_value("Content-ID").is_some()
+        && headers.get_first_value("Content-ID").is_some()
     {
         return None;
     }
