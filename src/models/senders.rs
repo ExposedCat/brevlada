@@ -1,16 +1,12 @@
 use super::Message;
-use std::{borrow::Borrow, collections::HashMap};
+use std::{
+    borrow::{Borrow, Cow},
+    collections::HashMap,
+};
 
 pub fn identity(message: &Message) -> (String, String) {
-    if let Ok(addresses) = mailparse::addrparse(&message.sender)
-        && let Some(mailparse::MailAddr::Single(address)) = addresses.first()
-    {
-        return (
-            address.display_name.clone().unwrap_or_default(),
-            address.addr.clone(),
-        );
-    }
-    (String::new(), message.sender.trim().to_owned())
+    let (name, address) = mailbox(&message.sender);
+    (name.into_owned(), address.into_owned())
 }
 
 /// The cache key for an address: no display name, no brackets, no casing.
@@ -19,7 +15,56 @@ pub fn address(raw: &str) -> String {
 }
 
 pub fn key(message: &Message) -> String {
-    address(&identity(message).1)
+    address(&mailbox(&message.sender).1)
+}
+
+fn mailbox(sender: &str) -> (Cow<'_, str>, Cow<'_, str>) {
+    if let Some((name, address)) = simple_mailbox(sender) {
+        return (name.into(), address.into());
+    }
+    if let Ok(addresses) = mailparse::addrparse(sender)
+        && let Some(mailparse::MailAddr::Single(address)) =
+            addresses.into_inner().into_iter().next()
+    {
+        return (
+            address.display_name.unwrap_or_default().into(),
+            address.addr.into(),
+        );
+    }
+    ("".into(), sender.trim().into())
+}
+
+/// Reads `addr`, `Name <addr>` and `"Name" <addr>`, nearly every sender, exactly as
+/// `mailparse::addrparse` would but without allocating; None leaves the rest to it.
+fn simple_mailbox(sender: &str) -> Option<(&str, &str)> {
+    let sender = sender.trim();
+    let (name, address) = if let Some(quoted) = sender.strip_prefix('"') {
+        let (name, rest) = quoted.split_once('"')?;
+        if name.contains('\\') {
+            return None;
+        }
+        (
+            name,
+            rest.trim_start().strip_prefix('<')?.strip_suffix('>')?,
+        )
+    } else {
+        match sender.find(['<', ';', ',', ':', '(']) {
+            None => ("", sender),
+            Some(bracket) if sender[bracket..].starts_with('<') => (
+                sender[..bracket].trim_end(),
+                sender[bracket + 1..].strip_suffix('>')?,
+            ),
+            Some(_) => return None,
+        }
+    };
+    if address.contains('>') {
+        return None;
+    }
+    Some(if address.contains('@') {
+        (name, address)
+    } else {
+        ("", sender)
+    })
 }
 
 pub fn preview(messages: &[Message]) -> Option<&Message> {
@@ -178,6 +223,22 @@ mod tests {
                     .flat_map(move |c| parts.into_iter().map(move |d| [a, b, c, d].concat()))
             })
         })
+    }
+
+    #[test]
+    fn identity_matches_mailparse_for_every_sender_shape() {
+        for sender in senders() {
+            let message = Message {
+                sender,
+                ..Default::default()
+            };
+            assert_eq!(
+                identity(&message),
+                mailparse_identity(&message.sender),
+                "{:?}",
+                message.sender
+            );
+        }
     }
 
     #[test]
