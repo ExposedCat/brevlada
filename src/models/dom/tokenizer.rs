@@ -1,4 +1,4 @@
-use super::{Attribute, Prefix, doctype::Doctype, entities::ENTITIES};
+use super::{Attribute, Prefix, doctype::Doctype, entities::ENTITIES, names::LocalName};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,7 @@ enum State {
 pub(super) struct Tag<'a> {
     pub(super) end: bool,
     pub(super) name: Cow<'a, str>,
+    pub(super) local: LocalName,
     pub(super) self_closing: bool,
     pub(super) attributes: Vec<Attribute<'a>>,
 }
@@ -124,14 +125,8 @@ fn clean(text: &str) -> Cow<'_, str> {
 }
 
 /// Tag, attribute and doctype names: ASCII letters lowercased, NUL replaced.
-fn name(name: &str) -> Cow<'_, str> {
-    if !name
-        .bytes()
-        .any(|byte| byte.is_ascii_uppercase() || byte == b'\0')
-    {
-        return Cow::Borrowed(name);
-    }
-    Cow::Owned(name.to_ascii_lowercase().replace('\0', "\u{fffd}"))
+fn name(name: &str) -> String {
+    name.to_ascii_lowercase().replace('\0', "\u{fffd}")
 }
 
 /// What numeric references to the C1 controls stand for, from windows-1252.
@@ -220,6 +215,23 @@ impl<'a> Tokenizer<'a> {
                 .iter()
                 .position(|&byte| stop(byte))
                 .unwrap_or(bytes.len())
+    }
+
+    /// Reads a name from the current position through `from` and on up to
+    /// whitespace or `stop`.
+    fn read_name(&mut self, from: usize, stop: impl Fn(u8) -> bool) -> Cow<'a, str> {
+        let start = self.position;
+        self.position = from;
+        self.skip_while(|byte| !space(byte) && !stop(byte));
+        let text = &self.input[start..self.position];
+        if text
+            .bytes()
+            .any(|byte| byte.is_ascii_uppercase() || byte == b'\0')
+        {
+            Cow::Owned(name(text))
+        } else {
+            Cow::Borrowed(text)
+        }
     }
 
     fn newline(&mut self, text: &mut Text<'a>) {
@@ -420,7 +432,7 @@ impl<'a> Tokenizer<'a> {
                 match stage {
                     Stage::Bogus => {}
                     Stage::Name(start) => {
-                        doctype.name = Some(name(&self.input[start..]).into_owned());
+                        doctype.name = Some(name(&self.input[start..]));
                         doctype.force_quirks = true;
                     }
                     Stage::Identifier { system, start, .. } => {
@@ -452,7 +464,7 @@ impl<'a> Tokenizer<'a> {
                     Stage::Name(self.position - 1)
                 }
                 Stage::Name(start) if space(byte) || byte == b'>' => {
-                    doctype.name = Some(name(&self.input[start..self.position]).into_owned());
+                    doctype.name = Some(name(&self.input[start..self.position]));
                     Stage::AfterName
                 }
                 Stage::Name(_) | Stage::Identifier { .. } | Stage::Bogus
@@ -529,11 +541,11 @@ impl<'a> Tokenizer<'a> {
 
     /// The tag states from the first character of the name.
     fn tag(&mut self, end: bool) -> Option<Tag<'a>> {
-        let start = self.position;
-        self.skip_while(|byte| !space(byte) && !matches!(byte, b'/' | b'>'));
+        let name = self.read_name(self.position, |byte| matches!(byte, b'/' | b'>'));
         let mut tag = Tag {
             end,
-            name: name(&self.input[start..self.position]),
+            local: LocalName::new(&name),
+            name,
             self_closing: false,
             attributes: Vec::new(),
         };
@@ -570,12 +582,9 @@ impl<'a> Tokenizer<'a> {
     /// Reads an attribute starting at its first character, which may be any
     /// character but whitespace, `/` and `>`.
     fn attribute(&mut self) -> Option<Attribute<'a>> {
-        let start = self.position;
-        self.position += 1;
-        self.skip_while(|byte| !space(byte) && !matches!(byte, b'/' | b'=' | b'>'));
         let mut attribute = Attribute {
             prefix: Prefix::None,
-            name: name(&self.input[start..self.position]),
+            name: self.read_name(self.position + 1, |byte| matches!(byte, b'/' | b'=' | b'>')),
             value: Cow::Borrowed(""),
         };
         self.skip_while(space);

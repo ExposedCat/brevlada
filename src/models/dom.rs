@@ -1,13 +1,20 @@
 //! An HTML parser that builds the same trees as html5ever does for scraper.
 mod doctype;
 mod entities;
+mod names;
 #[cfg(test)]
 mod parity;
 mod serialize;
 mod tokenizer;
 mod tree_builder;
 
-use std::{borrow::Cow, iter};
+use names::LocalName;
+use std::{
+    borrow::Cow,
+    iter,
+    num::NonZeroU32,
+    ops::{Index, IndexMut},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Namespace {
@@ -34,8 +41,16 @@ struct Attribute<'a> {
     value: Cow<'a, str>,
 }
 
+impl Attribute<'_> {
+    /// The order scraper keeps attributes in.
+    fn key(&self) -> (Prefix, &str) {
+        (self.prefix, &self.name)
+    }
+}
+
 struct Element<'a> {
     namespace: Namespace,
+    local: LocalName,
     name: Cow<'a, str>,
     /// Sorted by prefix and name, as scraper stores them.
     attributes: Vec<Attribute<'a>>,
@@ -51,7 +66,13 @@ enum Data<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct NodeId(usize);
+struct NodeId(NonZeroU32);
+
+impl NodeId {
+    fn index(self) -> usize {
+        self.0.get() as usize - 1
+    }
+}
 
 struct Node<'a> {
     parent: Option<NodeId>,
@@ -67,7 +88,7 @@ pub struct Document<'a> {
     nodes: Vec<Node<'a>>,
 }
 
-const ROOT: NodeId = NodeId(0);
+const ROOT: NodeId = NodeId(NonZeroU32::MIN);
 
 impl<'a> Document<'a> {
     pub fn parse(html: &'a str) -> Self {
@@ -88,8 +109,12 @@ impl<'a> Document<'a> {
 
     /// Elements attached to a parent, in creation order, the order scraper selects them in.
     pub fn elements(&self) -> impl Iterator<Item = ElementRef<'_>> {
-        (0..self.nodes.len())
-            .map(|index| self.node(NodeId(index)))
+        (1..=self.nodes.len())
+            .map(|position| {
+                self.node(NodeId(
+                    NonZeroU32::new(position as u32).expect("positions start at one"),
+                ))
+            })
             .filter(|node| node.parent().is_some())
             .filter_map(NodeRef::as_element)
     }
@@ -98,8 +123,11 @@ impl<'a> Document<'a> {
         NodeRef { document: self, id }
     }
 
-    fn new() -> Self {
-        let mut document = Self { nodes: Vec::new() };
+    /// An empty document with room for the nodes `html` usually yields.
+    fn new(html: &str) -> Self {
+        let mut document = Self {
+            nodes: Vec::with_capacity(html.len() / 32),
+        };
         document.create(Data::Root);
         document
     }
@@ -113,21 +141,23 @@ impl<'a> Document<'a> {
             last_child: None,
             data,
         });
-        NodeId(self.nodes.len() - 1)
+        NodeId(NonZeroU32::new(self.nodes.len() as u32).expect("the node was just pushed"))
     }
 
     fn create_element(
         &mut self,
         namespace: Namespace,
+        local: LocalName,
         name: Cow<'a, str>,
         mut attributes: Vec<Attribute<'a>>,
     ) -> NodeId {
-        attributes.sort_unstable_by(|left, right| {
-            (left.prefix, &left.name).cmp(&(right.prefix, &right.name))
-        });
-        let template = namespace == Namespace::Html && name == "template";
+        if !attributes.is_sorted_by(|left, right| left.key() <= right.key()) {
+            attributes.sort_unstable_by(|left, right| left.key().cmp(&right.key()));
+        }
+        let template = namespace == Namespace::Html && local == LocalName::Template;
         let element = self.create(Data::Element(Element {
             namespace,
+            local,
             name,
             attributes,
         }));
@@ -139,63 +169,63 @@ impl<'a> Document<'a> {
     }
 
     fn element(&self, id: NodeId) -> &Element<'a> {
-        match &self.nodes[id.0].data {
+        match &self[id].data {
             Data::Element(element) => element,
             _ => unreachable!("tree builder handles always point to elements"),
         }
     }
 
     fn detach(&mut self, id: NodeId) {
-        let Some(parent) = self.nodes[id.0].parent.take() else {
+        let Some(parent) = self[id].parent.take() else {
             return;
         };
-        let previous = self.nodes[id.0].previous_sibling.take();
-        let next = self.nodes[id.0].next_sibling.take();
+        let previous = self[id].previous_sibling.take();
+        let next = self[id].next_sibling.take();
         match previous {
-            Some(previous) => self.nodes[previous.0].next_sibling = next,
-            None => self.nodes[parent.0].first_child = next,
+            Some(previous) => self[previous].next_sibling = next,
+            None => self[parent].first_child = next,
         }
         match next {
-            Some(next) => self.nodes[next.0].previous_sibling = previous,
-            None => self.nodes[parent.0].last_child = previous,
+            Some(next) => self[next].previous_sibling = previous,
+            None => self[parent].last_child = previous,
         }
     }
 
     fn append(&mut self, parent: NodeId, child: NodeId) {
-        let last = self.nodes[parent.0].last_child;
+        let last = self[parent].last_child;
         if last == Some(child) {
             return;
         }
         self.detach(child);
-        self.nodes[child.0].parent = Some(parent);
-        self.nodes[child.0].previous_sibling = last;
+        self[child].parent = Some(parent);
+        self[child].previous_sibling = last;
         match last {
-            Some(last) => self.nodes[last.0].next_sibling = Some(child),
-            None => self.nodes[parent.0].first_child = Some(child),
+            Some(last) => self[last].next_sibling = Some(child),
+            None => self[parent].first_child = Some(child),
         }
-        self.nodes[parent.0].last_child = Some(child);
+        self[parent].last_child = Some(child);
     }
 
     fn insert_before(&mut self, sibling: NodeId, child: NodeId) {
         self.detach(child);
-        let parent = self.nodes[sibling.0].parent;
-        let previous = self.nodes[sibling.0].previous_sibling;
-        self.nodes[child.0].parent = parent;
-        self.nodes[child.0].previous_sibling = previous;
-        self.nodes[child.0].next_sibling = Some(sibling);
-        self.nodes[sibling.0].previous_sibling = Some(child);
+        let parent = self[sibling].parent;
+        let previous = self[sibling].previous_sibling;
+        self[child].parent = parent;
+        self[child].previous_sibling = previous;
+        self[child].next_sibling = Some(sibling);
+        self[sibling].previous_sibling = Some(child);
         match previous {
-            Some(previous) => self.nodes[previous.0].next_sibling = Some(child),
+            Some(previous) => self[previous].next_sibling = Some(child),
             None => {
                 let parent = parent.expect("siblings have a parent");
-                self.nodes[parent.0].first_child = Some(child);
+                self[parent].first_child = Some(child);
             }
         }
     }
 
     fn append_text(&mut self, parent: NodeId, text: Cow<'a, str>) {
-        if let Some(last) = self.nodes[parent.0].last_child
-            && let Data::Text(existing) = &mut self.nodes[last.0].data
+        if let Some(last) = self[parent].last_child
+            && let Data::Text(existing) = &mut self[last].data
         {
             existing.to_mut().push_str(&text);
             return;
@@ -205,8 +235,8 @@ impl<'a> Document<'a> {
     }
 
     fn insert_text_before(&mut self, sibling: NodeId, text: Cow<'a, str>) {
-        if let Some(previous) = self.nodes[sibling.0].previous_sibling
-            && let Data::Text(existing) = &mut self.nodes[previous.0].data
+        if let Some(previous) = self[sibling].previous_sibling
+            && let Data::Text(existing) = &mut self[previous].data
         {
             existing.to_mut().push_str(&text);
             return;
@@ -216,38 +246,51 @@ impl<'a> Document<'a> {
     }
 
     fn reparent_children(&mut self, from: NodeId, to: NodeId) {
-        let Some(first) = self.nodes[from.0].first_child.take() else {
+        let Some(first) = self[from].first_child.take() else {
             return;
         };
-        let last = self.nodes[from.0].last_child.take();
+        let last = self[from].last_child.take();
         let mut child = Some(first);
         while let Some(id) = child {
-            self.nodes[id.0].parent = Some(to);
-            child = self.nodes[id.0].next_sibling;
+            self[id].parent = Some(to);
+            child = self[id].next_sibling;
         }
-        match self.nodes[to.0].last_child {
+        match self[to].last_child {
             Some(previous) => {
-                self.nodes[previous.0].next_sibling = Some(first);
-                self.nodes[first.0].previous_sibling = Some(previous);
+                self[previous].next_sibling = Some(first);
+                self[first].previous_sibling = Some(previous);
             }
-            None => self.nodes[to.0].first_child = Some(first),
+            None => self[to].first_child = Some(first),
         }
-        self.nodes[to.0].last_child = last;
+        self[to].last_child = last;
     }
 
     fn add_attributes_if_missing(&mut self, id: NodeId, attributes: Vec<Attribute<'a>>) {
-        let Data::Element(element) = &mut self.nodes[id.0].data else {
+        let Data::Element(element) = &mut self[id].data else {
             unreachable!("only elements receive attributes");
         };
         for attribute in attributes {
-            let key = (attribute.prefix, &attribute.name);
             if let Err(index) = element
                 .attributes
-                .binary_search_by(|existing| (existing.prefix, &existing.name).cmp(&key))
+                .binary_search_by(|existing| existing.key().cmp(&attribute.key()))
             {
                 element.attributes.insert(index, attribute);
             }
         }
+    }
+}
+
+impl<'a> Index<NodeId> for Document<'a> {
+    type Output = Node<'a>;
+
+    fn index(&self, id: NodeId) -> &Node<'a> {
+        &self.nodes[id.index()]
+    }
+}
+
+impl IndexMut<NodeId> for Document<'_> {
+    fn index_mut(&mut self, id: NodeId) -> &mut Self::Output {
+        &mut self.nodes[id.index()]
     }
 }
 
@@ -259,7 +302,7 @@ pub struct NodeRef<'d> {
 
 impl<'d> NodeRef<'d> {
     fn node(self) -> &'d Node<'d> {
-        &self.document.nodes[self.id.0]
+        &self.document[self.id]
     }
 
     fn link(self, id: Option<NodeId>) -> Option<Self> {

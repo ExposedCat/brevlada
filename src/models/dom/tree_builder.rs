@@ -4,6 +4,7 @@ mod rules;
 
 use super::{
     Attribute, Document, Namespace, NodeId, ROOT,
+    names::LocalName as N,
     tokenizer::{self, RawKind, Tag, Tokenizer},
 };
 use std::borrow::Cow;
@@ -105,174 +106,181 @@ fn split(text: Cow<'_, str>, at: usize) -> (Cow<'_, str>, Cow<'_, str>) {
     }
 }
 
-fn html(namespace: Namespace, name: &str, names: &[&str]) -> bool {
+fn html(namespace: Namespace, name: N, names: &[N]) -> bool {
     namespace == Namespace::Html && names.contains(&name)
 }
 
-fn mathml_text_integration_point(namespace: Namespace, name: &str) -> bool {
-    namespace == Namespace::MathMl && matches!(name, "mi" | "mo" | "mn" | "ms" | "mtext")
+fn mathml_text_integration_point(namespace: Namespace, name: N) -> bool {
+    namespace == Namespace::MathMl && matches!(name, N::Mi | N::Mo | N::Mn | N::Ms | N::Mtext)
 }
 
-fn svg_html_integration_point(namespace: Namespace, name: &str) -> bool {
-    namespace == Namespace::Svg && matches!(name, "foreignObject" | "desc" | "title")
+fn svg_html_integration_point(namespace: Namespace, name: N) -> bool {
+    namespace == Namespace::Svg && matches!(name, N::ForeignObject | N::Desc | N::Title)
 }
 
-fn default_scope(namespace: Namespace, name: &str) -> bool {
+fn default_scope(namespace: Namespace, name: N) -> bool {
     (namespace == Namespace::Html
         && matches!(
             name,
-            "applet"
-                | "caption"
-                | "html"
-                | "table"
-                | "td"
-                | "th"
-                | "marquee"
-                | "object"
-                | "select"
-                | "template"
+            N::Applet
+                | N::Caption
+                | N::Html
+                | N::Table
+                | N::Td
+                | N::Th
+                | N::Marquee
+                | N::Object
+                | N::Select
+                | N::Template
         ))
         || mathml_text_integration_point(namespace, name)
         || svg_html_integration_point(namespace, name)
 }
 
-fn list_item_scope(namespace: Namespace, name: &str) -> bool {
-    default_scope(namespace, name) || html(namespace, name, &["ol", "ul"])
+fn list_item_scope(namespace: Namespace, name: N) -> bool {
+    default_scope(namespace, name) || html(namespace, name, &[N::Ol, N::Ul])
 }
 
-fn button_scope(namespace: Namespace, name: &str) -> bool {
-    default_scope(namespace, name) || html(namespace, name, &["button"])
+fn button_scope(namespace: Namespace, name: N) -> bool {
+    default_scope(namespace, name) || html(namespace, name, &[N::Button])
 }
 
-fn table_scope(namespace: Namespace, name: &str) -> bool {
-    html(namespace, name, &["html", "table", "template"])
+fn table_scope(namespace: Namespace, name: N) -> bool {
+    html(namespace, name, &[N::Html, N::Table, N::Template])
 }
 
-fn table_body_context(namespace: Namespace, name: &str) -> bool {
+fn table_body_context(namespace: Namespace, name: N) -> bool {
     html(
         namespace,
         name,
-        &["tbody", "tfoot", "thead", "template", "html"],
+        &[N::Tbody, N::Tfoot, N::Thead, N::Template, N::Html],
     )
 }
 
-fn table_row_context(namespace: Namespace, name: &str) -> bool {
-    html(namespace, name, &["tr", "template", "html"])
+fn table_row_context(namespace: Namespace, name: N) -> bool {
+    html(namespace, name, &[N::Tr, N::Template, N::Html])
 }
 
-fn td_th(namespace: Namespace, name: &str) -> bool {
-    html(namespace, name, &["td", "th"])
+fn td_th(namespace: Namespace, name: N) -> bool {
+    html(namespace, name, &[N::Td, N::Th])
 }
 
-fn heading(namespace: Namespace, name: &str) -> bool {
-    html(namespace, name, &["h1", "h2", "h3", "h4", "h5", "h6"])
+fn heading(namespace: Namespace, name: N) -> bool {
+    html(namespace, name, &[N::H1, N::H2, N::H3, N::H4, N::H5, N::H6])
 }
 
-fn cursory_implied_end(namespace: Namespace, name: &str) -> bool {
+fn cursory_implied_end(namespace: Namespace, name: N) -> bool {
     namespace == Namespace::Html
         && matches!(
             name,
-            "dd" | "dt" | "li" | "option" | "optgroup" | "p" | "rb" | "rp" | "rt" | "rtc"
+            N::Dd | N::Dt | N::Li | N::Option | N::Optgroup | N::P | N::Rb | N::Rp | N::Rt | N::Rtc
         )
 }
 
-fn thorough_implied_end(namespace: Namespace, name: &str) -> bool {
+fn thorough_implied_end(namespace: Namespace, name: N) -> bool {
     cursory_implied_end(namespace, name)
         || html(
             namespace,
             name,
             &[
-                "caption", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr",
+                N::Caption,
+                N::Colgroup,
+                N::Tbody,
+                N::Td,
+                N::Tfoot,
+                N::Th,
+                N::Thead,
+                N::Tr,
             ],
         )
 }
 
-fn special(namespace: Namespace, name: &str) -> bool {
+fn special(namespace: Namespace, name: N) -> bool {
     namespace == Namespace::Html
         && matches!(
             name,
-            "address"
-                | "applet"
-                | "area"
-                | "article"
-                | "aside"
-                | "base"
-                | "basefont"
-                | "bgsound"
-                | "blockquote"
-                | "body"
-                | "br"
-                | "button"
-                | "caption"
-                | "center"
-                | "col"
-                | "colgroup"
-                | "dd"
-                | "details"
-                | "dir"
-                | "div"
-                | "dl"
-                | "dt"
-                | "embed"
-                | "fieldset"
-                | "figcaption"
-                | "figure"
-                | "footer"
-                | "form"
-                | "frame"
-                | "frameset"
-                | "h1"
-                | "h2"
-                | "h3"
-                | "h4"
-                | "h5"
-                | "h6"
-                | "head"
-                | "header"
-                | "hgroup"
-                | "hr"
-                | "html"
-                | "iframe"
-                | "img"
-                | "input"
-                | "isindex"
-                | "li"
-                | "link"
-                | "listing"
-                | "main"
-                | "marquee"
-                | "menu"
-                | "meta"
-                | "nav"
-                | "noembed"
-                | "noframes"
-                | "noscript"
-                | "object"
-                | "ol"
-                | "p"
-                | "param"
-                | "plaintext"
-                | "pre"
-                | "script"
-                | "section"
-                | "select"
-                | "source"
-                | "style"
-                | "summary"
-                | "table"
-                | "tbody"
-                | "td"
-                | "template"
-                | "textarea"
-                | "tfoot"
-                | "th"
-                | "thead"
-                | "title"
-                | "tr"
-                | "track"
-                | "ul"
-                | "wbr"
-                | "xmp"
+            N::Address
+                | N::Applet
+                | N::Area
+                | N::Article
+                | N::Aside
+                | N::Base
+                | N::Basefont
+                | N::Bgsound
+                | N::Blockquote
+                | N::Body
+                | N::Br
+                | N::Button
+                | N::Caption
+                | N::Center
+                | N::Col
+                | N::Colgroup
+                | N::Dd
+                | N::Details
+                | N::Dir
+                | N::Div
+                | N::Dl
+                | N::Dt
+                | N::Embed
+                | N::Fieldset
+                | N::Figcaption
+                | N::Figure
+                | N::Footer
+                | N::Form
+                | N::Frame
+                | N::Frameset
+                | N::H1
+                | N::H2
+                | N::H3
+                | N::H4
+                | N::H5
+                | N::H6
+                | N::Head
+                | N::Header
+                | N::Hgroup
+                | N::Hr
+                | N::Html
+                | N::Iframe
+                | N::Img
+                | N::Input
+                | N::Isindex
+                | N::Li
+                | N::Link
+                | N::Listing
+                | N::Main
+                | N::Marquee
+                | N::Menu
+                | N::Meta
+                | N::Nav
+                | N::Noembed
+                | N::Noframes
+                | N::Noscript
+                | N::Object
+                | N::Ol
+                | N::P
+                | N::Param
+                | N::Plaintext
+                | N::Pre
+                | N::Script
+                | N::Section
+                | N::Select
+                | N::Source
+                | N::Style
+                | N::Summary
+                | N::Table
+                | N::Tbody
+                | N::Td
+                | N::Template
+                | N::Textarea
+                | N::Tfoot
+                | N::Th
+                | N::Thead
+                | N::Title
+                | N::Tr
+                | N::Track
+                | N::Ul
+                | N::Wbr
+                | N::Xmp
         )
 }
 
@@ -289,7 +297,7 @@ fn equivalent(left: &Tag<'_>, right: &Tag<'_>) -> bool {
 impl<'a> TreeBuilder<'a> {
     fn new(html: &'a str) -> Self {
         Self {
-            document: Document::new(),
+            document: Document::new(html),
             tokenizer: Tokenizer::new(html),
             mode: Mode::Initial,
             original_mode: None,
@@ -314,10 +322,12 @@ impl<'a> TreeBuilder<'a> {
     /// The fragment parsing algorithm with a `<body>` context element.
     pub(super) fn fragment(html: &'a str) -> Self {
         let mut builder = Self::new(html);
-        let context =
-            builder
-                .document
-                .create_element(Namespace::Html, Cow::Borrowed("body"), Vec::new());
+        let context = builder.document.create_element(
+            Namespace::Html,
+            N::Body,
+            Cow::Borrowed("body"),
+            Vec::new(),
+        );
         builder.context = Some(context);
         builder.create_root(Vec::new());
         builder.mode = builder.reset_insertion_mode();
@@ -414,33 +424,33 @@ impl<'a> TreeBuilder<'a> {
             Namespace::Html => false,
             _ if mathml_text_integration_point(namespace, name) => match token {
                 Token::Characters(..) | Token::NullCharacter => false,
-                Token::Tag(tag) => tag.end || matches!(&*tag.name, "mglyph" | "malignmark"),
+                Token::Tag(tag) => tag.end || matches!(tag.local, N::Mglyph | N::Malignmark),
                 _ => true,
             },
             _ if svg_html_integration_point(namespace, name) => {
                 !matches!(token, Token::Characters(..) | Token::NullCharacter) && !start(token)
             }
-            Namespace::MathMl if name == "annotation-xml" => {
-                !matches!(token, Token::Tag(tag) if !tag.end && tag.name == "svg")
+            Namespace::MathMl if name == N::AnnotationXml => {
+                !matches!(token, Token::Tag(tag) if !tag.end && tag.local == N::Svg)
             }
             _ => true,
         }
     }
 
-    fn name(&self, node: NodeId) -> (Namespace, &str) {
+    fn name(&self, node: NodeId) -> (Namespace, N) {
         let element = self.document.element(node);
-        (element.namespace, &element.name)
+        (element.namespace, element.local)
     }
 
     fn namespace(&self, node: NodeId) -> Namespace {
         self.document.element(node).namespace
     }
 
-    fn html_named(&self, node: NodeId, name: &str) -> bool {
+    fn html_named(&self, node: NodeId, name: N) -> bool {
         self.name(node) == (Namespace::Html, name)
     }
 
-    fn in_set(&self, node: NodeId, set: fn(Namespace, &str) -> bool) -> bool {
+    fn in_set(&self, node: NodeId, set: fn(Namespace, N) -> bool) -> bool {
         let (namespace, name) = self.name(node);
         set(namespace, name)
     }
@@ -456,23 +466,19 @@ impl<'a> TreeBuilder<'a> {
         }
     }
 
-    fn current_named(&self, name: &str) -> bool {
+    fn current_named(&self, name: N) -> bool {
         self.html_named(self.current_node(), name)
     }
 
-    fn current_in(&self, set: fn(Namespace, &str) -> bool) -> bool {
+    fn current_in(&self, set: fn(Namespace, N) -> bool) -> bool {
         self.in_set(self.current_node(), set)
     }
 
-    fn in_html_named(&self, name: &str) -> bool {
+    fn in_html_named(&self, name: N) -> bool {
         self.open.iter().any(|&node| self.html_named(node, name))
     }
 
-    fn in_scope(
-        &self,
-        scope: fn(Namespace, &str) -> bool,
-        matches: impl Fn(NodeId) -> bool,
-    ) -> bool {
+    fn in_scope(&self, scope: fn(Namespace, N) -> bool, matches: impl Fn(NodeId) -> bool) -> bool {
         for &node in self.open.iter().rev() {
             if matches(node) {
                 return true;
@@ -484,7 +490,7 @@ impl<'a> TreeBuilder<'a> {
         false
     }
 
-    fn in_scope_named(&self, scope: fn(Namespace, &str) -> bool, name: &str) -> bool {
+    fn in_scope_named(&self, scope: fn(Namespace, N) -> bool, name: N) -> bool {
         self.in_scope(scope, |node| self.html_named(node, name))
     }
 
@@ -492,31 +498,35 @@ impl<'a> TreeBuilder<'a> {
         self.open
             .get(1)
             .copied()
-            .filter(|&node| self.html_named(node, "body"))
+            .filter(|&node| self.html_named(node, N::Body))
     }
 
     fn template_contents(&self, template: NodeId) -> NodeId {
-        self.document.nodes[template.0]
+        self.document[template]
             .first_child
             .expect("templates keep their contents as the first child")
     }
 
     fn appropriate_place_for_insertion(&self, override_target: Option<NodeId>) -> InsertionPoint {
         let target = override_target.unwrap_or_else(|| self.current_node());
-        let foster = |namespace, name: &str| {
-            html(namespace, name, &["table", "tbody", "tfoot", "thead", "tr"])
+        let foster = |namespace, name: N| {
+            html(
+                namespace,
+                name,
+                &[N::Table, N::Tbody, N::Tfoot, N::Thead, N::Tr],
+            )
         };
         if !(self.foster_parenting && self.in_set(target, foster)) {
-            if self.html_named(target, "template") {
+            if self.html_named(target, N::Template) {
                 return InsertionPoint::LastChild(self.template_contents(target));
             }
             return InsertionPoint::LastChild(target);
         }
         for (index, &element) in self.open.iter().enumerate().rev() {
-            if self.html_named(element, "template") {
+            if self.html_named(element, N::Template) {
                 return InsertionPoint::LastChild(self.template_contents(element));
             }
-            if self.html_named(element, "table") {
+            if self.html_named(element, N::Table) {
                 return InsertionPoint::FosterParent {
                     table: element,
                     previous: self.open[index - 1],
@@ -530,7 +540,7 @@ impl<'a> TreeBuilder<'a> {
         let (parent, before) = match point {
             InsertionPoint::LastChild(parent) => (parent, None),
             InsertionPoint::FosterParent { table, previous } => {
-                if self.document.nodes[table.0].parent.is_some() {
+                if self.document[table].parent.is_some() {
                     (table, Some(table))
                 } else {
                     (previous, None)
@@ -551,9 +561,12 @@ impl<'a> TreeBuilder<'a> {
     }
 
     fn create_root(&mut self, attributes: Vec<Attribute<'a>>) {
-        let root = self
-            .document
-            .create_element(Namespace::Html, Cow::Borrowed("html"), attributes);
+        let root = self.document.create_element(
+            Namespace::Html,
+            N::Html,
+            Cow::Borrowed("html"),
+            attributes,
+        );
         self.open.push(root);
         self.document.append(ROOT, root);
     }
@@ -562,10 +575,13 @@ impl<'a> TreeBuilder<'a> {
         &mut self,
         push: bool,
         namespace: Namespace,
+        local: N,
         name: Cow<'a, str>,
         attributes: Vec<Attribute<'a>>,
     ) -> NodeId {
-        let element = self.document.create_element(namespace, name, attributes);
+        let element = self
+            .document
+            .create_element(namespace, local, name, attributes);
         self.insert_appropriately(Child::Node(element), None);
         if push {
             self.open.push(element);
@@ -574,15 +590,21 @@ impl<'a> TreeBuilder<'a> {
     }
 
     fn insert_element_for(&mut self, tag: Tag<'a>) -> NodeId {
-        self.insert_element(true, Namespace::Html, tag.name, tag.attributes)
+        self.insert_element(true, Namespace::Html, tag.local, tag.name, tag.attributes)
     }
 
     fn insert_and_pop_element_for(&mut self, tag: Tag<'a>) -> NodeId {
-        self.insert_element(false, Namespace::Html, tag.name, tag.attributes)
+        self.insert_element(false, Namespace::Html, tag.local, tag.name, tag.attributes)
     }
 
-    fn insert_phantom(&mut self, name: &'static str) -> NodeId {
-        self.insert_element(true, Namespace::Html, Cow::Borrowed(name), Vec::new())
+    fn insert_phantom(&mut self, local: N) -> NodeId {
+        self.insert_element(
+            true,
+            Namespace::Html,
+            local,
+            Cow::Borrowed(local.text()),
+            Vec::new(),
+        )
     }
 
     fn append_text(&mut self, text: Cow<'a, str>) -> Step<'a> {
@@ -620,7 +642,7 @@ impl<'a> TreeBuilder<'a> {
         }
     }
 
-    fn generate_implied_end_tags(&mut self, set: impl Fn(Namespace, &str) -> bool) {
+    fn generate_implied_end_tags(&mut self, set: impl Fn(Namespace, N) -> bool) {
         while let Some(&node) = self.open.last() {
             let (namespace, name) = self.name(node);
             if !set(namespace, name) {
@@ -630,7 +652,7 @@ impl<'a> TreeBuilder<'a> {
         }
     }
 
-    fn generate_implied_end_except(&mut self, except: &str) {
+    fn generate_implied_end_except(&mut self, except: N) {
         self.generate_implied_end_tags(|namespace, name| {
             !(namespace == Namespace::Html && name == except)
                 && cursory_implied_end(namespace, name)
@@ -638,14 +660,14 @@ impl<'a> TreeBuilder<'a> {
     }
 
     /// Pops elements until the current one is in `set`.
-    fn pop_until_current(&mut self, set: fn(Namespace, &str) -> bool) {
+    fn pop_until_current(&mut self, set: fn(Namespace, N) -> bool) {
         while !self.current_in(set) {
             self.pop();
         }
     }
 
     /// Pops elements until one in `set` has been popped.
-    fn pop_until(&mut self, set: impl Fn(Namespace, &str) -> bool) {
+    fn pop_until(&mut self, set: impl Fn(Namespace, N) -> bool) {
         while let Some(node) = self.open.pop() {
             let (namespace, name) = self.name(node);
             if set(namespace, name) {
@@ -654,19 +676,19 @@ impl<'a> TreeBuilder<'a> {
         }
     }
 
-    fn pop_until_named(&mut self, name: &str) {
+    fn pop_until_named(&mut self, name: N) {
         self.pop_until(|namespace, element| namespace == Namespace::Html && element == name);
     }
 
     fn close_p_element(&mut self) {
         self.generate_implied_end_tags(|namespace, name| {
-            name != "p" && cursory_implied_end(namespace, name)
+            name != N::P && cursory_implied_end(namespace, name)
         });
-        self.pop_until_named("p");
+        self.pop_until_named(N::P);
     }
 
     fn close_p_element_in_button_scope(&mut self) {
-        if self.in_scope_named(button_scope, "p") {
+        if self.in_scope_named(button_scope, N::P) {
             self.close_p_element();
         }
     }
@@ -689,23 +711,23 @@ impl<'a> TreeBuilder<'a> {
                 continue;
             }
             match name {
-                "td" | "th" if !last => return Mode::InCell,
-                "tr" => return Mode::InRow,
-                "tbody" | "thead" | "tfoot" => return Mode::InTableBody,
-                "caption" => return Mode::InCaption,
-                "colgroup" => return Mode::InColumnGroup,
-                "table" => return Mode::InTable,
-                "template" => {
+                N::Td | N::Th if !last => return Mode::InCell,
+                N::Tr => return Mode::InRow,
+                N::Tbody | N::Thead | N::Tfoot => return Mode::InTableBody,
+                N::Caption => return Mode::InCaption,
+                N::Colgroup => return Mode::InColumnGroup,
+                N::Table => return Mode::InTable,
+                N::Template => {
                     return *self
                         .template_modes
                         .last()
                         .expect("open templates have a template mode");
                 }
-                "head" if !last => return Mode::InHead,
-                "body" => return Mode::InBody,
-                "frameset" => return Mode::InFrameset,
-                "html" if self.head.is_none() => return Mode::BeforeHead,
-                "html" => return Mode::AfterHead,
+                N::Head if !last => return Mode::InHead,
+                N::Body => return Mode::InBody,
+                N::Frameset => return Mode::InFrameset,
+                N::Html if self.head.is_none() => return Mode::BeforeHead,
+                N::Html => return Mode::AfterHead,
                 _ => {}
             }
         }
@@ -721,7 +743,11 @@ impl<'a> TreeBuilder<'a> {
 
     fn process_chars_in_table(&mut self, token: Token<'a>) -> Step<'a> {
         if self.current_in(|namespace, name| {
-            html(namespace, name, &["table", "tbody", "tfoot", "thead", "tr"])
+            html(
+                namespace,
+                name,
+                &[N::Table, N::Tbody, N::Tfoot, N::Thead, N::Tr],
+            )
         }) {
             self.original_mode = Some(self.mode);
             Step::Reprocess(Mode::InTableText, token)
@@ -791,6 +817,7 @@ impl<'a> TreeBuilder<'a> {
             let element = self.insert_element(
                 true,
                 Namespace::Html,
+                tag.local,
                 tag.name.clone(),
                 tag.attributes.clone(),
             );
@@ -818,16 +845,19 @@ impl<'a> TreeBuilder<'a> {
         let element = self.insert_element(
             true,
             Namespace::Html,
+            tag.local,
             tag.name.clone(),
             tag.attributes.clone(),
         );
         self.formatting.push(Formatting::Element(element, tag));
     }
 
-    fn process_end_tag_in_body(&mut self, name: &str) {
+    fn process_end_tag_in_body(&mut self, tag: &Tag<'_>) {
         let mut matched = None;
         for (index, &node) in self.open.iter().enumerate().rev() {
-            if self.html_named(node, name) {
+            if self.html_named(node, tag.local)
+                && (tag.local != N::Other || self.document.element(node).name == tag.name)
+            {
                 matched = Some(index);
                 break;
             }
@@ -838,27 +868,29 @@ impl<'a> TreeBuilder<'a> {
         let Some(index) = matched else {
             return;
         };
-        self.generate_implied_end_except(name);
+        self.generate_implied_end_except(tag.local);
         self.open.truncate(index);
     }
 
-    fn handle_misnested_a_tags(&mut self) {
+    fn handle_misnested_a_tags(&mut self, tag: &Tag<'_>) {
         let Some(node) = self
             .formatting_to_marker()
-            .find(|&(_, node, _)| self.html_named(node, "a"))
+            .find(|&(_, node, _)| self.html_named(node, N::A))
             .map(|(_, node, _)| node)
         else {
             return;
         };
-        self.adoption_agency("a");
+        self.adoption_agency(tag);
         if let Some(index) = self.position_in_formatting(node) {
             self.formatting.remove(index);
         }
         self.remove_from_stack(node);
     }
 
-    fn adoption_agency(&mut self, subject: &str) {
-        if self.current_named(subject) && self.position_in_formatting(self.current_node()).is_none()
+    /// Runs for the name of `subject`, which is always a formatting element's.
+    fn adoption_agency(&mut self, subject: &Tag<'_>) {
+        if self.current_named(subject.local)
+            && self.position_in_formatting(self.current_node()).is_none()
         {
             self.pop();
             return;
@@ -866,7 +898,7 @@ impl<'a> TreeBuilder<'a> {
         for _ in 0..8 {
             let Some((formatting_index, element, tag)) = self
                 .formatting_to_marker()
-                .find(|(_, _, tag)| tag.name == subject)
+                .find(|(_, _, tag)| tag.local == subject.local)
                 .map(|(index, node, tag)| (index, node, tag.clone()))
             else {
                 return self.process_end_tag_in_body(subject);
@@ -917,6 +949,7 @@ impl<'a> TreeBuilder<'a> {
                 let node_tag = node_tag.clone();
                 let replacement = self.document.create_element(
                     Namespace::Html,
+                    node_tag.local,
                     node_tag.name.clone(),
                     node_tag.attributes.clone(),
                 );
@@ -933,6 +966,7 @@ impl<'a> TreeBuilder<'a> {
             self.insert_appropriately(Child::Node(last_node), Some(common_ancestor));
             let new_element = self.document.create_element(
                 Namespace::Html,
+                tag.local,
                 tag.name.clone(),
                 tag.attributes.clone(),
             );

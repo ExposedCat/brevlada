@@ -1,4 +1,4 @@
-use super::{Data, Namespace, NodeRef, Prefix};
+use super::{Data, Namespace, NodeRef, Prefix, names::LocalName as N};
 
 /// Serializes like html5ever with scripting disabled, as scraper's `html()` does.
 pub(super) fn html(root: NodeRef<'_>, include_root: bool) -> String {
@@ -82,9 +82,9 @@ fn close(output: &mut String, node: NodeRef<'_>) {
     }
 }
 
-fn html_element(node: NodeRef<'_>) -> Option<&str> {
+fn html_element(node: NodeRef<'_>) -> Option<N> {
     match &node.node().data {
-        Data::Element(element) if element.namespace == Namespace::Html => Some(&element.name),
+        Data::Element(element) if element.namespace == Namespace::Html => Some(element.local),
         _ => None,
     }
 }
@@ -94,24 +94,24 @@ fn void(node: NodeRef<'_>) -> bool {
     html_element(node).is_some_and(|name| {
         matches!(
             name,
-            "area"
-                | "base"
-                | "basefont"
-                | "bgsound"
-                | "br"
-                | "col"
-                | "embed"
-                | "frame"
-                | "hr"
-                | "img"
-                | "input"
-                | "keygen"
-                | "link"
-                | "meta"
-                | "param"
-                | "source"
-                | "track"
-                | "wbr"
+            N::Area
+                | N::Base
+                | N::Basefont
+                | N::Bgsound
+                | N::Br
+                | N::Col
+                | N::Embed
+                | N::Frame
+                | N::Hr
+                | N::Img
+                | N::Input
+                | N::Keygen
+                | N::Link
+                | N::Meta
+                | N::Param
+                | N::Source
+                | N::Track
+                | N::Wbr
         )
     })
 }
@@ -125,7 +125,7 @@ fn raw_text_parent(root: NodeRef<'_>, text: NodeRef<'_>, include_root: bool) -> 
     parent.and_then(html_element).is_some_and(|name| {
         matches!(
             name,
-            "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" | "plaintext"
+            N::Style | N::Script | N::Xmp | N::Iframe | N::Noembed | N::Noframes | N::Plaintext
         )
     })
 }

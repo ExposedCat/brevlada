@@ -5,7 +5,11 @@ use super::{
     mathml_text_integration_point, special, svg_html_integration_point, table_body_context,
     table_row_context, table_scope, td_th, thorough_implied_end,
 };
-use crate::models::dom::{Namespace, ROOT, tokenizer::RawKind, tokenizer::Tag};
+use crate::models::dom::{
+    Namespace, ROOT,
+    names::LocalName as N,
+    tokenizer::{RawKind, Tag},
+};
 use std::borrow::Cow;
 
 impl<'a> TreeBuilder<'a> {
@@ -51,13 +55,13 @@ impl<'a> TreeBuilder<'a> {
             Token::Comment(text) => self.append_comment_to(ROOT, text),
             Token::Characters(SplitStatus::NotSplit, text) => Step::SplitWhitespace(text),
             Token::Characters(SplitStatus::Whitespace, _) => Step::Done,
-            Token::Tag(tag) if !tag.end && tag.name == "html" => {
+            Token::Tag(tag) if !tag.end && tag.local == N::Html => {
                 self.create_root(tag.attributes);
                 self.mode = Mode::BeforeHead;
                 Step::Done
             }
             Token::Tag(tag)
-                if tag.end && !matches!(&*tag.name, "head" | "body" | "html" | "br") =>
+                if tag.end && !matches!(tag.local, N::Head | N::Body | N::Html | N::Br) =>
             {
                 Step::Done
             }
@@ -73,19 +77,19 @@ impl<'a> TreeBuilder<'a> {
             Token::Characters(SplitStatus::NotSplit, text) => Step::SplitWhitespace(text),
             Token::Characters(SplitStatus::Whitespace, _) => Step::Done,
             Token::Comment(text) => self.append_comment(text),
-            Token::Tag(tag) if !tag.end && tag.name == "html" => self.in_body(Token::Tag(tag)),
-            Token::Tag(tag) if !tag.end && tag.name == "head" => {
+            Token::Tag(tag) if !tag.end && tag.local == N::Html => self.in_body(Token::Tag(tag)),
+            Token::Tag(tag) if !tag.end && tag.local == N::Head => {
                 self.head = Some(self.insert_element_for(tag));
                 self.mode = Mode::InHead;
                 Step::Done
             }
             Token::Tag(tag)
-                if tag.end && !matches!(&*tag.name, "head" | "body" | "html" | "br") =>
+                if tag.end && !matches!(tag.local, N::Head | N::Body | N::Html | N::Br) =>
             {
                 Step::Done
             }
             token => {
-                self.head = Some(self.insert_phantom("head"));
+                self.head = Some(self.insert_phantom(N::Head));
                 Step::Reprocess(Mode::InHead, token)
             }
         }
@@ -102,23 +106,23 @@ impl<'a> TreeBuilder<'a> {
                 return Step::Reprocess(Mode::AfterHead, token);
             }
         };
-        match (tag.end, &*tag.name) {
-            (false, "html") => self.in_body(Token::Tag(tag)),
-            (false, "base" | "basefont" | "bgsound" | "link" | "meta") => {
+        match (tag.end, tag.local) {
+            (false, N::Html) => self.in_body(Token::Tag(tag)),
+            (false, N::Base | N::Basefont | N::Bgsound | N::Link | N::Meta) => {
                 self.insert_and_pop_element_for(tag);
                 Step::Done
             }
-            (false, "title") => self.parse_raw_data(tag, RawKind::Rcdata),
-            (false, "noframes" | "style" | "noscript") => {
+            (false, N::Title) => self.parse_raw_data(tag, RawKind::Rcdata),
+            (false, N::Noframes | N::Style | N::Noscript) => {
                 self.parse_raw_data(tag, RawKind::Rawtext)
             }
-            (false, "script") => self.parse_raw_data(tag, RawKind::ScriptData),
-            (true, "head") => {
+            (false, N::Script) => self.parse_raw_data(tag, RawKind::ScriptData),
+            (true, N::Head) => {
                 self.pop();
                 self.mode = Mode::AfterHead;
                 Step::Done
             }
-            (false, "template") => {
+            (false, N::Template) => {
                 self.formatting.push(Formatting::Marker);
                 self.frameset_ok = false;
                 self.mode = Mode::InTemplate;
@@ -126,17 +130,17 @@ impl<'a> TreeBuilder<'a> {
                 self.insert_element_for(tag);
                 Step::Done
             }
-            (true, "template") => {
-                if self.in_html_named("template") {
+            (true, N::Template) => {
+                if self.in_html_named(N::Template) {
                     self.generate_implied_end_tags(thorough_implied_end);
-                    self.pop_until_named("template");
+                    self.pop_until_named(N::Template);
                     self.clear_active_formatting_to_marker();
                     self.template_modes.pop();
                     self.mode = self.reset_insertion_mode();
                 }
                 Step::Done
             }
-            (true, "body" | "html" | "br") | (false, _) if tag.name != "head" => {
+            (true, N::Body | N::Html | N::Br) | (false, _) if tag.local != N::Head => {
                 self.pop();
                 Step::Reprocess(Mode::AfterHead, Token::Tag(tag))
             }
@@ -151,27 +155,35 @@ impl<'a> TreeBuilder<'a> {
             Token::Comment(text) => return self.append_comment(text),
             Token::Tag(tag) => tag,
             token => {
-                self.insert_phantom("body");
+                self.insert_phantom(N::Body);
                 return Step::Reprocess(Mode::InBody, token);
             }
         };
-        match (tag.end, &*tag.name) {
-            (false, "html") => self.in_body(Token::Tag(tag)),
-            (false, "body") => {
+        match (tag.end, tag.local) {
+            (false, N::Html) => self.in_body(Token::Tag(tag)),
+            (false, N::Body) => {
                 self.insert_element_for(tag);
                 self.frameset_ok = false;
                 self.mode = Mode::InBody;
                 Step::Done
             }
-            (false, "frameset") => {
+            (false, N::Frameset) => {
                 self.insert_element_for(tag);
                 self.mode = Mode::InFrameset;
                 Step::Done
             }
             (
                 false,
-                "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script" | "style"
-                | "template" | "title",
+                N::Base
+                | N::Basefont
+                | N::Bgsound
+                | N::Link
+                | N::Meta
+                | N::Noframes
+                | N::Script
+                | N::Style
+                | N::Template
+                | N::Title,
             ) => {
                 let head = self.head.expect("the head element exists after the head");
                 self.open.push(head);
@@ -179,9 +191,9 @@ impl<'a> TreeBuilder<'a> {
                 self.remove_from_stack(head);
                 step
             }
-            (true, "template") => self.in_head(Token::Tag(tag)),
-            (true, "body" | "html" | "br") | (false, _) if tag.name != "head" => {
-                self.insert_phantom("body");
+            (true, N::Template) => self.in_head(Token::Tag(tag)),
+            (true, N::Body | N::Html | N::Br) | (false, _) if tag.local != N::Head => {
+                self.insert_phantom(N::Body);
                 Step::Reprocess(Mode::InBody, Token::Tag(tag))
             }
             _ => Step::Done,
@@ -207,25 +219,33 @@ impl<'a> TreeBuilder<'a> {
     }
 
     fn in_body_start_tag(&mut self, tag: Tag<'a>) -> Step<'a> {
-        match &*tag.name {
-            "html" => {
-                if !self.in_html_named("template") {
+        match tag.local {
+            N::Html => {
+                if !self.in_html_named(N::Template) {
                     self.document
                         .add_attributes_if_missing(self.open[0], tag.attributes);
                 }
             }
-            "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script" | "style"
-            | "template" | "title" => return self.in_head(Token::Tag(tag)),
-            "body" => {
+            N::Base
+            | N::Basefont
+            | N::Bgsound
+            | N::Link
+            | N::Meta
+            | N::Noframes
+            | N::Script
+            | N::Style
+            | N::Template
+            | N::Title => return self.in_head(Token::Tag(tag)),
+            N::Body => {
                 if let Some(body) = self.body_element()
-                    && !self.in_html_named("template")
+                    && !self.in_html_named(N::Template)
                 {
                     self.frameset_ok = false;
                     self.document
                         .add_attributes_if_missing(body, tag.attributes);
                 }
             }
-            "frameset" => {
+            N::Frameset => {
                 if self.frameset_ok
                     && let Some(body) = self.body_element()
                 {
@@ -235,55 +255,73 @@ impl<'a> TreeBuilder<'a> {
                     self.mode = Mode::InFrameset;
                 }
             }
-            "address" | "article" | "aside" | "blockquote" | "center" | "details" | "dialog"
-            | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure" | "footer" | "header"
-            | "hgroup" | "main" | "menu" | "nav" | "ol" | "p" | "search" | "section"
-            | "summary" | "ul" => {
+            N::Address
+            | N::Article
+            | N::Aside
+            | N::Blockquote
+            | N::Center
+            | N::Details
+            | N::Dialog
+            | N::Dir
+            | N::Div
+            | N::Dl
+            | N::Fieldset
+            | N::Figcaption
+            | N::Figure
+            | N::Footer
+            | N::Header
+            | N::Hgroup
+            | N::Main
+            | N::Menu
+            | N::Nav
+            | N::Ol
+            | N::P
+            | N::Search
+            | N::Section
+            | N::Summary
+            | N::Ul => {
                 self.close_p_element_in_button_scope();
                 self.insert_element_for(tag);
             }
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            N::H1 | N::H2 | N::H3 | N::H4 | N::H5 | N::H6 => {
                 self.close_p_element_in_button_scope();
                 if self.current_in(heading) {
                     self.pop();
                 }
                 self.insert_element_for(tag);
             }
-            "pre" | "listing" => {
+            N::Pre | N::Listing => {
                 self.close_p_element_in_button_scope();
                 self.insert_element_for(tag);
                 self.ignore_lf = true;
                 self.frameset_ok = false;
             }
-            "form" => {
-                if self.form.is_none() || self.in_html_named("template") {
+            N::Form => {
+                if self.form.is_none() || self.in_html_named(N::Template) {
                     self.close_p_element_in_button_scope();
                     let form = self.insert_element_for(tag);
-                    if !self.in_html_named("template") {
+                    if !self.in_html_named(N::Template) {
                         self.form = Some(form);
                     }
                 }
             }
-            "li" | "dd" | "dt" => {
-                let list = tag.name == "li";
+            N::Li | N::Dd | N::Dt => {
+                let list = tag.local == N::Li;
                 self.frameset_ok = false;
                 let mut close = None;
                 for &node in self.open.iter().rev() {
                     let (namespace, name) = self.name(node);
                     let closes = if list {
-                        html(namespace, name, &["li"])
+                        html(namespace, name, &[N::Li])
                     } else {
-                        html(namespace, name, &["dd", "dt"])
+                        html(namespace, name, &[N::Dd, N::Dt])
                     };
                     if closes {
-                        close = Some(match name {
-                            "li" => "li",
-                            "dd" => "dd",
-                            _ => "dt",
-                        });
+                        close = Some(name);
                         break;
                     }
-                    if special(namespace, name) && !html(namespace, name, &["address", "div", "p"])
+                    if special(namespace, name)
+                        && !html(namespace, name, &[N::Address, N::Div, N::P])
                     {
                         break;
                     }
@@ -295,45 +333,55 @@ impl<'a> TreeBuilder<'a> {
                 self.close_p_element_in_button_scope();
                 self.insert_element_for(tag);
             }
-            "plaintext" => {
+            N::Plaintext => {
                 self.close_p_element_in_button_scope();
                 self.insert_element_for(tag);
                 self.tokenizer.plaintext();
             }
-            "button" => {
-                if self.in_scope_named(default_scope, "button") {
+            N::Button => {
+                if self.in_scope_named(default_scope, N::Button) {
                     self.generate_implied_end_tags(cursory_implied_end);
-                    self.pop_until_named("button");
+                    self.pop_until_named(N::Button);
                 }
                 self.reconstruct_active_formatting_elements();
                 self.insert_element_for(tag);
                 self.frameset_ok = false;
             }
-            "a" => {
-                self.handle_misnested_a_tags();
+            N::A => {
+                self.handle_misnested_a_tags(&tag);
                 self.reconstruct_active_formatting_elements();
                 self.create_formatting_element_for(tag);
             }
-            "b" | "big" | "code" | "em" | "font" | "i" | "s" | "small" | "strike" | "strong"
-            | "tt" | "u" => {
+            N::B
+            | N::Big
+            | N::Code
+            | N::Em
+            | N::Font
+            | N::I
+            | N::S
+            | N::Small
+            | N::Strike
+            | N::Strong
+            | N::Tt
+            | N::U => {
                 self.reconstruct_active_formatting_elements();
                 self.create_formatting_element_for(tag);
             }
-            "nobr" => {
+            N::Nobr => {
                 self.reconstruct_active_formatting_elements();
-                if self.in_scope_named(default_scope, "nobr") {
-                    self.adoption_agency("nobr");
+                if self.in_scope_named(default_scope, N::Nobr) {
+                    self.adoption_agency(&tag);
                     self.reconstruct_active_formatting_elements();
                 }
                 self.create_formatting_element_for(tag);
             }
-            "applet" | "marquee" | "object" => {
+            N::Applet | N::Marquee | N::Object => {
                 self.reconstruct_active_formatting_elements();
                 self.insert_element_for(tag);
                 self.formatting.push(Formatting::Marker);
                 self.frameset_ok = false;
             }
-            "table" => {
+            N::Table => {
                 if !self.quirks {
                     self.close_p_element_in_button_scope();
                 }
@@ -341,14 +389,14 @@ impl<'a> TreeBuilder<'a> {
                 self.frameset_ok = false;
                 self.mode = Mode::InTable;
             }
-            "area" | "br" | "embed" | "img" | "keygen" | "wbr" => {
+            N::Area | N::Br | N::Embed | N::Img | N::Keygen | N::Wbr => {
                 self.reconstruct_active_formatting_elements();
                 self.insert_and_pop_element_for(tag);
                 self.frameset_ok = false;
             }
-            "input" => {
-                if self.in_scope_named(default_scope, "select") {
-                    self.pop_until_named("select");
+            N::Input => {
+                if self.in_scope_named(default_scope, N::Select) {
+                    self.pop_until_named(N::Select);
                 }
                 let hidden = Self::is_type_hidden(&tag);
                 self.reconstruct_active_formatting_elements();
@@ -357,83 +405,93 @@ impl<'a> TreeBuilder<'a> {
                     self.frameset_ok = false;
                 }
             }
-            "param" | "source" | "track" => {
+            N::Param | N::Source | N::Track => {
                 self.insert_and_pop_element_for(tag);
             }
-            "hr" => {
+            N::Hr => {
                 self.close_p_element_in_button_scope();
-                if self.in_scope_named(default_scope, "select") {
+                if self.in_scope_named(default_scope, N::Select) {
                     self.generate_implied_end_tags(cursory_implied_end);
                 }
                 self.insert_and_pop_element_for(tag);
                 self.frameset_ok = false;
             }
-            "image" => {
+            N::Image => {
                 return self.in_body(Token::Tag(Tag {
                     name: Cow::Borrowed("img"),
+                    local: N::Img,
                     ..tag
                 }));
             }
-            "textarea" => {
+            N::Textarea => {
                 self.ignore_lf = true;
                 self.frameset_ok = false;
                 return self.parse_raw_data(tag, RawKind::Rcdata);
             }
-            "xmp" => {
+            N::Xmp => {
                 self.close_p_element_in_button_scope();
                 self.reconstruct_active_formatting_elements();
                 self.frameset_ok = false;
                 return self.parse_raw_data(tag, RawKind::Rawtext);
             }
-            "iframe" => {
+            N::Iframe => {
                 self.frameset_ok = false;
                 return self.parse_raw_data(tag, RawKind::Rawtext);
             }
-            "noembed" | "noscript" => return self.parse_raw_data(tag, RawKind::Rawtext),
-            "select" => {
-                if self.in_scope_named(default_scope, "select") {
-                    self.pop_until_named("select");
+            N::Noembed | N::Noscript => return self.parse_raw_data(tag, RawKind::Rawtext),
+            N::Select => {
+                if self.in_scope_named(default_scope, N::Select) {
+                    self.pop_until_named(N::Select);
                 } else {
                     self.reconstruct_active_formatting_elements();
                     self.insert_element_for(tag);
                     self.frameset_ok = false;
                 }
             }
-            "option" | "optgroup" => {
-                if self.in_scope_named(default_scope, "select") {
-                    if tag.name == "option" {
-                        self.generate_implied_end_except("optgroup");
+            N::Option | N::Optgroup => {
+                if self.in_scope_named(default_scope, N::Select) {
+                    if tag.local == N::Option {
+                        self.generate_implied_end_except(N::Optgroup);
                     } else {
                         self.generate_implied_end_tags(cursory_implied_end);
                     }
-                } else if self.current_named("option") {
+                } else if self.current_named(N::Option) {
                     self.pop();
                 }
                 self.reconstruct_active_formatting_elements();
                 self.insert_element_for(tag);
             }
-            "rb" | "rtc" => {
-                if self.in_scope_named(default_scope, "ruby") {
+            N::Rb | N::Rtc => {
+                if self.in_scope_named(default_scope, N::Ruby) {
                     self.generate_implied_end_tags(cursory_implied_end);
                 }
                 self.insert_element_for(tag);
             }
-            "rp" | "rt" => {
-                if self.in_scope_named(default_scope, "ruby") {
-                    self.generate_implied_end_except("rtc");
+            N::Rp | N::Rt => {
+                if self.in_scope_named(default_scope, N::Ruby) {
+                    self.generate_implied_end_except(N::Rtc);
                 }
                 self.insert_element_for(tag);
             }
-            "math" => {
+            N::Math => {
                 self.reconstruct_active_formatting_elements();
                 return self.enter_foreign(tag, Namespace::MathMl);
             }
-            "svg" => {
+            N::Svg => {
                 self.reconstruct_active_formatting_elements();
                 return self.enter_foreign(tag, Namespace::Svg);
             }
-            "caption" | "col" | "colgroup" | "frame" | "head" | "tbody" | "td" | "tfoot" | "th"
-            | "thead" | "tr" => {}
+            N::Caption
+            | N::Col
+            | N::Colgroup
+            | N::Frame
+            | N::Head
+            | N::Tbody
+            | N::Td
+            | N::Tfoot
+            | N::Th
+            | N::Thead
+            | N::Tr => {}
             _ => {
                 self.reconstruct_active_formatting_elements();
                 self.insert_element_for(tag);
@@ -443,34 +501,58 @@ impl<'a> TreeBuilder<'a> {
     }
 
     fn in_body_end_tag(&mut self, tag: Tag<'a>) -> Step<'a> {
-        match &*tag.name {
-            "template" => return self.in_head(Token::Tag(tag)),
-            "body" => {
-                if self.in_scope_named(default_scope, "body") {
+        match tag.local {
+            N::Template => return self.in_head(Token::Tag(tag)),
+            N::Body => {
+                if self.in_scope_named(default_scope, N::Body) {
                     self.mode = Mode::AfterBody;
                 }
             }
-            "html" => {
-                if self.in_scope_named(default_scope, "body") {
+            N::Html => {
+                if self.in_scope_named(default_scope, N::Body) {
                     return Step::Reprocess(Mode::AfterBody, Token::Tag(tag));
                 }
             }
-            "address" | "article" | "aside" | "blockquote" | "button" | "center" | "details"
-            | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure" | "footer"
-            | "header" | "hgroup" | "listing" | "main" | "menu" | "nav" | "ol" | "pre"
-            | "search" | "section" | "select" | "summary" | "ul" => {
-                if self.in_scope_named(default_scope, &tag.name) {
+            N::Address
+            | N::Article
+            | N::Aside
+            | N::Blockquote
+            | N::Button
+            | N::Center
+            | N::Details
+            | N::Dialog
+            | N::Dir
+            | N::Div
+            | N::Dl
+            | N::Fieldset
+            | N::Figcaption
+            | N::Figure
+            | N::Footer
+            | N::Header
+            | N::Hgroup
+            | N::Listing
+            | N::Main
+            | N::Menu
+            | N::Nav
+            | N::Ol
+            | N::Pre
+            | N::Search
+            | N::Section
+            | N::Select
+            | N::Summary
+            | N::Ul => {
+                if self.in_scope_named(default_scope, tag.local) {
                     self.generate_implied_end_tags(cursory_implied_end);
-                    self.pop_until_named(&tag.name);
+                    self.pop_until_named(tag.local);
                 }
             }
-            "form" if self.in_html_named("template") => {
-                if self.in_scope_named(default_scope, "form") {
+            N::Form if self.in_html_named(N::Template) => {
+                if self.in_scope_named(default_scope, N::Form) {
                     self.generate_implied_end_tags(cursory_implied_end);
-                    self.pop_until_named("form");
+                    self.pop_until_named(N::Form);
                 }
             }
-            "form" => {
+            N::Form => {
                 if let Some(form) = self.form.take()
                     && self.in_scope(default_scope, |node| node == form)
                 {
@@ -478,47 +560,59 @@ impl<'a> TreeBuilder<'a> {
                     self.remove_from_stack(form);
                 }
             }
-            "p" => {
-                if !self.in_scope_named(button_scope, "p") {
-                    self.insert_phantom("p");
+            N::P => {
+                if !self.in_scope_named(button_scope, N::P) {
+                    self.insert_phantom(N::P);
                 }
                 self.close_p_element();
             }
-            "li" => {
-                if self.in_scope_named(list_item_scope, "li") {
-                    self.generate_implied_end_except("li");
-                    self.pop_until_named("li");
+            N::Li => {
+                if self.in_scope_named(list_item_scope, N::Li) {
+                    self.generate_implied_end_except(N::Li);
+                    self.pop_until_named(N::Li);
                 }
             }
-            "dd" | "dt" => {
-                if self.in_scope_named(default_scope, &tag.name) {
-                    self.generate_implied_end_except(&tag.name);
-                    self.pop_until_named(&tag.name);
+            N::Dd | N::Dt => {
+                if self.in_scope_named(default_scope, tag.local) {
+                    self.generate_implied_end_except(tag.local);
+                    self.pop_until_named(tag.local);
                 }
             }
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            N::H1 | N::H2 | N::H3 | N::H4 | N::H5 | N::H6 => {
                 if self.in_scope(default_scope, |node| self.in_set(node, heading)) {
                     self.generate_implied_end_tags(cursory_implied_end);
                     self.pop_until(heading);
                 }
             }
-            "a" | "b" | "big" | "code" | "em" | "font" | "i" | "nobr" | "s" | "small"
-            | "strike" | "strong" | "tt" | "u" => self.adoption_agency(&tag.name),
-            "applet" | "marquee" | "object" => {
-                if self.in_scope_named(default_scope, &tag.name) {
+            N::A
+            | N::B
+            | N::Big
+            | N::Code
+            | N::Em
+            | N::Font
+            | N::I
+            | N::Nobr
+            | N::S
+            | N::Small
+            | N::Strike
+            | N::Strong
+            | N::Tt
+            | N::U => self.adoption_agency(&tag),
+            N::Applet | N::Marquee | N::Object => {
+                if self.in_scope_named(default_scope, tag.local) {
                     self.generate_implied_end_tags(cursory_implied_end);
-                    self.pop_until_named(&tag.name);
+                    self.pop_until_named(tag.local);
                     self.clear_active_formatting_to_marker();
                 }
             }
-            "br" => {
+            N::Br => {
                 return self.in_body(Token::Tag(Tag {
                     end: false,
                     attributes: Vec::new(),
                     ..tag
                 }));
             }
-            _ => self.process_end_tag_in_body(&tag.name),
+            _ => self.process_end_tag_in_body(&tag),
         }
         Step::Done
     }
@@ -555,58 +649,67 @@ impl<'a> TreeBuilder<'a> {
             Token::Eof => return self.in_body(Token::Eof),
             Token::Tag(tag) => tag,
         };
-        match (tag.end, &*tag.name) {
-            (false, "caption") => {
+        match (tag.end, tag.local) {
+            (false, N::Caption) => {
                 self.pop_until_current(table_scope);
                 self.formatting.push(Formatting::Marker);
                 self.insert_element_for(tag);
                 self.mode = Mode::InCaption;
             }
-            (false, "colgroup") => {
+            (false, N::Colgroup) => {
                 self.pop_until_current(table_scope);
                 self.insert_element_for(tag);
                 self.mode = Mode::InColumnGroup;
             }
-            (false, "col") => {
+            (false, N::Col) => {
                 self.pop_until_current(table_scope);
-                self.insert_phantom("colgroup");
+                self.insert_phantom(N::Colgroup);
                 return Step::Reprocess(Mode::InColumnGroup, Token::Tag(tag));
             }
-            (false, "tbody" | "tfoot" | "thead") => {
+            (false, N::Tbody | N::Tfoot | N::Thead) => {
                 self.pop_until_current(table_scope);
                 self.insert_element_for(tag);
                 self.mode = Mode::InTableBody;
             }
-            (false, "td" | "th" | "tr") => {
+            (false, N::Td | N::Th | N::Tr) => {
                 self.pop_until_current(table_scope);
-                self.insert_phantom("tbody");
+                self.insert_phantom(N::Tbody);
                 return Step::Reprocess(Mode::InTableBody, Token::Tag(tag));
             }
-            (false, "table") => {
-                if self.in_scope_named(table_scope, "table") {
-                    self.pop_until_named("table");
+            (false, N::Table) => {
+                if self.in_scope_named(table_scope, N::Table) {
+                    self.pop_until_named(N::Table);
                     return Step::Reprocess(self.reset_insertion_mode(), Token::Tag(tag));
                 }
             }
-            (true, "table") => {
-                if self.in_scope_named(table_scope, "table") {
-                    self.pop_until_named("table");
+            (true, N::Table) => {
+                if self.in_scope_named(table_scope, N::Table) {
+                    self.pop_until_named(N::Table);
                     self.mode = self.reset_insertion_mode();
                 }
             }
             (
                 true,
-                "body" | "caption" | "col" | "colgroup" | "html" | "tbody" | "td" | "tfoot" | "th"
-                | "thead" | "tr",
+                N::Body
+                | N::Caption
+                | N::Col
+                | N::Colgroup
+                | N::Html
+                | N::Tbody
+                | N::Td
+                | N::Tfoot
+                | N::Th
+                | N::Thead
+                | N::Tr,
             ) => {}
-            (false, "style" | "script" | "template") | (true, "template") => {
+            (false, N::Style | N::Script | N::Template) | (true, N::Template) => {
                 return self.in_head(Token::Tag(tag));
             }
-            (false, "input") if Self::is_type_hidden(&tag) => {
+            (false, N::Input) if Self::is_type_hidden(&tag) => {
                 self.insert_and_pop_element_for(tag);
             }
-            (false, "form") => {
-                if !self.in_html_named("template") && self.form.is_none() {
+            (false, N::Form) => {
+                if !self.in_html_named(N::Template) && self.form.is_none() {
                     self.form = Some(self.insert_and_pop_element_for(tag));
                 }
             }
@@ -649,19 +752,27 @@ impl<'a> TreeBuilder<'a> {
         let Token::Tag(tag) = token else {
             return self.in_body(token);
         };
-        match (tag.end, &*tag.name) {
+        match (tag.end, tag.local) {
             (
                 false,
-                "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr",
+                N::Caption
+                | N::Col
+                | N::Colgroup
+                | N::Tbody
+                | N::Td
+                | N::Tfoot
+                | N::Th
+                | N::Thead
+                | N::Tr,
             )
-            | (true, "table" | "caption") => {
-                if !self.in_scope_named(table_scope, "caption") {
+            | (true, N::Table | N::Caption) => {
+                if !self.in_scope_named(table_scope, N::Caption) {
                     return Step::Done;
                 }
                 self.generate_implied_end_tags(cursory_implied_end);
-                self.pop_until_named("caption");
+                self.pop_until_named(N::Caption);
                 self.clear_active_formatting_to_marker();
-                if tag.end && tag.name == "caption" {
+                if tag.end && tag.local == N::Caption {
                     self.mode = Mode::InTable;
                     Step::Done
                 } else {
@@ -670,8 +781,16 @@ impl<'a> TreeBuilder<'a> {
             }
             (
                 true,
-                "body" | "col" | "colgroup" | "html" | "tbody" | "td" | "tfoot" | "th" | "thead"
-                | "tr",
+                N::Body
+                | N::Col
+                | N::Colgroup
+                | N::Html
+                | N::Tbody
+                | N::Td
+                | N::Tfoot
+                | N::Th
+                | N::Thead
+                | N::Tr,
             ) => Step::Done,
             _ => self.in_body(Token::Tag(tag)),
         }
@@ -683,26 +802,26 @@ impl<'a> TreeBuilder<'a> {
             Token::Characters(SplitStatus::Whitespace, text) => return self.append_text(text),
             Token::Comment(text) => return self.append_comment(text),
             Token::Eof => return self.in_body(Token::Eof),
-            Token::Tag(tag) => match (tag.end, &*tag.name) {
-                (false, "html") => return self.in_body(Token::Tag(tag)),
-                (false, "col") => {
+            Token::Tag(tag) => match (tag.end, tag.local) {
+                (false, N::Html) => return self.in_body(Token::Tag(tag)),
+                (false, N::Col) => {
                     self.insert_and_pop_element_for(tag);
                     return Step::Done;
                 }
-                (true, "colgroup") => {
-                    if self.current_named("colgroup") {
+                (true, N::Colgroup) => {
+                    if self.current_named(N::Colgroup) {
                         self.pop();
                         self.mode = Mode::InTable;
                     }
                     return Step::Done;
                 }
-                (true, "col") => return Step::Done,
-                (_, "template") => return self.in_head(Token::Tag(tag)),
+                (true, N::Col) => return Step::Done,
+                (_, N::Template) => return self.in_head(Token::Tag(tag)),
                 _ => Token::Tag(tag),
             },
             token => token,
         };
-        if self.current_named("colgroup") {
+        if self.current_named(N::Colgroup) {
             self.pop();
             Step::Reprocess(Mode::InTable, token)
         } else {
@@ -714,31 +833,31 @@ impl<'a> TreeBuilder<'a> {
         let Token::Tag(tag) = token else {
             return self.in_table(token);
         };
-        match (tag.end, &*tag.name) {
-            (false, "tr") => {
+        match (tag.end, tag.local) {
+            (false, N::Tr) => {
                 self.pop_until_current(table_body_context);
                 self.insert_element_for(tag);
                 self.mode = Mode::InRow;
                 Step::Done
             }
-            (false, "th" | "td") => {
+            (false, N::Th | N::Td) => {
                 self.pop_until_current(table_body_context);
-                self.insert_phantom("tr");
+                self.insert_phantom(N::Tr);
                 Step::Reprocess(Mode::InRow, Token::Tag(tag))
             }
-            (true, "tbody" | "tfoot" | "thead") => {
-                if self.in_scope_named(table_scope, &tag.name) {
+            (true, N::Tbody | N::Tfoot | N::Thead) => {
+                if self.in_scope_named(table_scope, tag.local) {
                     self.pop_until_current(table_body_context);
                     self.pop();
                     self.mode = Mode::InTable;
                 }
                 Step::Done
             }
-            (false, "caption" | "col" | "colgroup" | "tbody" | "tfoot" | "thead")
-            | (true, "table") => {
+            (false, N::Caption | N::Col | N::Colgroup | N::Tbody | N::Tfoot | N::Thead)
+            | (true, N::Table) => {
                 // html5ever leaves `thead` out of this check.
                 let table =
-                    |namespace, name: &str| html(namespace, name, &["table", "tbody", "tfoot"]);
+                    |namespace, name: N| html(namespace, name, &[N::Table, N::Tbody, N::Tfoot]);
                 if self.in_scope(table_scope, |node| self.in_set(node, table)) {
                     self.pop_until_current(table_body_context);
                     self.pop();
@@ -747,9 +866,10 @@ impl<'a> TreeBuilder<'a> {
                     Step::Done
                 }
             }
-            (true, "body" | "caption" | "col" | "colgroup" | "html" | "td" | "th" | "tr") => {
-                Step::Done
-            }
+            (
+                true,
+                N::Body | N::Caption | N::Col | N::Colgroup | N::Html | N::Td | N::Th | N::Tr,
+            ) => Step::Done,
             _ => self.in_table(Token::Tag(tag)),
         }
     }
@@ -758,38 +878,40 @@ impl<'a> TreeBuilder<'a> {
         let Token::Tag(tag) = token else {
             return self.in_table(token);
         };
-        match (tag.end, &*tag.name) {
-            (false, "th" | "td") => {
+        match (tag.end, tag.local) {
+            (false, N::Th | N::Td) => {
                 self.pop_until_current(table_row_context);
                 self.insert_element_for(tag);
                 self.mode = Mode::InCell;
                 self.formatting.push(Formatting::Marker);
                 Step::Done
             }
-            (true, "tr") => {
-                if self.in_scope_named(table_scope, "tr") {
+            (true, N::Tr) => {
+                if self.in_scope_named(table_scope, N::Tr) {
                     self.pop_until_current(table_row_context);
                     self.pop();
                     self.mode = Mode::InTableBody;
                 }
                 Step::Done
             }
-            (false, "caption" | "col" | "colgroup" | "tbody" | "tfoot" | "thead" | "tr")
-            | (true, "table") => self.close_row(tag),
-            (true, "tbody" | "tfoot" | "thead") => {
-                if self.in_scope_named(table_scope, &tag.name) {
+            (false, N::Caption | N::Col | N::Colgroup | N::Tbody | N::Tfoot | N::Thead | N::Tr)
+            | (true, N::Table) => self.close_row(tag),
+            (true, N::Tbody | N::Tfoot | N::Thead) => {
+                if self.in_scope_named(table_scope, tag.local) {
                     self.close_row(tag)
                 } else {
                     Step::Done
                 }
             }
-            (true, "body" | "caption" | "col" | "colgroup" | "html" | "td" | "th") => Step::Done,
+            (true, N::Body | N::Caption | N::Col | N::Colgroup | N::Html | N::Td | N::Th) => {
+                Step::Done
+            }
             _ => self.in_table(Token::Tag(tag)),
         }
     }
 
     fn close_row(&mut self, tag: Tag<'a>) -> Step<'a> {
-        if !self.in_scope_named(table_scope, "tr") {
+        if !self.in_scope_named(table_scope, N::Tr) {
             return Step::Done;
         }
         self.pop_until_current(table_row_context);
@@ -801,11 +923,11 @@ impl<'a> TreeBuilder<'a> {
         let Token::Tag(tag) = token else {
             return self.in_body(token);
         };
-        match (tag.end, &*tag.name) {
-            (true, "td" | "th") => {
-                if self.in_scope_named(table_scope, &tag.name) {
+        match (tag.end, tag.local) {
+            (true, N::Td | N::Th) => {
+                if self.in_scope_named(table_scope, tag.local) {
                     self.generate_implied_end_tags(cursory_implied_end);
-                    self.pop_until_named(&tag.name);
+                    self.pop_until_named(tag.local);
                     self.clear_active_formatting_to_marker();
                     self.mode = Mode::InRow;
                 }
@@ -813,7 +935,15 @@ impl<'a> TreeBuilder<'a> {
             }
             (
                 false,
-                "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr",
+                N::Caption
+                | N::Col
+                | N::Colgroup
+                | N::Tbody
+                | N::Td
+                | N::Tfoot
+                | N::Th
+                | N::Thead
+                | N::Tr,
             ) => {
                 if self.in_scope(table_scope, |node| self.in_set(node, td_th)) {
                     self.close_the_cell();
@@ -822,9 +952,9 @@ impl<'a> TreeBuilder<'a> {
                     Step::Done
                 }
             }
-            (true, "body" | "caption" | "col" | "colgroup" | "html") => Step::Done,
-            (true, "table" | "tbody" | "tfoot" | "thead" | "tr") => {
-                if self.in_scope_named(table_scope, &tag.name) {
+            (true, N::Body | N::Caption | N::Col | N::Colgroup | N::Html) => Step::Done,
+            (true, N::Table | N::Tbody | N::Tfoot | N::Thead | N::Tr) => {
+                if self.in_scope_named(table_scope, tag.local) {
                     self.close_the_cell();
                     Step::Reprocess(Mode::InRow, Token::Tag(tag))
                 } else {
@@ -838,9 +968,9 @@ impl<'a> TreeBuilder<'a> {
     fn in_template(&mut self, token: Token<'a>) -> Step<'a> {
         let tag = match token {
             Token::Characters(..) | Token::Comment(_) => return self.in_body(token),
-            Token::Eof if !self.in_html_named("template") => return Step::Done,
+            Token::Eof if !self.in_html_named(N::Template) => return Step::Done,
             Token::Eof => {
-                self.pop_until_named("template");
+                self.pop_until_named(N::Template);
                 self.clear_active_formatting_to_marker();
                 self.template_modes.pop();
                 self.mode = self.reset_insertion_mode();
@@ -849,18 +979,26 @@ impl<'a> TreeBuilder<'a> {
             Token::NullCharacter => return Step::Done,
             Token::Tag(tag) => tag,
         };
-        let mode = match (tag.end, &*tag.name) {
+        let mode = match (tag.end, tag.local) {
             (
                 false,
-                "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script" | "style"
-                | "template" | "title",
+                N::Base
+                | N::Basefont
+                | N::Bgsound
+                | N::Link
+                | N::Meta
+                | N::Noframes
+                | N::Script
+                | N::Style
+                | N::Template
+                | N::Title,
             )
-            | (true, "template") => return self.in_head(Token::Tag(tag)),
+            | (true, N::Template) => return self.in_head(Token::Tag(tag)),
             (true, _) => return Step::Done,
-            (false, "caption" | "colgroup" | "tbody" | "tfoot" | "thead") => Mode::InTable,
-            (false, "col") => Mode::InColumnGroup,
-            (false, "tr") => Mode::InTableBody,
-            (false, "td" | "th") => Mode::InRow,
+            (false, N::Caption | N::Colgroup | N::Tbody | N::Tfoot | N::Thead) => Mode::InTable,
+            (false, N::Col) => Mode::InColumnGroup,
+            (false, N::Tr) => Mode::InTableBody,
+            (false, N::Td | N::Th) => Mode::InRow,
             (false, _) => Mode::InBody,
         };
         self.template_modes.pop();
@@ -874,8 +1012,8 @@ impl<'a> TreeBuilder<'a> {
             Token::Characters(SplitStatus::Whitespace, _) => self.in_body(token),
             Token::Comment(text) => self.append_comment_to(self.open[0], text),
             Token::Eof => Step::Done,
-            Token::Tag(tag) if !tag.end && tag.name == "html" => self.in_body(Token::Tag(tag)),
-            Token::Tag(tag) if tag.end && tag.name == "html" => {
+            Token::Tag(tag) if !tag.end && tag.local == N::Html => self.in_body(Token::Tag(tag)),
+            Token::Tag(tag) if tag.end && tag.local == N::Html => {
                 if self.context.is_none() {
                     self.mode = Mode::AfterAfterBody;
                 }
@@ -893,21 +1031,21 @@ impl<'a> TreeBuilder<'a> {
             Token::Tag(tag) => tag,
             _ => return Step::Done,
         };
-        match (tag.end, &*tag.name) {
-            (false, "html") => return self.in_body(Token::Tag(tag)),
-            (false, "frameset") => {
+        match (tag.end, tag.local) {
+            (false, N::Html) => return self.in_body(Token::Tag(tag)),
+            (false, N::Frameset) => {
                 self.insert_element_for(tag);
             }
-            (true, "frameset") if self.open.len() != 1 => {
+            (true, N::Frameset) if self.open.len() != 1 => {
                 self.pop();
-                if self.context.is_none() && !self.current_named("frameset") {
+                if self.context.is_none() && !self.current_named(N::Frameset) {
                     self.mode = Mode::AfterFrameset;
                 }
             }
-            (false, "frame") => {
+            (false, N::Frame) => {
                 self.insert_and_pop_element_for(tag);
             }
-            (false, "noframes") => return self.in_head(Token::Tag(tag)),
+            (false, N::Noframes) => return self.in_head(Token::Tag(tag)),
             _ => {}
         }
         Step::Done
@@ -921,13 +1059,13 @@ impl<'a> TreeBuilder<'a> {
             Token::Tag(tag) => tag,
             _ => return Step::Done,
         };
-        match (tag.end, &*tag.name) {
-            (false, "html") => self.in_body(Token::Tag(tag)),
-            (true, "html") => {
+        match (tag.end, tag.local) {
+            (false, N::Html) => self.in_body(Token::Tag(tag)),
+            (true, N::Html) => {
                 self.mode = Mode::AfterAfterFrameset;
                 Step::Done
             }
-            (false, "noframes") => self.in_head(Token::Tag(tag)),
+            (false, N::Noframes) => self.in_head(Token::Tag(tag)),
             _ => Step::Done,
         }
     }
@@ -938,7 +1076,7 @@ impl<'a> TreeBuilder<'a> {
             Token::Characters(SplitStatus::Whitespace, _) => self.in_body(token),
             Token::Comment(text) => self.append_comment_to(ROOT, text),
             Token::Eof => Step::Done,
-            Token::Tag(tag) if !tag.end && tag.name == "html" => self.in_body(Token::Tag(tag)),
+            Token::Tag(tag) if !tag.end && tag.local == N::Html => self.in_body(Token::Tag(tag)),
             token => Step::Reprocess(Mode::InBody, token),
         }
     }
@@ -948,8 +1086,10 @@ impl<'a> TreeBuilder<'a> {
             Token::Characters(SplitStatus::NotSplit, text) => Step::SplitWhitespace(text),
             Token::Characters(SplitStatus::Whitespace, _) => self.in_body(token),
             Token::Comment(text) => self.append_comment_to(ROOT, text),
-            Token::Tag(tag) if !tag.end && tag.name == "html" => self.in_body(Token::Tag(tag)),
-            Token::Tag(tag) if !tag.end && tag.name == "noframes" => self.in_head(Token::Tag(tag)),
+            Token::Tag(tag) if !tag.end && tag.local == N::Html => self.in_body(Token::Tag(tag)),
+            Token::Tag(tag) if !tag.end && tag.local == N::Noframes => {
+                self.in_head(Token::Tag(tag))
+            }
             _ => Step::Done,
         }
     }
@@ -968,54 +1108,54 @@ impl<'a> TreeBuilder<'a> {
             Token::Eof => unreachable!("end of input is never foreign content"),
         };
         let breaks_out = if tag.end {
-            matches!(&*tag.name, "br" | "p")
+            matches!(tag.local, N::Br | N::P)
         } else {
             matches!(
-                &*tag.name,
-                "b" | "big"
-                    | "blockquote"
-                    | "body"
-                    | "br"
-                    | "center"
-                    | "code"
-                    | "dd"
-                    | "div"
-                    | "dl"
-                    | "dt"
-                    | "em"
-                    | "embed"
-                    | "h1"
-                    | "h2"
-                    | "h3"
-                    | "h4"
-                    | "h5"
-                    | "h6"
-                    | "head"
-                    | "hr"
-                    | "i"
-                    | "img"
-                    | "li"
-                    | "listing"
-                    | "menu"
-                    | "meta"
-                    | "nobr"
-                    | "ol"
-                    | "p"
-                    | "pre"
-                    | "ruby"
-                    | "s"
-                    | "small"
-                    | "span"
-                    | "strong"
-                    | "strike"
-                    | "sub"
-                    | "sup"
-                    | "table"
-                    | "tt"
-                    | "u"
-                    | "ul"
-                    | "var"
-            ) || (tag.name == "font"
+                tag.local,
+                N::B | N::Big
+                    | N::Blockquote
+                    | N::Body
+                    | N::Br
+                    | N::Center
+                    | N::Code
+                    | N::Dd
+                    | N::Div
+                    | N::Dl
+                    | N::Dt
+                    | N::Em
+                    | N::Embed
+                    | N::H1
+                    | N::H2
+                    | N::H3
+                    | N::H4
+                    | N::H5
+                    | N::H6
+                    | N::Head
+                    | N::Hr
+                    | N::I
+                    | N::Img
+                    | N::Li
+                    | N::Listing
+                    | N::Menu
+                    | N::Meta
+                    | N::Nobr
+                    | N::Ol
+                    | N::P
+                    | N::Pre
+                    | N::Ruby
+                    | N::S
+                    | N::Small
+                    | N::Span
+                    | N::Strong
+                    | N::Strike
+                    | N::Sub
+                    | N::Sup
+                    | N::Table
+                    | N::Tt
+                    | N::U
+                    | N::Ul
+                    | N::Var
+            ) || (tag.local == N::Font
                 && tag
                     .attributes
                     .iter()
@@ -1037,11 +1177,11 @@ impl<'a> TreeBuilder<'a> {
         let mut index = self.open.len() - 1;
         let mut first = true;
         while index > 0 {
-            let (namespace, name) = self.name(self.open[index]);
-            if !first && namespace == Namespace::Html {
+            let element = self.document.element(self.open[index]);
+            if !first && element.namespace == Namespace::Html {
                 return self.step(self.mode, Token::Tag(tag));
             }
-            if name.eq_ignore_ascii_case(&tag.name) {
+            if element.name.eq_ignore_ascii_case(&tag.name) {
                 self.open.truncate(index);
                 break;
             }
@@ -1062,7 +1202,13 @@ impl<'a> TreeBuilder<'a> {
             Namespace::Html => {}
         }
         foreign::adjust_foreign_attributes(&mut tag);
-        self.insert_element(!tag.self_closing, namespace, tag.name, tag.attributes);
+        self.insert_element(
+            !tag.self_closing,
+            namespace,
+            tag.local,
+            tag.name,
+            tag.attributes,
+        );
         Step::Done
     }
 
@@ -1073,7 +1219,13 @@ impl<'a> TreeBuilder<'a> {
             Namespace::Html => unreachable!("only svg and math enter foreign content"),
         }
         foreign::adjust_foreign_attributes(&mut tag);
-        self.insert_element(!tag.self_closing, namespace, tag.name, tag.attributes);
+        self.insert_element(
+            !tag.self_closing,
+            namespace,
+            tag.local,
+            tag.name,
+            tag.attributes,
+        );
         Step::Done
     }
 }

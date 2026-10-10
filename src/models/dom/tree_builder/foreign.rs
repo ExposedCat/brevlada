@@ -1,5 +1,5 @@
 //! Name adjustments for SVG and MathML elements and attributes.
-use super::super::{Prefix, tokenizer::Tag};
+use super::super::{Prefix, names::LocalName, tokenizer::Tag};
 use std::borrow::Cow;
 
 pub(super) fn adjust_svg_tag_name(tag: &mut Tag<'_>) {
@@ -44,6 +44,7 @@ pub(super) fn adjust_svg_tag_name(tag: &mut Tag<'_>) {
         _ => return,
     };
     tag.name = Cow::Borrowed(adjusted);
+    tag.local = LocalName::new(adjusted);
 }
 
 pub(super) fn adjust_svg_attributes(tag: &mut Tag<'_>) {
