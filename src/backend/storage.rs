@@ -1,7 +1,8 @@
 use crate::models::{Message, SentMessage};
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
-use std::{collections::HashSet, path::Path, sync::Arc};
+use messages::Mailbox;
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
 
 #[path = "storage_access.rs"]
 mod access;
@@ -16,6 +17,10 @@ mod calendar;
 mod concurrency_tests;
 #[path = "sync_history.rs"]
 mod history;
+#[path = "message_storage.rs"]
+mod messages;
+#[path = "storage_migration.rs"]
+mod migration;
 #[path = "notification_storage.rs"]
 mod notifications;
 #[path = "read_storage.rs"]
@@ -31,13 +36,13 @@ pub struct Storage(Connection, Arc<access::Access>);
 
 impl Storage {
     pub fn open_read_only(path: &Path) -> Result<Self> {
-        let access = access::Access::for_path(path)?;
-        // Wait for an initialization already in progress before using its schema.
-        let _write = access.lock()?;
+        // Opening for writing first migrates an older cache and waits for an
+        // initialization already in progress before using its schema.
+        let access = Self::open(path)?.1;
         let connection =
             Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        Ok(Self(connection, access.clone()))
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(Self(connection, access))
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -53,66 +58,27 @@ impl Storage {
             state.initialized = true;
             Ok(storage)
         } else {
-            connection.busy_timeout(std::time::Duration::from_secs(5))?;
+            Self::configure(&connection)?;
             Ok(Self(connection, access.clone()))
         }
     }
 
+    fn configure(connection: &Connection) -> Result<()> {
+        connection.busy_timeout(Duration::from_secs(5))?;
+        // With WAL, a crash can only lose the latest commits, which the next
+        // sync restores, so commits need not wait for the disk.
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        Ok(())
+    }
+
     fn initialize(mut connection: Connection) -> Result<Self> {
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        Self::configure(&connection)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         // Take the SQLite write lock up front so external writers honor the busy
         // timeout instead of causing a failed read-to-write transaction upgrade.
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        transaction.execute_batch(
-            "CREATE TABLE IF NOT EXISTS rust_messages (
-            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL,
-            data TEXT NOT NULL, PRIMARY KEY(account_id, folder, uid));
-            CREATE TABLE IF NOT EXISTS rust_removed_messages (
-            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
-            uid INTEGER NOT NULL, PRIMARY KEY(account_id, folder, uid_validity, uid));
-            CREATE TABLE IF NOT EXISTS rust_folders (
-            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER,
-            PRIMARY KEY(account_id, folder));
-            CREATE TABLE IF NOT EXISTS rust_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS rust_notification_folders (
-            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
-            last_uid INTEGER NOT NULL, PRIMARY KEY(account_id,folder));
-            CREATE TABLE IF NOT EXISTS rust_notification_pending (
-            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
-            uid INTEGER NOT NULL, PRIMARY KEY(account_id,folder,uid_validity,uid));
-            CREATE TABLE IF NOT EXISTS rust_read_changes (
-            account_id TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL,
-            uid_validity INTEGER, revision INTEGER NOT NULL,
-            PRIMARY KEY(account_id, folder, uid));
-            CREATE TABLE IF NOT EXISTS rust_sync_settings (
-            account_id TEXT PRIMARY KEY, folders TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS rust_avatars (
-            email TEXT PRIMARY KEY, source TEXT NOT NULL, image BLOB,
-            fetched_at INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS rust_unread (
-            account_id TEXT NOT NULL, folder TEXT NOT NULL, unread BOOLEAN NOT NULL,
-            PRIMARY KEY(account_id, folder));
-            CREATE TABLE IF NOT EXISTS rust_sent_local (
-            account_id TEXT NOT NULL, message_id TEXT NOT NULL, data TEXT NOT NULL,
-            PRIMARY KEY(account_id, message_id));
-            CREATE INDEX IF NOT EXISTS rust_messages_date ON rust_messages
-            (account_id, folder, json_extract(data, '$.timestamp') DESC, uid DESC);",
-        )?;
-        // Old cached bodies lack Reply-To and may also lack Cc. Reload them once
-        // so responding to already cached mail uses the original headers.
-        transaction.execute(
-            "UPDATE rust_messages SET data=json_set(data, '$.body_loaded', json('false'))
-             WHERE json_type(data, '$.reply_to') IS NULL",
-            [],
-        )?;
-        // Older draft cache entries lack the recipient/reply fields needed by the editor.
-        transaction.execute(
-            "UPDATE rust_messages SET data=json_set(data, '$.body_loaded', json('false'))
-             WHERE coalesce(json_extract(data, '$.is_draft'),0) AND json_type(data, '$.cc') IS NULL",
-            [],
-        )?;
+        migration::run(&transaction)?;
         use rusqlite::OptionalExtension;
         let sources: Option<String> = transaction
             .query_row(
@@ -131,110 +97,37 @@ impl Storage {
                 params![super::avatars::SOURCES],
             )?;
         }
-        let legacy: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')",
-            [],
-            |r| r.get(0),
-        )?;
-        let migrated: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM rust_metadata WHERE key='legacy_import')",
-            [],
-            |r| r.get(0),
-        )?;
-        if legacy && !migrated {
-            let mut statement = transaction.prepare("SELECT uid, account_id, folder, message_id, subject, sender_name, sender_email, recipients, date_sent, message_references, is_read, body_text, body_html, is_flagged FROM messages WHERE is_deleted=0")?;
-            let rows = statement.query_map([], |row| {
-                let value = |i| {
-                    row.get::<_, Option<String>>(i)
-                        .map(Option::unwrap_or_default)
-                };
-                let date = value(8)?;
-                let timestamp = chrono::DateTime::parse_from_rfc3339(&date)
-                    .map(|d| d.timestamp())
-                    .or_else(|_| {
-                        chrono::NaiveDateTime::parse_from_str(&date, "%Y-%m-%d %H:%M:%S%.f")
-                            .map(|d| d.and_utc().timestamp())
-                    })
-                    .unwrap_or_default();
-                let body_text = value(11)?;
-                let body_html = value(12)?;
-                Ok((
-                    value(1)?,
-                    value(2)?,
-                    Message {
-                        uid: row.get(0)?,
-                        uid_validity: None,
-                        message_id: value(3)?.trim_matches(['<', '>']).to_string(),
-                        subject: value(4)?,
-                        sender: format!("{} <{}>", value(5)?, value(6)?),
-                        reply_to: String::new(),
-                        recipients: value(7)?,
-                        cc: String::new(),
-                        in_reply_to: None,
-                        date,
-                        timestamp,
-                        references: value(9)?
-                            .split_whitespace()
-                            .map(|s| s.trim_matches(['<', '>']).to_string())
-                            .collect(),
-                        is_read: row.get::<_, Option<bool>>(10)?.unwrap_or(false),
-                        read_revision: 0,
-                        flag_revision: 0,
-                        is_spam: false,
-                        is_flagged: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
-                        is_draft: false,
-                        body_loaded: false,
-                        body_text,
-                        body_html,
-                        attachments: Vec::new(),
-                        attachment_details: Vec::new(),
-                        inline_media: Vec::new(),
-                        inline_media_loaded: false,
-                        unsubscribe: None,
-                        parcels: Vec::new(),
-                        calendar_events: Vec::new(),
-                        tickets: Vec::new(),
-                        search_match: false,
-                        list_preview: None,
-                        display_prepared: false,
-                        remote_media: None,
-                    },
-                ))
-            })?;
-            for row in rows {
-                let (account, folder, message) = row?;
-                transaction.execute(
-                    "INSERT OR IGNORE INTO rust_messages VALUES (?1,?2,?3,?4)",
-                    params![
-                        account,
-                        folder,
-                        message.uid,
-                        serde_json::to_string(&message)?
-                    ],
-                )?;
-                transaction.execute(
-                    "INSERT OR IGNORE INTO rust_folders (account_id,folder) VALUES (?1,?2)",
-                    params![account, folder],
-                )?;
-            }
-            transaction.execute("INSERT INTO rust_metadata VALUES ('legacy_import','1')", [])?;
-        }
         transaction.commit()?;
         Ok(Self(connection, access::Access::initialized()))
     }
 
+    /// Runs `work` in one immediate transaction while holding the write gate.
+    fn write<T>(&self, work: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let _write = self.1.lock()?;
+        let transaction = Transaction::new_unchecked(&self.0, TransactionBehavior::Immediate)?;
+        let result = work(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
     pub fn message(&self, account: &str, folder: &str, uid: u32) -> Result<Option<Message>> {
+        Self::cached(&self.0, account, folder, uid)
+    }
+
+    fn cached(
+        connection: &Connection,
+        account: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<Message>> {
         use rusqlite::OptionalExtension;
-        let data: Option<String> = self
-            .0
-            .query_row(
-                "SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2 AND uid=?3",
-                params![account, folder, uid],
-                |row| row.get(0),
-            )
-            .optional()?;
-        data.map(|json| Ok(serde_json::from_str(&json)?))
-            .transpose()
+        let Some(mailbox) = Mailbox::find(connection, account, folder)? else {
+            return Ok(None);
+        };
+        Ok(connection
+            .prepare_cached(concat!(messages::select!(), " WHERE h.id=?1"))?
+            .query_row([mailbox.id(uid)], messages::decode)
+            .optional()?)
     }
 
     pub fn delete_draft(
@@ -257,7 +150,7 @@ impl Storage {
         } else {
             let _write = self.1.lock()?;
             self.0.execute(
-                "DELETE FROM rust_messages WHERE account_id=?1 AND folder=?2 AND json_extract(data, '$.message_id')=?3 AND coalesce(json_extract(data, '$.is_draft'),0)",
+                "DELETE FROM rust_headers WHERE account_id=?1 AND folder=?2 AND message_id=?3 AND is_draft",
                 params![account, target.folder, target.message_id],
             )?;
         }
@@ -270,7 +163,6 @@ impl Storage {
         folder: &str,
         message: &Message,
     ) -> Result<()> {
-        use rusqlite::{OptionalExtension, TransactionBehavior};
         let validity = message
             .uid_validity
             .context("Saved draft needs UIDVALIDITY")?;
@@ -278,50 +170,36 @@ impl Storage {
             message.uid != 0 && message.is_draft && message.body_loaded,
             "Saved draft is incomplete"
         );
-        let _write = self.1.lock()?;
-        let transaction = self
-            .0
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current: Option<u32> = transaction
-            .query_row(
-                "SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2",
-                params![account, folder],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        anyhow::ensure!(
-            current.is_none_or(|current| current == validity),
-            "Draft mailbox changed while caching"
-        );
-        anyhow::ensure!(
-            !Self::removed_in(&transaction, account, folder, validity)?.contains(&message.uid),
-            "Draft was already removed"
-        );
-        transaction.execute(
-            "INSERT OR REPLACE INTO rust_folders VALUES (?1,?2,?3)",
-            params![account, folder, validity],
-        )?;
-        transaction.execute(
-            "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",
-            params![
+        self.write(|transaction| {
+            let current = Self::folder_validity(transaction, account, folder)?;
+            anyhow::ensure!(
+                current.is_none_or(|current| current == validity),
+                "Draft mailbox changed while caching"
+            );
+            anyhow::ensure!(
+                !Self::removed_in(transaction, account, folder, validity)?.contains(&message.uid),
+                "Draft was already removed"
+            );
+            transaction.execute(
+                "INSERT OR REPLACE INTO rust_folders VALUES (?1,?2,?3)",
+                params![account, folder, validity],
+            )?;
+            let mailbox = Mailbox::ensure(transaction, account, folder)?;
+            messages::put(
+                transaction,
+                mailbox.id(message.uid),
                 account,
-                folder,
-                message.uid,
-                serde_json::to_string(message)?
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(())
+                Some(folder),
+                message,
+            )
+        })
     }
 
     pub fn store_sent(&self, account: &str, message: &Message) -> Result<()> {
-        let _write = self.1.lock()?;
-        self.0.execute(
-            "INSERT OR REPLACE INTO rust_sent_local VALUES (?1,?2,?3)",
-            params![account, message.message_id, serde_json::to_string(message)?],
-        )?;
-        Ok(())
+        self.write(|transaction| {
+            let id = messages::sent_id(transaction, account, &message.message_id)?;
+            messages::put(transaction, id, account, None, message)
+        })
     }
 
     pub fn related_sent(
@@ -331,53 +209,52 @@ impl Storage {
         received: &[Message],
     ) -> Result<Vec<SentMessage>> {
         let mut candidates = Vec::new();
-        let mut local = self
-            .0
-            .prepare("SELECT data FROM rust_sent_local WHERE account_id=?1")?;
-        for row in local.query_map([account], |row| row.get::<_, String>(0))? {
+        let mut local = self.0.prepare(concat!(
+            messages::select!(),
+            " WHERE h.account_id=?1 AND h.folder IS NULL ORDER BY h.message_id"
+        ))?;
+        for message in local.query_map([account], messages::decode)? {
             candidates.push(SentMessage {
                 folder: String::new(),
-                message: serde_json::from_str(&row?)?,
+                message: message?,
             });
         }
-        let mut cached = self.0.prepare(
-            "SELECT m.folder, m.data, f.uid_validity FROM rust_messages m
-             LEFT JOIN rust_folders f ON m.account_id=f.account_id AND m.folder=f.folder
-             WHERE m.account_id=?1 AND m.folder<>?2 ORDER BY json_extract(m.data, '$.timestamp') DESC",
-        )?;
+        let mut cached = self.0.prepare(concat!(
+            messages::select!(
+                "coalesce(b.body_text, ''), coalesce(b.body_html, ''), \
+                 coalesce(b.inline_media, '[]'), h.folder, (SELECT f.uid_validity FROM rust_folders f \
+                 WHERE f.account_id=h.account_id AND f.folder=h.folder)"
+            ),
+            " WHERE h.account_id=?1 AND h.folder<>?2 AND (h.is_draft OR h.sender_key=lower(?1))
+             ORDER BY h.timestamp DESC, h.folder, h.uid DESC"
+        ))?;
         for row in cached.query_map(params![account, folder], |row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<u32>>(2)?,
+                messages::decode(row)?,
+                row.get::<_, String>(29)?,
+                row.get::<_, Option<u32>>(30)?,
             ))
         })? {
-            let (folder, data, validity) = row?;
-            let mut message: Message = serde_json::from_str(&data)?;
+            let (mut message, folder, validity) = row?;
             message.uid_validity = message.uid_validity.or(validity);
             super::mail_sync::ensure_draft_id(&mut message, &folder);
-            if message.is_draft
-                || crate::models::senders::key(&message).eq_ignore_ascii_case(account)
-            {
-                candidates.push(SentMessage { folder, message });
-            }
+            candidates.push(SentMessage { folder, message });
         }
         Ok(crate::models::conversation::related(received, &candidates))
     }
 
     #[cfg(test)]
     pub fn store(&self, account: &str, folder: &str, message: &Message) -> Result<()> {
-        let _write = self.1.lock()?;
-        self.0.execute(
-            "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",
-            params![
+        self.write(|transaction| {
+            let mailbox = Mailbox::ensure(transaction, account, folder)?;
+            messages::put(
+                transaction,
+                mailbox.id(message.uid),
                 account,
-                folder,
-                message.uid,
-                serde_json::to_string(message)?
-            ],
-        )?;
-        Ok(())
+                Some(folder),
+                message,
+            )
+        })
     }
 
     pub fn folders(&self, account: &str) -> Result<Vec<String>> {
@@ -393,8 +270,8 @@ impl Storage {
         let mut statement = self.0.prepare(
             "SELECT folder, unread FROM rust_unread WHERE account_id=?1
              UNION ALL
-             SELECT folder, MAX(NOT json_extract(data, '$.is_read')) FROM rust_messages
-             WHERE account_id=?1 AND folder NOT IN
+             SELECT folder, MAX(NOT is_read) FROM rust_headers
+             WHERE account_id=?1 AND folder IS NOT NULL AND folder NOT IN
                  (SELECT folder FROM rust_unread WHERE account_id=?1)
              GROUP BY folder",
         )?;
@@ -455,88 +332,76 @@ impl Storage {
         live: &[u32],
         snapshot_revision: i64,
     ) -> Result<()> {
-        let _write = self.1.lock()?;
-        let transaction = self
-            .0
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let revision = Self::next_read_revision(&transaction)?;
-        let reads = Self::reads_since(&transaction, account, folder, validity, snapshot_revision)?;
-        let starred =
-            Self::flags_since(&transaction, account, folder, validity, snapshot_revision)?;
-        let existing: Vec<Message> = {
-            let mut statement = transaction
-                .prepare("SELECT data FROM rust_messages WHERE account_id=?1 AND folder=?2")?;
-            let rows =
-                statement.query_map(params![account, folder], |row| row.get::<_, String>(0))?;
-            rows.map(|row| Ok(serde_json::from_str(&row?)?))
-                .collect::<Result<_>>()?
-        };
-        let previous = transaction.query_row(
-            "SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2",
-            params![account, folder],
-            |r| r.get::<_, Option<u32>>(0),
-        );
-        let reset = !matches!(previous, Ok(Some(value)) if value == validity);
-        if reset {
-            transaction.execute(
-                "DELETE FROM rust_messages WHERE account_id=?1 AND folder=?2",
-                params![account, folder],
+        self.write(|transaction| {
+            let revision = Self::next_read_revision(transaction)?;
+            let mailbox = Mailbox::ensure(transaction, account, folder)?;
+            let reads = Self::reads_since(
+                transaction,
+                mailbox,
+                account,
+                folder,
+                validity,
+                snapshot_revision,
             )?;
-        }
-        let removed = Self::removed_in(&transaction, account, folder, validity)?;
-        let live: HashSet<_> = live
-            .iter()
-            .copied()
-            .filter(|uid| !removed.contains(uid))
-            .collect();
-        for message in &existing {
-            if !live.contains(&message.uid) {
+            let starred = Self::flags_since(
+                transaction,
+                mailbox,
+                account,
+                folder,
+                validity,
+                snapshot_revision,
+            )?;
+            if Self::folder_validity(transaction, account, folder)? != Some(validity) {
                 transaction.execute(
-                    "DELETE FROM rust_messages WHERE account_id=?1 AND folder=?2 AND uid=?3",
-                    params![account, folder, message.uid],
+                    "DELETE FROM rust_headers WHERE id BETWEEN ?1 AND ?2",
+                    params![mailbox.first(), mailbox.last()],
                 )?;
             }
-        }
-        for mut message in messages
-            .into_iter()
-            .filter(|message| !removed.contains(&message.uid))
-        {
-            message.uid_validity = Some(validity);
-            message.is_read = reads.get(&message.uid).copied().unwrap_or(message.is_read);
-            message.is_flagged = starred
-                .get(&message.uid)
+            let existing = Self::uids(transaction, mailbox)?;
+            let removed = Self::removed_in(transaction, account, folder, validity)?;
+            let kept: HashSet<_> = live
+                .iter()
                 .copied()
-                .unwrap_or(message.is_flagged);
-            message.read_revision = revision;
-            message.flag_revision = revision;
-            if !reset && let Some(old) = existing.iter().find(|m| m.uid == message.uid) {
-                message.body_text = old.body_text.clone();
-                message.body_html = old.body_html.clone();
-                message.attachments = old.attachments.clone();
-                message.attachment_details = old.attachment_details.clone();
-                message.inline_media = old.inline_media.clone();
-                message.inline_media_loaded = old.inline_media_loaded;
-                message.body_loaded = old.body_loaded;
-                message.parcels = old.parcels.clone();
-                message.calendar_events = old.calendar_events.clone();
-                message.tickets = old.tickets.clone();
+                .chain(messages.iter().map(|message| message.uid))
+                .filter(|uid| !removed.contains(uid))
+                .collect();
+            for uid in existing.difference(&kept) {
+                transaction
+                    .prepare_cached("DELETE FROM rust_headers WHERE id=?1")?
+                    .execute([mailbox.id(*uid)])?;
+            }
+            for mut message in messages
+                .into_iter()
+                .filter(|message| !removed.contains(&message.uid))
+            {
+                message.uid_validity = Some(validity);
+                message.is_read = reads.get(&message.uid).copied().unwrap_or(message.is_read);
+                message.is_flagged = starred
+                    .get(&message.uid)
+                    .copied()
+                    .unwrap_or(message.is_flagged);
+                message.read_revision = revision;
+                message.flag_revision = revision;
+                let id = mailbox.id(message.uid);
+                if existing.contains(&message.uid) {
+                    messages::refresh(transaction, id, &message)?;
+                } else {
+                    messages::put(transaction, id, account, Some(folder), &message)?;
+                }
             }
             transaction.execute(
-                "INSERT OR REPLACE INTO rust_messages VALUES (?1,?2,?3,?4)",
-                params![
-                    account,
-                    folder,
-                    message.uid,
-                    serde_json::to_string(&message)?
-                ],
+                "INSERT OR REPLACE INTO rust_folders VALUES (?1,?2,?3)",
+                params![account, folder, validity],
             )?;
-        }
-        transaction.execute(
-            "INSERT OR REPLACE INTO rust_folders VALUES (?1,?2,?3)",
-            params![account, folder, validity],
-        )?;
-        transaction.commit()?;
-        Ok(())
+            Ok(())
+        })
+    }
+
+    fn uids(connection: &Connection, mailbox: Mailbox) -> Result<HashSet<u32>> {
+        Ok(connection
+            .prepare_cached("SELECT uid FROM rust_headers WHERE id BETWEEN ?1 AND ?2")?
+            .query_map(params![mailbox.first(), mailbox.last()], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
     }
 }
 
@@ -720,7 +585,7 @@ mod tests {
         assert!(!imported[0].body_loaded);
         assert!(imported[0].timestamp > 0);
         assert_eq!(imported[0].message_id, "id");
-        storage.0.execute("DELETE FROM rust_messages", []).unwrap();
+        storage.0.execute("DELETE FROM rust_headers", []).unwrap();
         let storage = Storage::initialize(storage.0).unwrap();
         assert!(storage.messages("a", "INBOX").unwrap().is_empty());
         let count: i32 = storage

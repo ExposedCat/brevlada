@@ -1,20 +1,20 @@
-use super::Storage;
+use super::{Storage, messages};
 use crate::models::Message;
 use anyhow::Result;
 use rusqlite::params;
 
 impl Storage {
     pub fn calendar_messages(&self, account: &str, event_uid: &str) -> Result<Vec<Message>> {
-        let mut statement = self.0.prepare(
-            "SELECT data FROM rust_messages WHERE account_id=?1
-             AND EXISTS(SELECT 1 FROM json_each(data, '$.calendar_events') AS event WHERE json_extract(event.value, '$.uid')=?2)
-             UNION ALL
-             SELECT data FROM rust_sent_local WHERE account_id=?1
-             AND EXISTS(SELECT 1 FROM json_each(data, '$.calendar_events') AS event WHERE json_extract(event.value, '$.uid')=?2)",
-        )?;
-        let rows =
-            statement.query_map(params![account, event_uid], |row| row.get::<_, String>(0))?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+        let mut statement = self.0.prepare(concat!(
+            messages::select!(),
+            " WHERE h.account_id=?1 AND h.calendar_events<>'[]'
+             AND EXISTS(SELECT 1 FROM json_each(h.calendar_events) AS event WHERE json_extract(event.value, '$.uid')=?2)
+             ORDER BY h.folder IS NULL, h.folder, iif(h.folder IS NULL, h.message_id, NULL),
+             h.timestamp DESC, h.uid DESC"
+        ))?;
+        Ok(statement
+            .query_map(params![account, event_uid], messages::decode)?
+            .collect::<rusqlite::Result<_>>()?)
     }
 }
 

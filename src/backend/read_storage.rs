@@ -1,4 +1,4 @@
-use super::Storage;
+use super::{Storage, messages::Mailbox};
 use crate::models::Message;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -27,21 +27,23 @@ impl Storage {
 
     pub(super) fn reads_since(
         connection: &Connection,
+        mailbox: Mailbox,
         account: &str,
         folder: &str,
         validity: u32,
         revision: i64,
     ) -> Result<HashMap<u32, bool>> {
         let mut statement = connection.prepare(
-            "SELECT changes.uid, json_extract(messages.data, '$.is_read')
-             FROM rust_read_changes AS changes JOIN rust_messages AS messages
-             ON messages.account_id=changes.account_id AND messages.folder=changes.folder AND messages.uid=changes.uid
-             WHERE changes.account_id=?1 AND changes.folder=?2 AND changes.uid_validity=?3 AND changes.revision>?4",
+            "SELECT changes.uid, messages.is_read
+             FROM rust_read_changes AS changes JOIN rust_headers AS messages
+             ON messages.id=?1 + changes.uid
+             WHERE changes.account_id=?2 AND changes.folder=?3 AND changes.uid_validity=?4 AND changes.revision>?5",
         )?;
         Ok(statement
-            .query_map(params![account, folder, validity, revision], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_map(
+                params![mailbox.first(), account, folder, validity, revision],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
             .collect::<rusqlite::Result<_>>()?)
     }
 
@@ -64,22 +66,23 @@ impl Storage {
         read: bool,
     ) -> Result<Option<Message>> {
         let revision = Self::next_read_revision(transaction)?;
-        let data: Option<String> = transaction.query_row(
-            "UPDATE rust_messages SET data=json_set(data, '$.is_read', json(?6), '$.read_revision', ?5)
-             WHERE account_id=?1 AND folder=?2 AND uid=?3
-             AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2) IS ?4
-             RETURNING data",
-            params![account, folder, uid, validity, revision, if read { "true" } else { "false" }], |row| row.get(0),
-        ).optional()?;
-        if data.is_some() {
-            transaction.execute(
-                "INSERT INTO rust_read_changes VALUES (?1,?2,?3,?4,?5)
-                 ON CONFLICT(account_id,folder,uid) DO UPDATE SET uid_validity=excluded.uid_validity, revision=excluded.revision",
-                params![account, folder, uid, validity, revision],
-            )?;
+        let Some(mailbox) = Mailbox::find(transaction, account, folder)? else {
+            return Ok(None);
+        };
+        let updated = transaction.execute(
+            "UPDATE rust_headers SET is_read=?4, read_revision=?5 WHERE id=?3
+             AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2) IS ?6",
+            params![account, folder, mailbox.id(uid), read, revision, validity],
+        )?;
+        if updated == 0 {
+            return Ok(None);
         }
-        data.map(|data| Ok(serde_json::from_str(&data)?))
-            .transpose()
+        transaction.execute(
+            "INSERT INTO rust_read_changes VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(account_id,folder,uid) DO UPDATE SET uid_validity=excluded.uid_validity, revision=excluded.revision",
+            params![account, folder, uid, validity, revision],
+        )?;
+        Self::cached(transaction, account, folder, uid)
     }
 
     pub fn mark_read_cached(
