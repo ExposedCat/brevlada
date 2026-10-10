@@ -110,9 +110,15 @@ fn storage_search_and_rendering() -> anyhow::Result<()> {
     });
 
     repeat("threads", 5, || models::threads(&list, "").len());
-    repeat("sender_groups", 5, || models::senders::groups(&list, "").len());
+    repeat("sender_groups", 5, || {
+        models::senders::groups(&list, "").len()
+    });
 
-    let html: Vec<&Message> = full.iter().filter(|message| !message.body_html.is_empty()).take(1000).collect();
+    let html: Vec<&Message> = full
+        .iter()
+        .filter(|message| !message.body_html.is_empty())
+        .take(1000)
+        .collect();
     repeat("render_letter", 3, || {
         html.iter()
             .map(|message| {
@@ -137,7 +143,15 @@ fn storage_search_and_rendering() -> anyhow::Result<()> {
     repeat("search_memory", 3, || {
         QUERIES
             .iter()
-            .map(|query| wait(Request::new(false, query.to_string(), None, None, snapshot.clone())))
+            .map(|query| {
+                wait(Request::new(
+                    false,
+                    query.to_string(),
+                    None,
+                    None,
+                    snapshot.clone(),
+                ))
+            })
             .sum()
     });
     let cache_path = database.to_path_buf();
@@ -145,7 +159,8 @@ fn storage_search_and_rendering() -> anyhow::Result<()> {
         QUERIES
             .iter()
             .map(|query| {
-                let mut request = Request::new(false, query.to_string(), None, None, Arc::new(Vec::new()));
+                let mut request =
+                    Request::new(false, query.to_string(), None, None, Arc::new(Vec::new()));
                 request.scope = Some(Scope {
                     current: None,
                     folder: None,
