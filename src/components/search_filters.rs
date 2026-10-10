@@ -459,25 +459,25 @@ fn date_input(parent: &gtk::Box, label: &str) -> (gtk::Entry, gtk::ToggleButton)
     (entry, pick)
 }
 
+type DateTarget = Rc<RefCell<Option<gtk::glib::WeakRef<gtk::Entry>>>>;
+
 fn date_inputs(parent: &gtk::Box) -> (gtk::Entry, gtk::Entry) {
     let (from, from_pick) = date_input(parent, "From");
     let (to, to_pick) = date_input(parent, "To");
     // A single popup owns both the entries and calendar. Nested autohide
     // popovers can lose the parent popup's grab when the calendar closes.
-    let calendar = gtk::Calendar::new();
-    calendar.add_css_class("search-calendar");
-    calendar.set_overflow(gtk::Overflow::Hidden);
-    let reveal = gtk::Revealer::builder().child(&calendar).build();
+    let reveal = gtk::Revealer::new();
     parent.append(&reveal);
-    let target: Rc<RefCell<Option<gtk::glib::WeakRef<gtk::Entry>>>> = Rc::default();
+    let target: DateTarget = Rc::default();
     let syncing = Rc::new(Cell::new(false));
+    let picks = [from_pick.downgrade(), to_pick.downgrade()];
     for (entry, pick, other) in [(&from, &from_pick, &to_pick), (&to, &to_pick, &from_pick)] {
         let entry = entry.downgrade();
         let other = other.downgrade();
-        let calendar = calendar.downgrade();
         let reveal = reveal.downgrade();
         let target = target.clone();
         let syncing = syncing.clone();
+        let picks = picks.clone();
         pick.connect_toggled(move |pick| {
             if syncing.get() {
                 return;
@@ -488,39 +488,68 @@ fn date_inputs(parent: &gtk::Box) -> (gtk::Entry, gtk::Entry) {
                     other.set_active(false);
                 }
                 *target.borrow_mut() = Some(entry.clone());
-                if let (Some(entry), Some(calendar)) = (entry.upgrade(), calendar.upgrade())
+                if let (Some(entry), Some(reveal)) = (entry.upgrade(), reveal.upgrade())
                     && let Ok(Some(date)) = Filters::dates(&entry.text(), "").map(|(date, _)| date)
                     && let Ok(date) =
                         gtk::glib::DateTime::from_iso8601(&format!("{date}T12:00:00Z"), None)
                 {
-                    calendar.select_day(&date);
+                    calendar(&reveal, &target, &syncing, &picks).select_day(&date);
                 }
             } else {
                 *target.borrow_mut() = None;
             }
             if let Some(reveal) = reveal.upgrade() {
                 reveal.set_reveal_child(pick.is_active());
-            }
-            if pick.is_active()
-                && let Some(calendar) = calendar.upgrade()
-            {
-                calendar.grab_focus();
+                if pick.is_active() {
+                    calendar(&reveal, &target, &syncing, &picks).grab_focus();
+                }
             }
             syncing.set(false);
         });
     }
-    let from_toggle = from_pick.downgrade();
-    let to_toggle = to_pick.downgrade();
-    let selected_target = target.clone();
-    let selected_syncing = syncing.clone();
+    let popover = parent
+        .ancestor(gtk::Popover::static_type())
+        .and_downcast::<gtk::Popover>()
+        .unwrap();
+    let shown = reveal.downgrade();
+    let shown_picks = picks.clone();
+    popover.connect_show(move |_| {
+        if let Some(reveal) = shown.upgrade() {
+            calendar(&reveal, &target, &syncing, &shown_picks);
+        }
+    });
+    popover.connect_closed(move |_| {
+        for pick in &picks {
+            if let Some(pick) = pick.upgrade() {
+                pick.set_active(false);
+            }
+        }
+    });
+    (from, to)
+}
+
+// GtkCalendar is slow to build, so it is created when the dates popup first
+// opens rather than at startup.
+fn calendar(
+    reveal: &gtk::Revealer,
+    target: &DateTarget,
+    syncing: &Rc<Cell<bool>>,
+    picks: &[gtk::glib::WeakRef<gtk::ToggleButton>; 2],
+) -> gtk::Calendar {
+    if let Some(calendar) = reveal.child().and_downcast::<gtk::Calendar>() {
+        return calendar;
+    }
+    let calendar = gtk::Calendar::new();
+    calendar.add_css_class("search-calendar");
+    calendar.set_overflow(gtk::Overflow::Hidden);
+    let target = target.clone();
+    let syncing = syncing.clone();
+    let picks = picks.clone();
     calendar.connect_day_selected(move |calendar| {
-        if selected_syncing.get() {
+        if syncing.get() {
             return;
         }
-        let entry = selected_target
-            .borrow()
-            .as_ref()
-            .and_then(|entry| entry.upgrade());
+        let entry = target.borrow().as_ref().and_then(|entry| entry.upgrade());
         if let Some(entry) = entry {
             let date = calendar.date();
             entry.set_text(&format!(
@@ -530,27 +559,15 @@ fn date_inputs(parent: &gtk::Box) -> (gtk::Entry, gtk::Entry) {
                 date.day_of_month()
             ));
             entry.grab_focus();
-            for pick in [&from_toggle, &to_toggle] {
+            for pick in &picks {
                 if let Some(pick) = pick.upgrade() {
                     pick.set_active(false);
                 }
             }
         }
     });
-    let popover = parent
-        .ancestor(gtk::Popover::static_type())
-        .and_downcast::<gtk::Popover>()
-        .unwrap();
-    let from_pick = from_pick.downgrade();
-    let to_pick = to_pick.downgrade();
-    popover.connect_closed(move |_| {
-        for pick in [&from_pick, &to_pick] {
-            if let Some(pick) = pick.upgrade() {
-                pick.set_active(false);
-            }
-        }
-    });
-    (from, to)
+    reveal.set_child(Some(&calendar));
+    calendar
 }
 
 #[cfg(test)]
@@ -607,12 +624,13 @@ mod diagnostics {
             .next_sibling()
             .and_downcast::<gtk::Revealer>()
             .unwrap();
-        let calendar = reveal.child().and_downcast::<gtk::Calendar>().unwrap();
+        assert!(reveal.child().is_none());
         for selected in [false, true] {
             filters.dates_button.popup();
             settle();
             picker.set_active(true);
             settle();
+            let calendar = reveal.child().and_downcast::<gtk::Calendar>().unwrap();
             assert_eq!(
                 calendar.ancestor(gtk::Popover::static_type()),
                 Some(popup.clone().upcast())
