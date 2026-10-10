@@ -507,9 +507,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Parity check: set BREVLADA_BENCH_CORPUS to a directory of .eml files"]
+    #[ignore = "Parity check: set BREVLADA_CORPUS to a directory of .eml files"]
     fn matches_mailparse_across_corpus() {
-        let corpus = std::env::var("BREVLADA_BENCH_CORPUS").unwrap();
+        let corpus = std::env::var("BREVLADA_CORPUS").unwrap();
         let mut count = 0;
         for entry in std::fs::read_dir(corpus).unwrap() {
             let path = entry.unwrap().path();

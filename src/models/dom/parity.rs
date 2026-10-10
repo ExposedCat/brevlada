@@ -1,6 +1,6 @@
 //! Differential tests against scraper on html5ever, which this parser replaced.
 //! Trees, serializations and everything the mail views read from them must
-//! stay identical on generated tag soup and, when `BREVLADA_PARITY_CORPUS`
+//! stay identical on generated tag soup and, when `BREVLADA_CORPUS`
 //! names a directory of `.eml` files, on every HTML body in it.
 use super::{Data, Document, Namespace, Prefix, ROOT};
 use crate::{
@@ -756,9 +756,9 @@ fn generated_tag_soup_matches_scraper() {
 }
 
 #[test]
-#[ignore = "Set BREVLADA_PARITY_CORPUS to a directory of .eml files"]
+#[ignore = "Set BREVLADA_CORPUS to a directory of .eml files"]
 fn corpus_matches_scraper() -> anyhow::Result<()> {
-    let corpus = std::env::var("BREVLADA_PARITY_CORPUS")?;
+    let corpus = std::env::var("BREVLADA_CORPUS")?;
     let mut paths: Vec<_> = std::fs::read_dir(corpus)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<_, _>>()?;

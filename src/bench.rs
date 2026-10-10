@@ -39,9 +39,9 @@ fn repeat(name: &str, times: usize, mut work: impl FnMut() -> usize) {
 }
 
 #[test]
-#[ignore = "Benchmark: set BREVLADA_BENCH_CORPUS to a directory of .eml files and run with --release --nocapture"]
+#[ignore = "Benchmark: set BREVLADA_CORPUS to a directory of .eml files and run with --release --nocapture"]
 fn storage_search_and_rendering() -> anyhow::Result<()> {
-    let corpus = PathBuf::from(std::env::var("BREVLADA_BENCH_CORPUS")?);
+    let corpus = PathBuf::from(std::env::var("BREVLADA_CORPUS")?);
     let database = std::env::temp_dir().join("brevlada-bench.db");
     let database = database.as_path();
     let mut paths: Vec<_> = std::fs::read_dir(&corpus)?
@@ -131,7 +131,7 @@ fn storage_search_and_rendering() -> anyhow::Result<()> {
 
     let (search, results) = search::Search::start();
     let snapshot = Arc::new(list.clone());
-    let mut wait = |request: Request| {
+    let wait = |request: Request| {
         search.submit(request);
         loop {
             let response = results.recv_blocking().unwrap();
