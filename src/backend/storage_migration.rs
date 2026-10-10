@@ -21,9 +21,10 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS rust_mailboxes (
     ON rust_headers (account_id, folder, timestamp DESC, uid DESC, sender_key);
     CREATE UNIQUE INDEX IF NOT EXISTS rust_headers_sent
     ON rust_headers (account_id, message_id) WHERE folder IS NULL;
+    -- List rows read the leading columns without walking the overflow pages of HTML bodies.
     CREATE TABLE IF NOT EXISTS rust_bodies (
-    id INTEGER PRIMARY KEY, body_text TEXT NOT NULL, body_html TEXT NOT NULL,
-    html_text TEXT NOT NULL, html_tickets TEXT NOT NULL, inline_media TEXT NOT NULL);
+    id INTEGER PRIMARY KEY, html_tickets TEXT NOT NULL, body_text TEXT NOT NULL,
+    html_text TEXT NOT NULL, body_html TEXT NOT NULL, inline_media TEXT NOT NULL);
     CREATE TRIGGER IF NOT EXISTS rust_headers_deleted AFTER DELETE ON rust_headers
     BEGIN DELETE FROM rust_bodies WHERE id=old.id; END;
     CREATE TABLE IF NOT EXISTS rust_removed_messages (

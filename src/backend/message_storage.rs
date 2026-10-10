@@ -215,10 +215,10 @@ fn store_body(connection: &Connection, id: i64, message: &Message) -> Result<()>
         .prepare_cached("INSERT OR REPLACE INTO rust_bodies VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?
         .execute(params![
             id,
-            message.body_text,
-            message.body_html,
-            html_text,
             serde_json::to_string(&ticket::parse(&Html::new(&message.body_html)))?,
+            message.body_text,
+            html_text,
+            message.body_html,
             serde_json::to_string(&message.inline_media)?,
         ])?;
     Ok(())
