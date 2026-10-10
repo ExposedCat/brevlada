@@ -49,18 +49,21 @@ impl Entry {
         if request.query.is_empty() {
             return true;
         }
-        // Summarizing HTML would decode it for every message, so only plain entries skip early.
-        if self.message.body_html.is_empty()
-            && !self
-                .pairs
-                .get_or_init(|| Pairs::of((0..6).map(|index| self.field(index))))
-                .covers(query)
-        {
+        if self.pairs.get().is_some_and(|pairs| !pairs.covers(query)) {
             return false;
         }
-        (0..7).any(|index| {
-            request.filters.sources[index.min(5)] && self.field(index).contains(&request.query)
-        })
+        let sources = &request.filters.sources;
+        let found = |index| self.field(index).contains(&request.query);
+        // Short headers often match first; the long body is summarized before its first scan,
+        // except HTML bodies, which would all have to be decoded.
+        (0..5).any(|index| sources[index] && found(index))
+            || (sources[5]
+                && (!self.message.body_html.is_empty()
+                    || self
+                        .pairs
+                        .get_or_init(|| Pairs::of((0..6).map(|index| self.field(index))))
+                        .covers(query))
+                && (found(5) || found(6)))
     }
 
     fn field(&self, index: usize) -> &str {
