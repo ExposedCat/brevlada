@@ -74,49 +74,33 @@ impl Filters {
 
 /// Search the visible HTML text too, including older HTML-only cache entries.
 pub fn html_text(html: &str) -> String {
-    let document = scraper::Html::parse_document(html);
-    let mut text = String::new();
-    // Iterative traversal also handles deeply nested mail without using the stack.
-    let mut pending = vec![Some(*document.root_element())];
-    while let Some(node) = pending.pop() {
-        let Some(node) = node else {
-            text.push(' ');
-            continue;
-        };
-        if let Some(value) = node.value().as_text() {
-            text.push_str(value);
-        } else if let Some(element) = scraper::ElementRef::wrap(node) {
-            let name = element.value().name();
-            if matches!(name, "script" | "style" | "head") {
-                continue;
-            }
-            let block = matches!(
-                name,
-                "p" | "div"
-                    | "br"
-                    | "hr"
-                    | "li"
-                    | "tr"
-                    | "td"
-                    | "th"
-                    | "section"
-                    | "article"
-                    | "blockquote"
-                    | "h1"
-                    | "h2"
-                    | "h3"
-                    | "h4"
-                    | "h5"
-                    | "h6"
-                    | "pre"
-            );
-            if block {
-                text.push(' ');
-                pending.push(None);
-            }
-            pending.extend(element.children().rev().map(Some));
-        }
-    }
+    let text = super::dom::Document::parse(html)
+        .root_element()
+        .layout_text(
+            |name| matches!(name, "script" | "style" | "head"),
+            |name| {
+                matches!(
+                    name,
+                    "p" | "div"
+                        | "br"
+                        | "hr"
+                        | "li"
+                        | "tr"
+                        | "td"
+                        | "th"
+                        | "section"
+                        | "article"
+                        | "blockquote"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "h6"
+                        | "pre"
+                )
+            },
+        );
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

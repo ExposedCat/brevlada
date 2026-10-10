@@ -2,38 +2,22 @@ use super::{
     Event,
     rsvp::{actions, web_url},
 };
-use scraper::{Html, Selector};
+use crate::models::{dom::Document, schema};
 use serde_json::Value;
 
 pub fn parse(html: &str) -> Vec<Event> {
     if !html.contains("Event") {
         return Vec::new();
     }
-    let document = Html::parse_fragment(html);
+    let document = Document::parse_fragment(html);
     let mut events = Vec::new();
-    for script in document.select(&Selector::parse("script[type='application/ld+json']").unwrap()) {
-        if let Ok(value) = serde_json::from_str::<Value>(&script.text().collect::<String>()) {
-            collect(&value, &mut events);
-        }
-    }
-    for element in document.select(&Selector::parse("[itemscope][itemtype]").unwrap()) {
-        if element
-            .ancestors()
-            .filter_map(scraper::ElementRef::wrap)
-            .any(|parent| {
-                parent.value().attr("itemtype").is_some_and(|kind| {
-                    kind.split_whitespace().any(|kind| {
-                        matches!(
-                            kind.rsplit('/').next(),
-                            Some("EventReservation" | "InviteAction" | "RsvpAction")
-                        )
-                    })
-                })
-            })
-        {
-            continue;
-        }
-        collect(&crate::models::schema::microdata(&element), &mut events);
+    for value in schema::items(&document, |kind| {
+        matches!(
+            kind.rsplit('/').next(),
+            Some("EventReservation" | "InviteAction" | "RsvpAction")
+        )
+    }) {
+        collect(&value, &mut events);
     }
     events
 }

@@ -2,6 +2,7 @@ pub mod action_target;
 pub mod attachment;
 pub mod calendar;
 pub mod conversation;
+pub mod dom;
 pub mod draft;
 pub mod parcel;
 pub mod pending_actions;
