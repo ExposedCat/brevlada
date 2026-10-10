@@ -1,4 +1,5 @@
 //! A bounded, latest-request-only queue, independent of mail/network workers.
+mod pairs;
 mod senders;
 
 use crate::models::{self, Message};
