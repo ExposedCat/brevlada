@@ -218,9 +218,9 @@ mod diagnostics {
     }
 
     fn parcel(order: &str, status: &str) -> parcel::Parcel {
-        parcel::parse(&format!("<script type='application/ld+json'>{}</script>", serde_json::json!({
+        parcel::parse(&models::dom::Document::parse_fragment(&format!("<script type='application/ld+json'>{}</script>", serde_json::json!({
             "@type": "ParcelDelivery", "partOfOrder": {"orderNumber": order}, "deliveryStatus": status
-        }))).remove(0)
+        })))).remove(0)
     }
 
     fn contains_label(widget: &gtk::Widget, text: &str) -> bool {

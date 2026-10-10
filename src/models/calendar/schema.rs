@@ -2,16 +2,15 @@ use super::{
     Event,
     rsvp::{actions, web_url},
 };
-use crate::models::{dom::Document, schema};
+use crate::models::{dom::Html, schema};
 use serde_json::Value;
 
-pub fn parse(html: &str) -> Vec<Event> {
-    if !html.contains("Event") {
+pub fn parse(html: &Html) -> Vec<Event> {
+    if !html.source.contains("Event") {
         return Vec::new();
     }
-    let document = Document::parse_fragment(html);
     let mut events = Vec::new();
-    for value in schema::items(&document, |kind| {
+    for value in schema::items(html.fragment(), |kind| {
         matches!(
             kind.rsplit('/').next(),
             Some("EventReservation" | "InviteAction" | "RsvpAction")
@@ -145,9 +144,9 @@ mod tests {
 
     #[test]
     fn reservation_with_rsvp_and_event_subtype() {
-        let events = parse(
+        let events = parse(&Html::new(
             r#"<script type="application/ld+json">{"@graph":[{"@type":"EventReservation","reservationFor":{"@type":"MusicEvent","name":"Concert","startDate":"2026-10-02T19:00:00+02:00","location":{"name":"Hall","address":{"streetAddress":"Main Street","addressLocality":"Berlin"}},"potentialAction":[{"@type":"RsvpAction","rsvpResponse":"https://schema.org/RsvpResponseYes","target":{"urlTemplate":"https://example.com/yes"}},{"@type":"RsvpAction","name":"No","target":{"urlTemplate":"https://example.com/no","httpMethod":"POST"}}]}}]}</script>"#,
-        );
+        ));
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].location.as_deref(),
@@ -159,11 +158,16 @@ mod tests {
 
     #[test]
     fn microdata_keeps_nested_scopes_and_deduplicates() {
-        let events = parse(
+        let events = parse(&Html::new(
             r#"<div itemscope itemtype="https://schema.org/EventReservation"><div itemprop="reservationFor" itemscope itemtype="https://schema.org/Event"><meta itemprop="name" content="Lunch"><meta itemprop="startDate" content="2026-10-02"><div itemprop="potentialAction" itemscope itemtype="https://schema.org/RsvpAction"><link itemprop="target" href="https://example.com/rsvp"></div></div></div>"#,
-        );
+        ));
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].rsvp[0].url, "https://example.com/rsvp");
-        assert!(parse("<script type='application/ld+json'>{broken}</script>").is_empty());
+        assert!(
+            parse(&Html::new(
+                "<script type='application/ld+json'>{broken}</script>"
+            ))
+            .is_empty()
+        );
     }
 }

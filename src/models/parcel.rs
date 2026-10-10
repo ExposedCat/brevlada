@@ -1,6 +1,6 @@
 use super::{
     Message,
-    dom::Document,
+    dom::{Document, Html},
     schema::{json_ld, microdata, scopes},
 };
 use serde::{Deserialize, Serialize};
@@ -29,13 +29,12 @@ pub struct Step {
     pub location: Option<String>,
 }
 
-pub fn parse(html: &str) -> Vec<Parcel> {
-    let document = Document::parse_fragment(html);
+pub fn parse(document: &Document) -> Vec<Parcel> {
     let mut parcels = Vec::new();
-    for value in json_ld(&document) {
+    for value in json_ld(document) {
         collect(&value, &mut parcels);
     }
-    for element in scopes(&document) {
+    for element in scopes(document) {
         if element
             .attr("itemtype")
             .is_some_and(|kind| kind.ends_with("ParcelDelivery"))
@@ -47,12 +46,17 @@ pub fn parse(html: &str) -> Vec<Parcel> {
 }
 
 pub fn parse_message(message: &Message) -> Vec<Parcel> {
+    parse_message_in(message, &Html::new(&message.body_html))
+}
+
+/// [`parse_message`] for a message whose body is already being parsed.
+pub fn parse_message_in(message: &Message, html: &Html) -> Vec<Parcel> {
     let ugreen = super::senders::key(message) == "service.eu@ugreen.com";
     if !ugreen && !message.body_html.contains("ParcelDelivery") {
         return Vec::new();
     }
     let structured = if message.body_html.contains("ParcelDelivery") {
-        parse(&message.body_html)
+        parse(html.fragment())
     } else {
         Vec::new()
     };
@@ -62,7 +66,7 @@ pub fn parse_message(message: &Message) -> Vec<Parcel> {
     if !ugreen {
         return Vec::new();
     }
-    let document = Document::parse_fragment(&message.body_html);
+    let document = html.fragment();
     let text = document.root_element().text().collect::<Vec<_>>().join(" ");
     static TRACKING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?i)Tracking number:\s*([A-Za-z0-9-]{6,40})").unwrap()
@@ -246,9 +250,9 @@ mod tests {
 
     #[test]
     fn recognizes_single_status_and_explicit_order_id() {
-        let parcels = parse(
+        let parcels = parse(&Document::parse_fragment(
             r#"<script type="application/ld+json">{"@type":"ParcelDelivery","orderNumber":"123","deliveryStatus":"https://schema.org/Delivered"}</script>"#,
-        );
+        ));
         assert_eq!(parcels[0].order_number.as_deref(), Some("123"));
         assert_eq!(parcels[0].steps[0].name.as_deref(), Some("Delivered"));
     }
@@ -273,7 +277,7 @@ mod tests {
     #[test]
     fn extracts_parcel_and_timeline_from_json_ld_graph() {
         let html = r#"<script type="application/ld+json">{"@graph":[{"@type":"ParcelDelivery","itemShipped":{"name":"Shoes"},"carrier":{"name":"Parcel Co"},"potentialAction":{"@type":"TrackAction","url":"https://example.org/track"},"deliveryStatus":[{"@type":"DeliveryEvent","name":"Shipped","startDate":"2026-09-29","location":"London"}]}]}</script>"#;
-        let parcels = parse(html);
+        let parcels = parse(&Document::parse_fragment(html));
         assert_eq!(parcels.len(), 1);
         assert_eq!(parcels[0].item.as_deref(), Some("Shoes"));
         assert_eq!(
@@ -286,7 +290,7 @@ mod tests {
     #[test]
     fn extracts_microdata_without_mixing_nested_names() {
         let html = r#"<div itemscope itemtype="https://schema.org/ParcelDelivery"><div itemprop="carrier" itemscope itemtype="https://schema.org/Organization"><meta itemprop="name" content="Courier" /></div><div itemprop="itemShipped" itemscope itemtype="https://schema.org/Product"><meta itemprop="name" content="Shoes" /></div><link itemprop="trackingUrl" href="https://example.org/track" /></div>"#;
-        let parcels = parse(html);
+        let parcels = parse(&Document::parse_fragment(html));
         assert_eq!(parcels.len(), 1);
         assert_eq!(parcels[0].carrier.as_deref(), Some("Courier"));
         assert_eq!(parcels[0].item.as_deref(), Some("Shoes"));

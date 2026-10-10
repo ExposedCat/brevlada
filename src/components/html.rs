@@ -1,21 +1,25 @@
 use crate::{
     models::{
         Message,
-        dom::{Document, NodeRef},
+        dom::{Document, Html, NodeRef},
     },
     theme,
 };
 use std::sync::LazyLock;
 
 pub fn has_remote_media(message: &Message) -> bool {
+    has_remote_media_in(message, &Html::new(&message.body_html))
+}
+
+/// [`has_remote_media`] for a message whose body is already being parsed.
+pub fn has_remote_media_in(message: &Message, html: &Html) -> bool {
     if let Some(remote) = message.remote_media {
         return remote;
     }
     if !message.body_loaded || message.body_html.is_empty() {
         return false;
     }
-    let document = Document::parse_fragment(&message.body_html);
-    document.elements().any(|element| {
+    html.fragment().elements().any(|element| {
         let media = match element.name() {
             "img" => element.attr("src").is_some() || element.attr("srcset").is_some(),
             "source" => element.attr("srcset").is_some(),

@@ -1,5 +1,5 @@
 use super::mime;
-use crate::models::{InlineMedia, Message, Unsubscribe};
+use crate::models::{InlineMedia, Message, Unsubscribe, dom::Html};
 use anyhow::Result;
 use base64::Engine;
 
@@ -52,8 +52,9 @@ fn parse_inner(
     if body_loaded {
         message.inline_media_loaded = inline;
         bodies(&mail, &mut message, inline)?;
-        message.calendar_events = crate::models::calendar::events(&message);
-        message.tickets = crate::models::ticket::parse(&message.body_html);
+        let html = Html::new(&message.body_html);
+        message.calendar_events = crate::models::calendar::events_in(&message, &html);
+        message.tickets = crate::models::ticket::parse(&html);
     }
     Ok(message)
 }
@@ -391,7 +392,9 @@ mod tests {
                 message.inline_media_loaded = inline;
                 bodies(&mail, &mut message, inline)?;
                 message.calendar_events = crate::models::calendar::events(&message);
-                message.tickets = crate::models::ticket::parse(&message.body_html);
+                message.tickets = crate::models::ticket::parse(&crate::models::dom::Html::new(
+                    &message.body_html,
+                ));
             }
             Ok(message)
         }

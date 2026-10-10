@@ -711,7 +711,7 @@ fn assert_parity(html: &str, thorough: bool) {
         "remote media of {html:?}"
     );
     assert_eq!(
-        components::preview::message(&message),
+        components::preview::message(&message, &super::Html::new(html)),
         reference::preview(html),
         "preview of {html:?}"
     );

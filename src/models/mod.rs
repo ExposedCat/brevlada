@@ -146,19 +146,20 @@ impl Message {
         if self.display_prepared {
             return;
         }
+        let html = dom::Html::new(&self.body_html);
         if self.tickets.is_empty() && !self.body_html.is_empty() {
-            self.tickets = ticket::parse(&self.body_html);
+            self.tickets = ticket::parse(&html);
         }
         if self.body_loaded {
             if self.parcels.is_empty() {
-                self.parcels = parcel::parse_message(self);
+                self.parcels = parcel::parse_message_in(self, &html);
             }
-            self.calendar_events = calendar::events(self);
+            self.calendar_events = calendar::events_in(self, &html);
         }
         if self.body_loaded || !self.body_text.is_empty() || !self.body_html.is_empty() {
-            self.list_preview = Some(crate::components::preview::message(self));
+            self.list_preview = Some(crate::components::preview::message(self, &html));
         }
-        self.remote_media = Some(crate::components::html::has_remote_media(self));
+        self.remote_media = Some(crate::components::html::has_remote_media_in(self, &html));
         self.display_prepared = true;
     }
 

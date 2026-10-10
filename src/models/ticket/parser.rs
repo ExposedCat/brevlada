@@ -1,14 +1,13 @@
 use super::{Kind, Reservation, Ticket, fields::*};
-use crate::models::{dom::Document, schema};
+use crate::models::{dom::Html, schema};
 use serde_json::Value;
 
-pub fn parse(html: &str) -> Vec<Reservation> {
-    if !html.contains("Reservation") && !html.contains("Ticket") {
+pub fn parse(html: &Html) -> Vec<Reservation> {
+    if !html.source.contains("Reservation") && !html.source.contains("Ticket") {
         return Vec::new();
     }
-    let document = Document::parse_fragment(html);
     let mut reservations = Vec::new();
-    for value in schema::items(&document, |value| {
+    for value in schema::items(html.fragment(), |value| {
         matches!(
             term(value),
             "EventReservation"
@@ -191,11 +190,11 @@ mod tests {
 
     #[test]
     fn groups_passengers_without_combining_separate_journeys() {
-        let reservations = parse(&html(json!({"@graph": [
+        let reservations = parse(&Html::new(&html(json!({"@graph": [
             bus("Alex", "one", "Prague", "Dresden"),
             bus("Sam", "two", "Prague", "Dresden"),
             bus("Alex", "three", "Dresden", "Prague")
-        ]})));
+        ]}))));
         assert_eq!(reservations.len(), 2);
         assert_eq!(reservations[0].tickets.len(), 2);
         assert_eq!(reservations[0].tickets[0].holder.as_deref(), Some("Alex"));
@@ -217,7 +216,7 @@ mod tests {
 
     #[test]
     fn reads_flight_microdata_without_a_boarding_pass() {
-        let reservations = parse(
+        let reservations = parse(&Html::new(
             r#"<div itemscope itemtype="https://schema.org/FlightReservation">
             <meta itemprop="reservationNumber" content="flight-one">
             <link itemprop="checkinUrl" href="https://example.com/check-in">
@@ -229,7 +228,7 @@ mod tests {
                 <div itemprop="departureAirport" itemscope itemtype="https://schema.org/Airport"><meta itemprop="name" content="Prague"><meta itemprop="iataCode" content="PRG"></div>
                 <div itemprop="arrivalAirport" itemscope itemtype="https://schema.org/Airport"><meta itemprop="name" content="London"><meta itemprop="iataCode" content="STN"></div>
             </div></div>"#,
-        );
+        ));
         assert_eq!(reservations.len(), 1);
         let reservation = &reservations[0];
         assert_eq!(reservation.kind, Kind::Flight);
@@ -254,7 +253,7 @@ mod tests {
                 {"@type": "Ticket", "ticketNumber": 124}
             ]
         });
-        let reservations = parse(&html(event.clone()));
+        let reservations = parse(&Html::new(&html(event.clone())));
         assert_eq!(reservations.len(), 1);
         assert_eq!(reservations[0].tickets.len(), 2);
         assert_eq!(reservations[0].tickets[0].number.as_deref(), Some("123"));
@@ -265,8 +264,11 @@ mod tests {
         assert_eq!(reservations[0].tickets[1].holder.as_deref(), Some("Alex"));
         event.as_object_mut().unwrap().remove("reservedTicket");
         let html = html(event);
-        assert!(parse(&html).is_empty());
-        assert_eq!(crate::models::calendar::parse_html(&html).len(), 1);
+        assert!(parse(&Html::new(&html)).is_empty());
+        assert_eq!(
+            crate::models::calendar::parse_html(&Html::new(&html)).len(),
+            1
+        );
     }
 
     #[test]
@@ -278,7 +280,7 @@ mod tests {
             .unwrap()
             .remove("ticketedSeat");
         invoice["reservationStatus"] = json!("https://schema.org/ReservationCancelled");
-        let reservations = parse(&html(json!([original.clone(), invoice])));
+        let reservations = parse(&Html::new(&html(json!([original.clone(), invoice]))));
         assert_eq!(reservations.len(), 1);
         assert_eq!(reservations[0].tickets.len(), 1);
         assert_eq!(reservations[0].tickets[0].seat.as_deref(), Some("Seat 12A"));
@@ -288,9 +290,14 @@ mod tests {
             Some("CANCELLED")
         );
         original["url"] = json!("javascript:alert(1)");
-        assert!(parse(&html(original))[0].url.is_none());
+        assert!(parse(&Html::new(&html(original)))[0].url.is_none());
         assert!(!web_url("file:///tmp/pass"));
         assert!(!web_url("https:"));
-        assert!(parse("<script type='application/ld+json'>{broken}</script>").is_empty());
+        assert!(
+            parse(&Html::new(
+                "<script type='application/ld+json'>{broken}</script>"
+            ))
+            .is_empty()
+        );
     }
 }

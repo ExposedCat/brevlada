@@ -11,6 +11,7 @@ mod tree_builder;
 use names::LocalName;
 use std::{
     borrow::Cow,
+    cell::OnceCell,
     iter,
     num::NonZeroU32,
     ops::{Index, IndexMut},
@@ -441,5 +442,32 @@ impl<'d> ElementRef<'d> {
 
     pub fn inner_html(self) -> String {
         serialize::html(self.node, false)
+    }
+}
+
+/// An HTML source parsed on first use, at most once per parse mode, so every
+/// reader of one message body shares the same trees.
+pub struct Html<'a> {
+    pub source: &'a str,
+    fragment: OnceCell<Document<'a>>,
+    document: OnceCell<Document<'a>>,
+}
+
+impl<'a> Html<'a> {
+    pub fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            fragment: OnceCell::new(),
+            document: OnceCell::new(),
+        }
+    }
+
+    pub fn fragment(&self) -> &Document<'a> {
+        self.fragment
+            .get_or_init(|| Document::parse_fragment(self.source))
+    }
+
+    pub fn document(&self) -> &Document<'a> {
+        self.document.get_or_init(|| Document::parse(self.source))
     }
 }
