@@ -1,16 +1,12 @@
 use super::Message;
-use std::collections::HashMap;
+use std::{
+    borrow::{Borrow, Cow},
+    collections::HashMap,
+};
 
 pub fn identity(message: &Message) -> (String, String) {
-    if let Ok(addresses) = mailparse::addrparse(&message.sender)
-        && let Some(mailparse::MailAddr::Single(address)) = addresses.first()
-    {
-        return (
-            address.display_name.clone().unwrap_or_default(),
-            address.addr.clone(),
-        );
-    }
-    (String::new(), message.sender.trim().to_owned())
+    let (name, address) = mailbox(&message.sender);
+    (name.into_owned(), address.into_owned())
 }
 
 /// The cache key for an address: no display name, no brackets, no casing.
@@ -19,7 +15,56 @@ pub fn address(raw: &str) -> String {
 }
 
 pub fn key(message: &Message) -> String {
-    address(&identity(message).1)
+    address(&mailbox(&message.sender).1)
+}
+
+fn mailbox(sender: &str) -> (Cow<'_, str>, Cow<'_, str>) {
+    if let Some((name, address)) = simple_mailbox(sender) {
+        return (name.into(), address.into());
+    }
+    if let Ok(addresses) = mailparse::addrparse(sender)
+        && let Some(mailparse::MailAddr::Single(address)) =
+            addresses.into_inner().into_iter().next()
+    {
+        return (
+            address.display_name.unwrap_or_default().into(),
+            address.addr.into(),
+        );
+    }
+    ("".into(), sender.trim().into())
+}
+
+/// Reads `addr`, `Name <addr>` and `"Name" <addr>`, nearly every sender, exactly as
+/// `mailparse::addrparse` would but without allocating; None leaves the rest to it.
+fn simple_mailbox(sender: &str) -> Option<(&str, &str)> {
+    let sender = sender.trim();
+    let (name, address) = if let Some(quoted) = sender.strip_prefix('"') {
+        let (name, rest) = quoted.split_once('"')?;
+        if name.contains('\\') {
+            return None;
+        }
+        (
+            name,
+            rest.trim_start().strip_prefix('<')?.strip_suffix('>')?,
+        )
+    } else {
+        match sender.find(['<', ';', ',', ':', '(']) {
+            None => ("", sender),
+            Some(bracket) if sender[bracket..].starts_with('<') => (
+                sender[..bracket].trim_end(),
+                sender[bracket + 1..].strip_suffix('>')?,
+            ),
+            Some(_) => return None,
+        }
+    };
+    if address.contains('>') {
+        return None;
+    }
+    Some(if address.contains('@') {
+        (name, address)
+    } else {
+        ("", sender)
+    })
 }
 
 pub fn preview(messages: &[Message]) -> Option<&Message> {
@@ -31,28 +76,21 @@ pub fn preview(messages: &[Message]) -> Option<&Message> {
         .max_by_key(|message| (!message.is_read, message.timestamp, message.uid))
 }
 
-pub fn groups(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
-    let mut senders: HashMap<String, Vec<Message>> = HashMap::new();
+pub fn groups<M: Borrow<Message>>(
+    messages: impl IntoIterator<Item = M>,
+    query: &str,
+) -> Vec<Vec<M>> {
+    let mut slots = HashMap::new();
+    let mut groups: Vec<Vec<M>> = Vec::new();
     for message in messages {
-        senders
-            .entry(key(message))
-            .or_default()
-            .push(message.clone());
+        let slot = *slots.entry(key(message.borrow())).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[slot].push(message);
     }
-    let mut groups: Vec<_> = senders
-        .into_values()
-        .filter(|group| group.iter().any(|message| message.matches(query)))
-        .collect();
-    for group in &mut groups {
-        group.sort_by_key(|message| std::cmp::Reverse((message.timestamp, message.uid)));
-    }
-    groups.sort_by_key(|group| {
-        std::cmp::Reverse((
-            group.iter().any(|message| !message.is_read),
-            group[0].timestamp,
-            group[0].uid,
-        ))
-    });
+    groups.retain(|group| group.iter().any(|message| message.borrow().matches(query)));
+    super::sort_groups(&mut groups);
     groups
 }
 
@@ -112,7 +150,10 @@ mod tests {
         messages[1].is_read = true;
         assert_eq!(groups(&messages, "")[0][0].uid, 2);
         assert_eq!(preview(&messages).unwrap().uid, 1);
-        assert_eq!(preview(&groups(&messages, "latest")[0]).unwrap().uid, 1);
+        assert_eq!(
+            preview(&groups(messages.clone(), "latest")[0]).unwrap().uid,
+            1
+        );
         messages[1].is_read = false;
         assert_eq!(preview(&messages).unwrap().uid, 2);
         messages[1].timestamp = messages[0].timestamp;
@@ -156,5 +197,88 @@ mod tests {
                 .flatten()
                 .all(|m| m.uid != 2)
         );
+    }
+
+    fn mailparse_identity(sender: &str) -> (String, String) {
+        if let Ok(addresses) = mailparse::addrparse(sender)
+            && let Some(mailparse::MailAddr::Single(address)) = addresses.first()
+        {
+            return (
+                address.display_name.clone().unwrap_or_default(),
+                address.addr.clone(),
+            );
+        }
+        (String::new(), sender.trim().to_owned())
+    }
+
+    fn senders() -> impl Iterator<Item = String> {
+        let parts = [
+            "", " ", "\u{3000}", "\"", "\\", "<", ">", ",", ";", ":", "(", ")", "Na me", "a@B.c",
+            "\"Name\"", "<a@b.c>", "@",
+        ];
+        parts.into_iter().flat_map(move |a| {
+            parts.into_iter().flat_map(move |b| {
+                parts
+                    .into_iter()
+                    .flat_map(move |c| parts.into_iter().map(move |d| [a, b, c, d].concat()))
+            })
+        })
+    }
+
+    #[test]
+    fn identity_matches_mailparse_for_every_sender_shape() {
+        for sender in senders() {
+            let message = Message {
+                sender,
+                ..Default::default()
+            };
+            assert_eq!(
+                identity(&message),
+                mailparse_identity(&message.sender),
+                "{:?}",
+                message.sender
+            );
+        }
+    }
+
+    #[test]
+    fn groups_match_grouping_every_message_by_its_parsed_address() {
+        let messages: Vec<_> = senders()
+            .step_by(7)
+            .enumerate()
+            .map(|(uid, sender)| Message {
+                uid: uid as u32,
+                timestamp: (uid * 13 % 500) as i64,
+                is_read: uid % 3 != 0,
+                subject: format!("Subject {}", uid % 11),
+                sender,
+                ..Default::default()
+            })
+            .collect();
+        for query in ["", "subject 3"] {
+            let mut expected: HashMap<String, Vec<Message>> = HashMap::new();
+            for message in &messages {
+                expected
+                    .entry(address(&mailparse_identity(&message.sender).1))
+                    .or_default()
+                    .push(message.clone());
+            }
+            let mut expected: Vec<_> = expected
+                .into_values()
+                .filter(|group| group.iter().any(|message| message.matches(query)))
+                .collect();
+            for group in &mut expected {
+                group.sort_by_key(|m| std::cmp::Reverse((m.timestamp, m.uid)));
+            }
+            expected.sort_by_key(|group| {
+                std::cmp::Reverse((
+                    group.iter().any(|m| !m.is_read),
+                    group[0].timestamp,
+                    group[0].uid,
+                ))
+            });
+            assert!(expected.len() > 100);
+            assert_eq!(groups(messages.clone(), query), expected);
+        }
     }
 }

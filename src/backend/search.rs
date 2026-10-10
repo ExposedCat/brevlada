@@ -1,4 +1,5 @@
 //! A bounded, latest-request-only queue, independent of mail/network workers.
+mod pairs;
 mod senders;
 
 use crate::models::{self, Message};
@@ -224,7 +225,7 @@ impl Search {
                             fields.push(
                                 models::search::fields(message)
                                     .iter()
-                                    .map(|field| field.to_lowercase())
+                                    .map(|field| models::search::lowercase(field))
                                     .collect::<Vec<_>>()
                                     .into(),
                             );
@@ -346,7 +347,7 @@ fn search(
             messages.push(message.list_header(true));
         }
     }
-    let mut groups = models::threads(&messages, "");
+    let mut groups = models::threads(messages, "");
     groups.retain(|group| {
         group
             .iter()

@@ -1,7 +1,8 @@
 //! Reusable per-mailbox fields, lazy HTML decoding, and incremental sender results.
-use super::*;
+use super::{pairs::Pairs, *};
 use std::{
     cell::OnceCell,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -15,7 +16,8 @@ pub(super) struct Cache {
 #[derive(Default)]
 struct Mailbox {
     source: Option<Source>,
-    messages: HashMap<u32, Entry>,
+    /// Newest first once settled, which also keeps partial previews stable.
+    entries: Vec<Rc<Entry>>,
 }
 
 enum Source {
@@ -27,6 +29,7 @@ struct Entry {
     message: Message,
     sender: String,
     fields: [OnceCell<String>; 7],
+    pairs: OnceCell<Pairs>,
 }
 
 impl Entry {
@@ -35,75 +38,101 @@ impl Entry {
             sender: models::senders::key(&message),
             message,
             fields: std::array::from_fn(|_| OnceCell::new()),
+            pairs: OnceCell::new(),
         }
     }
 
-    fn matches(&self, request: &Request) -> bool {
+    fn matches(&self, request: &Request, query: &Pairs) -> bool {
         if !request.filters.includes_date(self.message.timestamp) {
             return false;
         }
         if request.query.is_empty() {
             return true;
         }
-        let message = &self.message;
-        let raw = [
-            &message.subject,
-            &message.sender,
-            &message.reply_to,
-            &message.recipients,
-            &message.cc,
-            &message.body_text,
-            &message.body_html,
-        ];
-        (0..7).any(|index| {
-            request.filters.sources[index.min(5)]
-                && self.fields[index]
-                    .get_or_init(|| {
-                        if index == 6 && !raw[index].is_empty() {
-                            models::search::html_text(raw[index]).to_lowercase()
-                        } else {
-                            raw[index].to_lowercase()
-                        }
-                    })
-                    .contains(&request.query)
+        if self.pairs.get().is_some_and(|pairs| !pairs.covers(query)) {
+            return false;
+        }
+        let sources = &request.filters.sources;
+        let found = |index| self.field(index).contains(&request.query);
+        // Short headers often match first; the long body is summarized before its first scan,
+        // except HTML bodies, which would all have to be decoded.
+        (0..5).any(|index| sources[index] && found(index))
+            || (sources[5]
+                && (!self.message.body_html.is_empty()
+                    || self
+                        .pairs
+                        .get_or_init(|| Pairs::of((0..6).map(|index| self.field(index))))
+                        .covers(query))
+                && (found(5) || found(6)))
+    }
+
+    fn field(&self, index: usize) -> &str {
+        self.fields[index].get_or_init(|| {
+            let message = &self.message;
+            let raw = [
+                &message.subject,
+                &message.sender,
+                &message.reply_to,
+                &message.recipients,
+                &message.cc,
+                &message.body_text,
+                &message.body_html,
+            ][index];
+            if index == 6 && !raw.is_empty() {
+                models::search::lowercase(&models::search::html_text(raw))
+            } else {
+                models::search::lowercase(raw)
+            }
         })
     }
 
     // Sender rows and actions need identities and flags, not copies of every body.
     fn header(&self) -> Message {
-        self.message.list_header(false)
+        Message {
+            search_match: true,
+            ..self.message.list_header(false)
+        }
     }
 }
 
 struct Progress<'a> {
     request: &'a Request,
+    query: Pairs,
     worker: &'a Shared,
     output: &'a async_channel::Sender<Response>,
-    groups: HashMap<(Option<Location>, String), Vec<Message>>,
+    groups: Vec<(Option<Location>, Vec<Rc<Entry>>)>,
+    location: Option<Location>,
+    /// Positions in `groups` of the senders matched in `location`.
+    senders: HashMap<String, usize>,
     last_sent: Option<Instant>,
-    dirty: bool,
 }
 
 impl Progress<'_> {
-    fn visit(&mut self, location: &Option<Location>, entry: &Entry) -> bool {
+    /// Each location is visited once, so senders group within the current one.
+    fn enter(&mut self, location: &Option<Location>) {
+        self.location.clone_from(location);
+        self.senders.clear();
+    }
+
+    fn visit(&mut self, entry: &Rc<Entry>) -> bool {
         if !current(self.worker, self.request) {
             return false;
         }
-        if !entry.matches(self.request) {
+        if !entry.matches(self.request, &self.query) {
             return true;
         }
-        let group = self
-            .groups
-            .entry((location.clone(), entry.sender.clone()))
-            .or_default();
-        let mut header = entry.header();
-        header.search_match = true;
-        group.push(header);
-        self.dirty = true;
-        if self.dirty
-            && self
-                .last_sent
-                .is_none_or(|last| last.elapsed() >= Duration::from_millis(60))
+        let position = match self.senders.get(&entry.sender) {
+            Some(&position) => position,
+            None => {
+                self.senders.insert(entry.sender.clone(), self.groups.len());
+                self.groups.push((self.location.clone(), Vec::new()));
+                self.groups.len() - 1
+            }
+        };
+        self.groups[position].1.push(entry.clone());
+        if self
+            .last_sent
+            .is_none_or(|last| last.elapsed() >= Duration::from_millis(60))
         {
             return self.publish(false);
         }
@@ -117,30 +146,39 @@ impl Progress<'_> {
         let mut groups: Vec<_> = self
             .groups
             .iter_mut()
-            .map(|((location, _), group)| {
-                group.sort_by_key(|m| std::cmp::Reverse((m.timestamp, m.uid)));
-                (location.clone(), group.clone())
+            .map(|(location, group)| {
+                group.sort_by_key(|entry| {
+                    std::cmp::Reverse((entry.message.timestamp, entry.message.uid))
+                });
+                (&*location, &*group)
             })
             .collect();
-        groups.sort_by_key(|(location, group)| {
+        groups.sort_by_cached_key(|(location, group)| {
             std::cmp::Reverse((
                 self.request.unread_first
-                    && group.iter().any(|m| {
-                        !m.is_read
+                    && group.iter().any(|entry| {
+                        !entry.message.is_read
                             || (location.as_ref().is_none_or(|location| {
                                 self.request
                                     .scope
                                     .as_ref()
                                     .is_some_and(|scope| Some(location) == scope.current.as_ref())
-                            }) && self.request.deferred_read.contains(&m.uid))
+                            }) && self.request.deferred_read.contains(&entry.message.uid))
                     }),
-                group[0].timestamp,
-                group[0].uid,
+                group[0].message.timestamp,
+                group[0].message.uid,
             ))
         });
-        let (locations, groups) = groups.into_iter().unzip();
+        let (locations, groups) = groups
+            .into_iter()
+            .map(|(location, group)| {
+                (
+                    location.clone(),
+                    group.iter().map(|entry| entry.header()).collect(),
+                )
+            })
+            .unzip();
         self.last_sent = Some(Instant::now());
-        self.dirty = false;
         self.output
             .send_blocking(Response {
                 threads: false,
@@ -164,11 +202,13 @@ impl Cache {
     ) -> anyhow::Result<()> {
         let mut progress = Progress {
             request,
+            query: Pairs::of([request.query.as_str()]),
             worker,
             output,
-            groups: HashMap::new(),
+            groups: Vec::new(),
+            location: None,
+            senders: HashMap::new(),
             last_sent: None,
-            dirty: false,
         };
         if let Some(scope) = &request.scope {
             if self.path.as_ref() != Some(&scope.cache_path) {
@@ -248,6 +288,7 @@ impl Cache {
                 .as_ref()
                 .is_none_or(|scope| scope.current == location);
             let revision = request.scope.as_ref().map_or(0, |scope| scope.revision);
+            progress.enter(&location);
             let mailbox = self.mailboxes.entry(location.clone()).or_default();
             let reusable = match &mailbox.source {
                 Some(Source::Memory(source)) => memory && Arc::ptr_eq(source, &request.messages),
@@ -255,35 +296,39 @@ impl Cache {
                 None => false,
             };
             if reusable {
-                // Newest messages first also keeps partial previews stable.
-                let mut entries: Vec<_> = mailbox.messages.values().collect();
-                entries.sort_by_key(|entry| {
-                    std::cmp::Reverse((entry.message.timestamp, entry.message.uid))
-                });
-                for entry in entries {
-                    if !progress.visit(&location, entry) {
+                for entry in &mailbox.entries {
+                    if !progress.visit(entry) {
                         return Ok(());
                     }
                 }
                 continue;
             }
             mailbox.source = None;
+            let mut positions: HashMap<u32, usize> = mailbox
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(position, entry)| (entry.message.uid, position))
+                .collect();
             let mut seen = HashSet::new();
+            let entries = &mut mailbox.entries;
             let mut visit = |message: Message| {
                 if !current(worker, request) {
                     return false;
                 }
                 seen.insert(message.uid);
-                let entry = mailbox
-                    .messages
-                    .entry(message.uid)
-                    .or_insert_with(|| Entry::new(message.clone()));
-                if !same_fields(&entry.message, &message) {
-                    *entry = Entry::new(message);
+                let position = *positions.entry(message.uid).or_insert(entries.len());
+                if position == entries.len() {
+                    entries.push(Rc::new(Entry::new(message)));
                 } else {
-                    entry.message = message;
+                    match Rc::get_mut(&mut entries[position]) {
+                        Some(entry) if same_fields(&entry.message, &message) => {
+                            entry.message = message;
+                        }
+                        _ => entries[position] = Rc::new(Entry::new(message)),
+                    }
                 }
-                progress.visit(&location, entry)
+                progress.visit(&entries[position])
             };
             if memory {
                 let mut messages: Vec<_> = request.messages.iter().collect();
@@ -301,7 +346,12 @@ impl Cache {
             if !current(worker, request) {
                 return Ok(());
             }
-            mailbox.messages.retain(|uid, _| seen.contains(uid));
+            mailbox
+                .entries
+                .retain(|entry| seen.contains(&entry.message.uid));
+            mailbox.entries.sort_by_key(|entry| {
+                std::cmp::Reverse((entry.message.timestamp, entry.message.uid))
+            });
             mailbox.source = Some(if memory {
                 Source::Memory(request.messages.clone())
             } else {
@@ -372,17 +422,90 @@ mod tests {
             body_html: "<style>hidden</style><p>Visible &amp; searchable</p>".into(),
             ..Default::default()
         });
+        let matches = |request: &Request| entry.matches(request, &Pairs::of([&*request.query]));
         let mut request = Request::new(false, "delivery".into(), None, None, Arc::default());
-        assert!(entry.matches(&request));
+        assert!(matches(&request));
         assert!(entry.fields[6].get().is_none());
         request.query = "visible & searchable".into();
         request.filters.sources[5] = false;
-        assert!(!entry.matches(&request));
+        assert!(!matches(&request));
         assert!(entry.fields[6].get().is_none());
         request.filters.sources[5] = true;
-        assert!(entry.matches(&request));
+        assert!(matches(&request));
         request.query = "hidden".into();
-        assert!(!entry.matches(&request));
+        assert!(!matches(&request));
+    }
+
+    #[test]
+    fn byte_pair_prefilter_never_drops_a_match() {
+        let texts = [
+            "Invoice 42 from ACME",
+            "Ünïcödé Straße",
+            "ΟΔΟΣ αγάπης",
+            "🎉 party tonight",
+            "meeting at noon",
+            "zz top",
+            "İstanbul",
+            "x",
+        ];
+        let messages: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .flat_map(|(index, text)| {
+                let uid = index as u32 * 3;
+                let message = |uid, sender: String| Message {
+                    uid,
+                    timestamp: index as i64,
+                    sender,
+                    ..Default::default()
+                };
+                [
+                    Message {
+                        subject: (*text).into(),
+                        ..message(uid + 1, format!("s{index}@example.com"))
+                    },
+                    Message {
+                        body_text: format!("Body: {text}"),
+                        ..message(uid + 2, format!("t{index}@example.com"))
+                    },
+                    Message {
+                        cc: text.to_uppercase(),
+                        ..message(uid + 3, format!("u{index}@example.com"))
+                    },
+                ]
+            })
+            .collect();
+        let messages = Arc::new(messages);
+        let (worker, results) = Search::start();
+        for query in [
+            "invoice", "42 f", "ünï", "straße", "οδος", "γάπ", "🎉", "party", "noon", "zz", "i̇st",
+            "x", "acme", "body: z", "missing",
+        ] {
+            worker.submit(Request::new(
+                false,
+                query.into(),
+                None,
+                None,
+                messages.clone(),
+            ));
+            let mut found: Vec<_> = super::super::tests::finished(&results)
+                .groups
+                .iter()
+                .flatten()
+                .map(|message| message.uid)
+                .collect();
+            found.sort();
+            let expected: Vec<_> = messages
+                .iter()
+                .filter(|message| {
+                    models::search::fields(message)
+                        .iter()
+                        .any(|field| field.to_lowercase().contains(query))
+                })
+                .map(|message| message.uid)
+                .collect();
+            assert_eq!(found, expected, "{query}");
+        }
     }
 
     #[test]

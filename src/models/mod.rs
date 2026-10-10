@@ -16,6 +16,7 @@ pub mod settings;
 pub mod sync;
 pub mod ticket;
 use serde::{Deserialize, Serialize};
+use std::{borrow::Borrow, collections::HashMap};
 
 #[derive(Clone, Debug)]
 pub struct Account {
@@ -220,8 +221,14 @@ impl Message {
     }
 }
 
-pub fn threads(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
-    let matched: Vec<&Message> = messages.iter().filter(|m| m.matches(query)).collect();
+pub fn threads<M: Borrow<Message>>(
+    messages: impl IntoIterator<Item = M>,
+    query: &str,
+) -> Vec<Vec<M>> {
+    let matched: Vec<M> = messages
+        .into_iter()
+        .filter(|message| message.borrow().matches(query))
+        .collect();
     let mut parents: Vec<usize> = (0..matched.len()).collect();
     fn root(parents: &mut [usize], mut index: usize) -> usize {
         while parents[index] != index {
@@ -235,64 +242,77 @@ pub fn threads(messages: &[Message], query: &str) -> Vec<Vec<Message>> {
         let b = root(parents, b);
         parents[b] = a;
     }
-    let mut subjects = std::collections::HashMap::new();
-    let mut ids = std::collections::HashMap::new();
-    let mut referenced_by: std::collections::HashMap<&str, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (index, message) in matched.iter().enumerate() {
-        let subject = subject_key(&message.subject);
-        if !subject.is_empty() {
-            if let Some(other) = subjects.insert(subject, index) {
-                union(&mut parents, index, other);
+    {
+        let mut subjects = HashMap::new();
+        let mut ids = HashMap::new();
+        for (index, message) in matched.iter().enumerate() {
+            let message = message.borrow();
+            let subject = subject_key(&message.subject);
+            if !subject.is_empty() {
+                union(
+                    &mut parents,
+                    *subjects.entry(subject).or_insert(index),
+                    index,
+                );
+            }
+            if !message.message_id.is_empty() {
+                union(
+                    &mut parents,
+                    *ids.entry(message.message_id.as_str()).or_insert(index),
+                    index,
+                );
             }
         }
-        if !message.message_id.is_empty() {
-            if let Some(other) = ids.insert(message.message_id.as_str(), index) {
-                union(&mut parents, index, other);
-            }
-            if let Some(others) = referenced_by.get(message.message_id.as_str()) {
-                for other in others {
-                    union(&mut parents, index, *other);
+        // References join only once every message id is known, in either direction.
+        for (index, message) in matched.iter().enumerate() {
+            for reference in &message.borrow().references {
+                if let Some(&other) = ids.get(reference.as_str()) {
+                    union(&mut parents, other, index);
                 }
             }
         }
-        for reference in &message.references {
-            if let Some(other) = ids.get(reference.as_str()) {
-                union(&mut parents, index, *other);
-            }
-            referenced_by
-                .entry(reference.as_str())
-                .or_default()
-                .push(index);
-        }
     }
-    let mut by_root: std::collections::HashMap<usize, Vec<Message>> =
-        std::collections::HashMap::new();
+    let mut slots = vec![None; matched.len()];
+    let mut groups: Vec<Vec<M>> = Vec::new();
     for (index, message) in matched.into_iter().enumerate() {
-        by_root
-            .entry(root(&mut parents, index))
-            .or_default()
-            .push(message.clone());
+        let slot = *slots[root(&mut parents, index)].get_or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[slot].push(message);
     }
-    let mut groups: Vec<Vec<Message>> = by_root.into_values().collect();
-    for group in &mut groups {
-        group.sort_by_key(|m| std::cmp::Reverse((m.timestamp, m.uid)));
-    }
-    groups.sort_by_key(|g| {
-        std::cmp::Reverse((
-            g.iter().any(|m| !m.is_read),
-            g.first().map(|m| m.timestamp).unwrap_or_default(),
-            g.first().map(|m| m.uid).unwrap_or_default(),
-        ))
-    });
+    sort_groups(&mut groups);
     groups
 }
 
-pub fn subject_key(subject: &str) -> String {
-    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)^(?:(?:re|fw|fwd|aw|antw|回复|转发):\s*)+").unwrap()
+/// Newest messages first within each group; groups with unread mail, then newest first.
+fn sort_groups<M: Borrow<Message>>(groups: &mut [Vec<M>]) {
+    for group in groups.iter_mut() {
+        group.sort_by_key(|message| {
+            let message = message.borrow();
+            std::cmp::Reverse((message.timestamp, message.uid))
+        });
+    }
+    groups.sort_by_cached_key(|group| {
+        let newest = group[0].borrow();
+        std::cmp::Reverse((
+            group.iter().any(|message| !message.borrow().is_read),
+            newest.timestamp,
+            newest.uid,
+        ))
     });
-    PREFIX.replace_all(subject, "").trim().to_lowercase()
+}
+
+pub fn subject_key(mut subject: &str) -> String {
+    const PREFIXES: [&str; 7] = ["re", "fw", "fwd", "aw", "antw", "回复", "转发"];
+    while let Some(rest) = PREFIXES.iter().find_map(|prefix| {
+        let (head, rest) = subject.split_at_checked(prefix.len())?;
+        rest.strip_prefix(':')
+            .filter(|_| head.eq_ignore_ascii_case(prefix))
+    }) {
+        subject = rest.trim_start();
+    }
+    subject.trim().to_lowercase()
 }
 
 #[cfg(test)]
@@ -399,5 +419,121 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(threads(&linked, "").len(), 1);
+    }
+
+    /// The previous single-pass grouping, kept to check the rewrite against it.
+    fn pairwise_threads(messages: &[Message]) -> Vec<Vec<Message>> {
+        let mut parents: Vec<usize> = (0..messages.len()).collect();
+        fn root(parents: &mut [usize], mut index: usize) -> usize {
+            while parents[index] != index {
+                index = parents[index];
+            }
+            index
+        }
+        let mut union = |a: usize, b: usize| {
+            let (a, b) = (root(&mut parents, a), root(&mut parents, b));
+            parents[b] = a;
+        };
+        let mut subjects = HashMap::new();
+        let mut ids = HashMap::new();
+        let mut referenced_by: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, message) in messages.iter().enumerate() {
+            let subject = subject_key(&message.subject);
+            if !subject.is_empty()
+                && let Some(other) = subjects.insert(subject, index)
+            {
+                union(index, other);
+            }
+            if !message.message_id.is_empty() {
+                if let Some(other) = ids.insert(message.message_id.as_str(), index) {
+                    union(index, other);
+                }
+                for other in referenced_by
+                    .get(message.message_id.as_str())
+                    .into_iter()
+                    .flatten()
+                {
+                    union(index, *other);
+                }
+            }
+            for reference in &message.references {
+                if let Some(other) = ids.get(reference.as_str()) {
+                    union(index, *other);
+                }
+                referenced_by
+                    .entry(reference.as_str())
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let mut by_root: HashMap<usize, Vec<Message>> = HashMap::new();
+        for (index, message) in messages.iter().enumerate() {
+            by_root
+                .entry(root(&mut parents, index))
+                .or_default()
+                .push(message.clone());
+        }
+        let mut groups: Vec<_> = by_root.into_values().collect();
+        for group in &mut groups {
+            group.sort_by_key(|m| std::cmp::Reverse((m.timestamp, m.uid)));
+        }
+        groups.sort_by_key(|g| {
+            std::cmp::Reverse((g.iter().any(|m| !m.is_read), g[0].timestamp, g[0].uid))
+        });
+        groups
+    }
+
+    #[test]
+    fn threads_match_the_pairwise_grouping() {
+        let prefixes = ["", "Re: ", "RE:", "Fwd: Re: ", "aw:  "];
+        let messages: Vec<_> = (0..900u32)
+            .map(|uid| Message {
+                uid,
+                timestamp: i64::from(uid * 13 % 70),
+                is_read: uid % 4 != 0,
+                subject: match uid * 7 % 300 {
+                    topic @ 0..120 => format!("{}Topic {topic}", prefixes[uid as usize % 5]),
+                    _ => String::new(),
+                },
+                message_id: if uid % 5 == 0 {
+                    String::new()
+                } else {
+                    format!("id{}", uid * 3 % 700)
+                },
+                references: (0..uid % 3)
+                    .map(|step| format!("id{}", (uid * 31 + step * 17) % 900))
+                    .collect(),
+                ..Default::default()
+            })
+            .collect();
+        let grouped: Vec<Vec<Message>> = threads(&messages, "")
+            .into_iter()
+            .map(|group| group.into_iter().cloned().collect())
+            .collect();
+        assert!(grouped.len() > 50 && grouped.iter().any(|group| group.len() > 5));
+        assert_eq!(grouped, pairwise_threads(&messages));
+    }
+
+    #[test]
+    fn subject_key_strips_what_the_reply_prefix_pattern_matched() {
+        let pattern = regex::Regex::new(r"(?i)^(?:(?:re|fw|fwd|aw|antw|回复|转发):\s*)+").unwrap();
+        let parts = [
+            "re", "RE", "Fw", "fWD", "aw", "AnTw", "回复", "转发", ":", " ", "\u{3000}", "\t", "x",
+            "Ре", "é",
+        ];
+        for a in parts {
+            for b in parts {
+                for c in parts {
+                    for d in parts {
+                        let subject = [a, b, c, d, " Topic "].concat();
+                        assert_eq!(
+                            subject_key(&subject),
+                            pattern.replace_all(&subject, "").trim().to_lowercase(),
+                            "{subject:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
