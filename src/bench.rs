@@ -86,7 +86,7 @@ fn storage_search_and_rendering() -> anyhow::Result<()> {
 
     let mut senders: Vec<(String, usize)> = models::senders::groups(&list, "")
         .into_iter()
-        .map(|group| (models::senders::key(&group[0]), group.len()))
+        .map(|group| (models::senders::key(group[0]), group.len()))
         .collect();
     senders.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     senders.truncate(100);

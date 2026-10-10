@@ -346,7 +346,7 @@ fn search(
             messages.push(message.list_header(true));
         }
     }
-    let mut groups = models::threads(&messages, "");
+    let mut groups = models::threads(messages, "");
     groups.retain(|group| {
         group
             .iter()
