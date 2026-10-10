@@ -1,5 +1,8 @@
-use super::{Message, schema::microdata};
-use scraper::{Html, Selector};
+use super::{
+    Message,
+    dom::Document,
+    schema::{json_ld, microdata, scopes},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -27,23 +30,17 @@ pub struct Step {
 }
 
 pub fn parse(html: &str) -> Vec<Parcel> {
-    let document = Html::parse_fragment(html);
-    let selector = Selector::parse("script[type='application/ld+json']").unwrap();
+    let document = Document::parse_fragment(html);
     let mut parcels = Vec::new();
-    for script in document.select(&selector) {
-        let source = script.text().collect::<String>();
-        if let Ok(value) = serde_json::from_str::<Value>(&source) {
-            collect(&value, &mut parcels);
-        }
+    for value in json_ld(&document) {
+        collect(&value, &mut parcels);
     }
-    let selector = Selector::parse("[itemscope][itemtype]").unwrap();
-    for element in document.select(&selector) {
+    for element in scopes(&document) {
         if element
-            .value()
             .attr("itemtype")
             .is_some_and(|kind| kind.ends_with("ParcelDelivery"))
         {
-            parcels.push(from_value(&microdata(&element)));
+            parcels.push(from_value(&microdata(element)));
         }
     }
     parcels
@@ -65,7 +62,7 @@ pub fn parse_message(message: &Message) -> Vec<Parcel> {
     if !ugreen {
         return Vec::new();
     }
-    let document = Html::parse_fragment(&message.body_html);
+    let document = Document::parse_fragment(&message.body_html);
     let text = document.root_element().text().collect::<Vec<_>>().join(" ");
     static TRACKING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?i)Tracking number:\s*([A-Za-z0-9-]{6,40})").unwrap()
@@ -92,18 +89,19 @@ pub fn parse_message(message: &Message) -> Vec<Parcel> {
     let item = ITEM
         .captures(&message.subject)
         .map(|capture| capture[1].to_owned());
-    let selector = Selector::parse("a[href]").unwrap();
-    let tracking_url = document.select(&selector).find_map(|link| {
-        let title = link.text().collect::<String>();
-        if title.to_ascii_lowercase().contains("track your order") {
-            link.value()
-                .attr("href")
-                .filter(|url| url.starts_with("https://"))
-                .map(str::to_owned)
-        } else {
-            None
-        }
-    });
+    let tracking_url = document
+        .elements()
+        .filter(|element| element.name() == "a" && element.attr("href").is_some())
+        .find_map(|link| {
+            let title = link.text().collect::<String>();
+            if title.to_ascii_lowercase().contains("track your order") {
+                link.attr("href")
+                    .filter(|url| url.starts_with("https://"))
+                    .map(str::to_owned)
+            } else {
+                None
+            }
+        });
     let status = if message.subject.to_ascii_lowercase().contains("delivered") {
         "Delivered"
     } else {

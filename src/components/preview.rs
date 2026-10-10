@@ -1,5 +1,4 @@
-use crate::models::{Message, calendar};
-use scraper::{ElementRef, Html, Node};
+use crate::models::{Message, calendar, dom::Document};
 
 pub fn message(message: &Message) -> String {
     if let Some(preview) = &message.list_preview {
@@ -9,10 +8,45 @@ pub fn message(message: &Message) -> String {
         return String::new();
     }
     let text = if message.body_text.trim().is_empty() {
-        let document = Html::parse_document(&message.body_html);
-        let mut text = String::new();
-        append_text(document.root_element(), &mut text);
-        text
+        Document::parse(&message.body_html)
+            .root_element()
+            .layout_text(
+                |name| matches!(name, "head" | "script" | "style" | "template"),
+                |name| {
+                    matches!(
+                        name,
+                        "address"
+                            | "article"
+                            | "aside"
+                            | "blockquote"
+                            | "br"
+                            | "div"
+                            | "dl"
+                            | "dt"
+                            | "dd"
+                            | "footer"
+                            | "h1"
+                            | "h2"
+                            | "h3"
+                            | "h4"
+                            | "h5"
+                            | "h6"
+                            | "header"
+                            | "hr"
+                            | "li"
+                            | "main"
+                            | "ol"
+                            | "p"
+                            | "pre"
+                            | "section"
+                            | "table"
+                            | "td"
+                            | "th"
+                            | "tr"
+                            | "ul"
+                    )
+                },
+            )
     } else {
         message.body_text.chars().take(4096).collect()
     };
@@ -32,60 +66,6 @@ pub fn thread(messages: &[Message]) -> String {
         .find(|message| !calendar::is_reply(message))
         .map(message)
         .unwrap_or_default()
-}
-
-fn append_text(element: ElementRef<'_>, text: &mut String) {
-    if matches!(
-        element.value().name(),
-        "head" | "script" | "style" | "template"
-    ) {
-        return;
-    }
-    let block = matches!(
-        element.value().name(),
-        "address"
-            | "article"
-            | "aside"
-            | "blockquote"
-            | "br"
-            | "div"
-            | "dl"
-            | "dt"
-            | "dd"
-            | "footer"
-            | "h1"
-            | "h2"
-            | "h3"
-            | "h4"
-            | "h5"
-            | "h6"
-            | "header"
-            | "hr"
-            | "li"
-            | "main"
-            | "ol"
-            | "p"
-            | "pre"
-            | "section"
-            | "table"
-            | "td"
-            | "th"
-            | "tr"
-            | "ul"
-    );
-    if block {
-        text.push(' ');
-    }
-    for child in element.children() {
-        match child.value() {
-            Node::Text(value) => text.push_str(value),
-            Node::Element(_) => append_text(ElementRef::wrap(child).unwrap(), text),
-            _ => {}
-        }
-    }
-    if block {
-        text.push(' ');
-    }
 }
 
 #[cfg(test)]

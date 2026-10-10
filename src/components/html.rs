@@ -1,5 +1,10 @@
-use crate::{models::Message, theme};
-use scraper::{Html, Selector};
+use crate::{
+    models::{
+        Message,
+        dom::{Document, NodeRef},
+    },
+    theme,
+};
 use std::sync::LazyLock;
 
 pub fn has_remote_media(message: &Message) -> bool {
@@ -9,20 +14,26 @@ pub fn has_remote_media(message: &Message) -> bool {
     if !message.body_loaded || message.body_html.is_empty() {
         return false;
     }
-    let document = Html::parse_fragment(&message.body_html);
-    let selector = Selector::parse("img[src], img[srcset], source[srcset], video[poster]").unwrap();
-    document.select(&selector).any(|element| {
-        ["src", "srcset", "poster"].into_iter().any(|attribute| {
-            element.value().attr(attribute).is_some_and(|value| {
-                value.split(',').any(|candidate| {
-                    let url = candidate.trim_start();
-                    url.starts_with("https://")
-                        || url.starts_with("http://")
-                        || url.starts_with("//")
-                        || url.starts_with("cid:")
+    let document = Document::parse_fragment(&message.body_html);
+    document.elements().any(|element| {
+        let media = match element.name() {
+            "img" => element.attr("src").is_some() || element.attr("srcset").is_some(),
+            "source" => element.attr("srcset").is_some(),
+            "video" => element.attr("poster").is_some(),
+            _ => false,
+        };
+        media
+            && ["src", "srcset", "poster"].into_iter().any(|attribute| {
+                element.attr(attribute).is_some_and(|value| {
+                    value.split(',').any(|candidate| {
+                        let url = candidate.trim_start();
+                        url.starts_with("https://")
+                            || url.starts_with("http://")
+                            || url.starts_with("//")
+                            || url.starts_with("cid:")
+                    })
                 })
             })
-        })
     })
 }
 
@@ -56,16 +67,22 @@ pub fn document(message: &Message, hide_quotes: bool, media: bool) -> String {
 }
 
 fn normalized_html(source: &str) -> String {
-    let document = Html::parse_document(source);
-    let styles = Selector::parse("head style").unwrap();
-    let body = Selector::parse("body").unwrap();
+    let document = Document::parse(source);
     let mut result = document
-        .select(&styles)
+        .elements()
+        .filter(|element| {
+            element.name() == "style"
+                && element
+                    .node()
+                    .ancestors()
+                    .map_while(NodeRef::as_element)
+                    .any(|ancestor| ancestor.name() == "head")
+        })
         .map(|style| style.html())
         .collect::<String>();
-    if let Some(body) = document.select(&body).next() {
+    if let Some(body) = document.elements().find(|element| element.name() == "body") {
         result.push_str("<div");
-        for (name, value) in body.value().attrs() {
+        for (name, value) in body.attrs() {
             if matches!(name, "style" | "class" | "id" | "dir" | "lang") {
                 result.push_str(&format!(
                     " {name}=\"{}\"",
@@ -139,15 +156,21 @@ mod tests {
             body_html: "<!doctype html><html><head><style>body{padding:0}</style></head><body class='newsletter' style='background:blue'><table><tr><td>Top</td></tr></table></div><p>Bottom</p></body></html>".into(),
             ..Default::default()
         }, false, false);
-        let parsed = Html::parse_document(&html);
+        let parsed = Document::parse(&html);
         let root = parsed
-            .select(&Selector::parse("#brevlada-content").unwrap())
-            .next()
+            .elements()
+            .find(|element| element.attr("id") == Some("brevlada-content"))
             .unwrap();
         assert!(root.text().collect::<String>().contains("Bottom"));
         assert!(root.inner_html().contains("newsletter"));
         assert!(root.inner_html().contains("background:blue"));
-        assert_eq!(parsed.select(&Selector::parse("html").unwrap()).count(), 1);
+        assert_eq!(
+            parsed
+                .elements()
+                .filter(|element| element.name() == "html")
+                .count(),
+            1
+        );
         assert!(html.find("body{padding:0}").unwrap() < html.find(theme::HTML_CSS).unwrap());
     }
 

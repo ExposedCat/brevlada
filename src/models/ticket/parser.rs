@@ -1,43 +1,24 @@
 use super::{Kind, Reservation, Ticket, fields::*};
-use scraper::{Html, Selector};
+use crate::models::{dom::Document, schema};
 use serde_json::Value;
 
 pub fn parse(html: &str) -> Vec<Reservation> {
     if !html.contains("Reservation") && !html.contains("Ticket") {
         return Vec::new();
     }
-    let document = Html::parse_fragment(html);
+    let document = Document::parse_fragment(html);
     let mut reservations = Vec::new();
-    for script in document.select(&Selector::parse("script[type='application/ld+json']").unwrap()) {
-        if let Ok(value) = serde_json::from_str::<Value>(&script.text().collect::<String>()) {
-            collect(&value, &mut reservations);
-        }
-    }
-    for element in document.select(&Selector::parse("[itemscope][itemtype]").unwrap()) {
-        if element
-            .ancestors()
-            .filter_map(scraper::ElementRef::wrap)
-            .any(|parent| {
-                parent.value().attr("itemtype").is_some_and(|types| {
-                    types.split_whitespace().any(|value| {
-                        matches!(
-                            term(value),
-                            "EventReservation"
-                                | "BusReservation"
-                                | "TrainReservation"
-                                | "FlightReservation"
-                                | "Ticket"
-                        )
-                    })
-                })
-            })
-        {
-            continue;
-        }
-        collect(
-            &crate::models::schema::microdata(&element),
-            &mut reservations,
-        );
+    for value in schema::items(&document, |value| {
+        matches!(
+            term(value),
+            "EventReservation"
+                | "BusReservation"
+                | "TrainReservation"
+                | "FlightReservation"
+                | "Ticket"
+        )
+    }) {
+        collect(&value, &mut reservations);
     }
     reservations
 }
