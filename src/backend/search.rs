@@ -225,7 +225,7 @@ impl Search {
                             fields.push(
                                 models::search::fields(message)
                                     .iter()
-                                    .map(|field| field.to_lowercase())
+                                    .map(|field| models::search::lowercase(field))
                                     .collect::<Vec<_>>()
                                     .into(),
                             );

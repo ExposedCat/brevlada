@@ -76,9 +76,9 @@ impl Entry {
                 &message.body_html,
             ][index];
             if index == 6 && !raw.is_empty() {
-                models::search::html_text(raw).to_lowercase()
+                models::search::lowercase(&models::search::html_text(raw))
             } else {
-                raw.to_lowercase()
+                models::search::lowercase(raw)
             }
         })
     }
