@@ -1,8 +1,9 @@
 use super::{
     Message,
-    dom::{Document, Html},
+    html::Html,
     schema::{json_ld, microdata, scopes},
 };
+use scraper::Selector;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -29,17 +30,18 @@ pub struct Step {
     pub location: Option<String>,
 }
 
-pub fn parse(document: &Document) -> Vec<Parcel> {
+pub fn parse(html: &Html) -> Vec<Parcel> {
     let mut parcels = Vec::new();
-    for value in json_ld(document) {
+    for value in json_ld(html) {
         collect(&value, &mut parcels);
     }
-    for element in scopes(document) {
+    for element in scopes(html) {
         if element
+            .value()
             .attr("itemtype")
             .is_some_and(|kind| kind.ends_with("ParcelDelivery"))
         {
-            parcels.push(from_value(&microdata(element)));
+            parcels.push(from_value(&microdata(&element)));
         }
     }
     parcels
@@ -56,7 +58,7 @@ pub fn parse_message_in(message: &Message, html: &Html) -> Vec<Parcel> {
         return Vec::new();
     }
     let structured = if message.body_html.contains("ParcelDelivery") {
-        parse(html.fragment())
+        parse(html)
     } else {
         Vec::new()
     };
@@ -93,19 +95,18 @@ pub fn parse_message_in(message: &Message, html: &Html) -> Vec<Parcel> {
     let item = ITEM
         .captures(&message.subject)
         .map(|capture| capture[1].to_owned());
-    let tracking_url = document
-        .elements()
-        .filter(|element| element.name() == "a" && element.attr("href").is_some())
-        .find_map(|link| {
-            let title = link.text().collect::<String>();
-            if title.to_ascii_lowercase().contains("track your order") {
-                link.attr("href")
-                    .filter(|url| url.starts_with("https://"))
-                    .map(str::to_owned)
-            } else {
-                None
-            }
-        });
+    let selector = Selector::parse("a[href]").unwrap();
+    let tracking_url = document.select(&selector).find_map(|link| {
+        let title = link.text().collect::<String>();
+        if title.to_ascii_lowercase().contains("track your order") {
+            link.value()
+                .attr("href")
+                .filter(|url| url.starts_with("https://"))
+                .map(str::to_owned)
+        } else {
+            None
+        }
+    });
     let status = if message.subject.to_ascii_lowercase().contains("delivered") {
         "Delivered"
     } else {
@@ -250,7 +251,7 @@ mod tests {
 
     #[test]
     fn recognizes_single_status_and_explicit_order_id() {
-        let parcels = parse(&Document::parse_fragment(
+        let parcels = parse(&Html::new(
             r#"<script type="application/ld+json">{"@type":"ParcelDelivery","orderNumber":"123","deliveryStatus":"https://schema.org/Delivered"}</script>"#,
         ));
         assert_eq!(parcels[0].order_number.as_deref(), Some("123"));
@@ -277,7 +278,7 @@ mod tests {
     #[test]
     fn extracts_parcel_and_timeline_from_json_ld_graph() {
         let html = r#"<script type="application/ld+json">{"@graph":[{"@type":"ParcelDelivery","itemShipped":{"name":"Shoes"},"carrier":{"name":"Parcel Co"},"potentialAction":{"@type":"TrackAction","url":"https://example.org/track"},"deliveryStatus":[{"@type":"DeliveryEvent","name":"Shipped","startDate":"2026-09-29","location":"London"}]}]}</script>"#;
-        let parcels = parse(&Document::parse_fragment(html));
+        let parcels = parse(&Html::new(html));
         assert_eq!(parcels.len(), 1);
         assert_eq!(parcels[0].item.as_deref(), Some("Shoes"));
         assert_eq!(
@@ -290,7 +291,7 @@ mod tests {
     #[test]
     fn extracts_microdata_without_mixing_nested_names() {
         let html = r#"<div itemscope itemtype="https://schema.org/ParcelDelivery"><div itemprop="carrier" itemscope itemtype="https://schema.org/Organization"><meta itemprop="name" content="Courier" /></div><div itemprop="itemShipped" itemscope itemtype="https://schema.org/Product"><meta itemprop="name" content="Shoes" /></div><link itemprop="trackingUrl" href="https://example.org/track" /></div>"#;
-        let parcels = parse(&Document::parse_fragment(html));
+        let parcels = parse(&Html::new(html));
         assert_eq!(parcels.len(), 1);
         assert_eq!(parcels[0].carrier.as_deref(), Some("Courier"));
         assert_eq!(parcels[0].item.as_deref(), Some("Shoes"));

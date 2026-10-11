@@ -8,7 +8,7 @@ mod rsvp;
 mod scheduling;
 mod schema;
 
-use super::dom::Html;
+use super::html::Html;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

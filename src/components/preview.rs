@@ -1,4 +1,7 @@
-use crate::models::{Message, calendar, dom::Html};
+use crate::models::{
+    Message, calendar,
+    html::{Html, layout_text},
+};
 
 pub fn message(message: &Message, html: &Html) -> String {
     if let Some(preview) = &message.list_preview {
@@ -8,7 +11,8 @@ pub fn message(message: &Message, html: &Html) -> String {
         return String::new();
     }
     let text = if message.body_text.trim().is_empty() {
-        html.document().root_element().layout_text(
+        layout_text(
+            html.document().root_element(),
             |name| matches!(name, "head" | "script" | "style" | "template"),
             |name| {
                 matches!(

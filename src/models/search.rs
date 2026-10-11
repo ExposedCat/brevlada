@@ -74,33 +74,32 @@ impl Filters {
 
 /// Search the visible HTML text too, including older HTML-only cache entries.
 pub fn html_text(html: &str) -> String {
-    let text = super::dom::Document::parse(html)
-        .root_element()
-        .layout_text(
-            |name| matches!(name, "script" | "style" | "head"),
-            |name| {
-                matches!(
-                    name,
-                    "p" | "div"
-                        | "br"
-                        | "hr"
-                        | "li"
-                        | "tr"
-                        | "td"
-                        | "th"
-                        | "section"
-                        | "article"
-                        | "blockquote"
-                        | "h1"
-                        | "h2"
-                        | "h3"
-                        | "h4"
-                        | "h5"
-                        | "h6"
-                        | "pre"
-                )
-            },
-        );
+    let text = super::html::layout_text(
+        scraper::Html::parse_document(html).root_element(),
+        |name| matches!(name, "script" | "style" | "head"),
+        |name| {
+            matches!(
+                name,
+                "p" | "div"
+                    | "br"
+                    | "hr"
+                    | "li"
+                    | "tr"
+                    | "td"
+                    | "th"
+                    | "section"
+                    | "article"
+                    | "blockquote"
+                    | "h1"
+                    | "h2"
+                    | "h3"
+                    | "h4"
+                    | "h5"
+                    | "h6"
+                    | "pre"
+            )
+        },
+    );
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

@@ -1,6 +1,6 @@
 //! Messages are stored as header rows, which list queries read, and body rows,
 //! which also keep the HTML text and ticket data derived when a body is stored.
-use crate::models::{Message, dom::Html, search::html_text, senders, ticket};
+use crate::models::{Message, html::Html, search::html_text, senders, ticket};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row, params, types::Type};
 

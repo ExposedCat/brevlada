@@ -1,5 +1,5 @@
 use super::{Kind, Reservation, Ticket, fields::*};
-use crate::models::{dom::Html, schema};
+use crate::models::{html::Html, schema};
 use serde_json::Value;
 
 pub fn parse(html: &Html) -> Vec<Reservation> {
@@ -7,7 +7,7 @@ pub fn parse(html: &Html) -> Vec<Reservation> {
         return Vec::new();
     }
     let mut reservations = Vec::new();
-    for value in schema::items(html.fragment(), |value| {
+    for value in schema::items(html, |value| {
         matches!(
             term(value),
             "EventReservation"

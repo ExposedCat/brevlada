@@ -1,14 +1,13 @@
-//! Differential tests against scraper on html5ever, which this parser replaced.
-//! Trees, serializations and everything the mail views read from them must
-//! stay identical on generated tag soup and, when `BREVLADA_CORPUS`
-//! names a directory of `.eml` files, on every HTML body in it.
-use super::{Data, Document, Namespace, Prefix, ROOT};
+//! Differential tests against the scraper-based code that read email HTML
+//! before: everything the mail views take from HTML must stay identical on
+//! generated tag soup and, when `BREVLADA_CORPUS` names a directory of `.eml`
+//! files, on every HTML body in it.
+use super::Html;
 use crate::{
     backend::parser,
     components,
     models::{Message, schema, search},
 };
-use std::fmt::Write;
 
 /// The tag soup tokens of the Bun port's fuzz corpus.
 const BUN_TOKENS: &str = "<p>|</p>|<div>|</div>|<b>|</b>|<br>|<table>|<tr>|<td>|</td>|</table>|<li>|<ul>|</ul>|<head>|</head>|<body>|</body>|<html>|</html>|<title>|</title>|<style>|</style>|<script>|</script>|<template>|</template>|<noscript>|</noscript>|<textarea>|</textarea>|<!-- c -->|&amp;|&nbsp;|&copy|&notit;|&#x41;|text|word| |\n|<img src='https://x'>|<a href='https://t'>|</a>|<span>|</span>|<h1>|</h1>|<pre>|</pre>|<meta itemprop=x content=y>|<div itemscope itemtype='https://schema.org/Thing'>|<span itemprop='name'>|<select>|<option>|<svg>|</svg>|<font>|</font>|<i>|</i>|<form>|</form>|<button>|<xmp>|<iframe>|</iframe>|<caption>|<col>|<tbody>|<th>|<dd>|<dt>|<dl>|<h2>|<blockquote>|</blockquote>|<hr>|<address>|<image src='https://img'>|<link itemprop=u href=https://l>|<time itemprop=t datetime=2026>|</br>|<meta charset=utf-8>";
@@ -35,6 +34,49 @@ const BUN_HANDMADE: [&str; 17] = [
 
 /// Classic hard cases for tree construction and tokenization.
 const TRICKY: &[&str] = &[
+    "<img src='&#104;ttps://x'>",
+    "<img src='a&#44;https://x'>",
+    "<img srcset='&nbsp;//x 1x'>",
+    "<img src='x?a=1&amp;b=2'><img src=&quot;https://x>",
+    "<img src=x src=https://y>",
+    "<IMG SRC=HTTPS://x><img srcset=' https://x 1x'>",
+    "<select><img src=https://x></select>",
+    "<select><source srcset=//x><video poster=cid:a></select>",
+    "<select><template><img src=https://x></template></select>",
+    "<select><textarea><img src=https://x>",
+    "<table><select><img src=https://x></select></table>",
+    "<svg><image src=https://x></svg>",
+    "<svg><foreignObject><image src=https://x>",
+    "<math><mi><image srcset=//x>",
+    "<svg><source srcset=https://x><video poster=//x>",
+    "<textarea><img src=https://x></textarea><title><img src=https://x>",
+    "<noscript><img src=https://x></noscript><xmp><img src=//x></xmp>",
+    "<iframe><img src=https://x></iframe><noembed><img src=//x><noframes><img src=//x>",
+    "<!--<img src=https://x>--><style><img src=https://x></style>",
+    "<script><img src=https://x></script><plaintext><img src=https://x>",
+    "<template><img src=https://x></template>",
+    "<table><img src=https://x><tr><td>",
+    "<frameset><img src=https://x>",
+    "<script type='APPLICATION/LD+JSON'>{\"@type\":\"Thing\"}</script>",
+    "<script type='application/ld&#43;json'>{\"a\":1}</script>",
+    "<svg><script type='application/ld+json'>{\"a\":\"&amp;\"}</script></svg>",
+    "<svg><script type='APPLICATION/LD+JSON'>{\"a\":1}</script></svg>",
+    "<svg><script type='application/ld+json'>{\"a\":<b>1</b>}</script></svg>",
+    "<script type=application/ld+json>{\"a\":\"\0\"}</script>",
+    "<script type=application/ld+json>{\"a\":\"\r\n\"}</script><script type=application/ld+json>\r{\"b\":1}\r</script>",
+    "<script type=application/ld+json></script><script>{\"c\":1}</script>",
+    "<script type=application/ld+json>{\"a\":\"</scr\"}</script>",
+    "<script type=application/ld+json><!--<script>{\"a\":1}</script>--></script>",
+    "<select><script type=application/ld+json>{\"a\":1}</script></select>",
+    "<textarea><script type=application/ld+json>{\"a\":1}</script></textarea>",
+    "<template><script type=application/ld+json>{\"a\":2}</script></template>",
+    "<script type=application/ld+json>{\"a\":1}",
+    "<math><annotation-xml encoding=text/html><script type=application/ld+json>{\"a\":\"&amp;\"}</script>",
+    "<math><mtext><script type=application/ld+json>{\"a\":\"&amp;\"}</script><img src=//x>",
+    "<svg><foreignObject><script type=application/ld+json>{\"a\":\"&amp;\"}</script><svg><script type=application/ld+json>{}</script>",
+    "<math><annotation-xml encoding=text/html><image src=https://x></annotation-xml></math>",
+    "<math><annotation-xml encoding=TEXT/HTML><p><image src=https://x>",
+    "<p ITEMSCOPE itemtype=https://schema.org/Thing><span itemprop=name>x</span></p>",
     "<a><p>X<a>Y</a>Z</p></a>",
     "<b><p>1</b>2</p>",
     "<a><b><i><u><s><div>x</a>y",
@@ -572,127 +614,8 @@ fn bun_cases() -> Vec<String> {
         .collect()
 }
 
-fn element_dump(element: &super::Element<'_>) -> String {
-    let namespace = match element.namespace {
-        Namespace::Html => "html",
-        Namespace::Svg => "svg",
-        Namespace::MathMl => "math",
-    };
-    let mut dump = format!("<{namespace} {}", element.name);
-    for attribute in &element.attributes {
-        let prefix = match attribute.prefix {
-            Prefix::None => "",
-            Prefix::Xmlns => ":",
-            Prefix::Xlink => "xlink:",
-            Prefix::Xml => "xml:",
-            Prefix::XmlnsColon => "xmlns:",
-        };
-        write!(dump, " {prefix}{}={:?}", attribute.name, attribute.value).unwrap();
-    }
-    dump + ">"
-}
-
-fn scraper_element_dump(element: &scraper::node::Element) -> String {
-    let namespace = match &*element.name.ns {
-        "http://www.w3.org/1999/xhtml" => "html",
-        "http://www.w3.org/2000/svg" => "svg",
-        _ => "math",
-    };
-    let mut dump = format!("<{namespace} {}", element.name.local);
-    for (name, value) in &element.attrs {
-        let prefix = name
-            .prefix
-            .as_ref()
-            .map_or(String::new(), |prefix| format!("{prefix}:"));
-        write!(dump, " {prefix}{}={:?}", name.local, &**value).unwrap();
-    }
-    dump + ">"
-}
-
-fn tree(document: &Document<'_>) -> String {
-    let mut dump = String::new();
-    for node in document.node(ROOT).descendants() {
-        let depth = node.ancestors().count();
-        match &node.node().data {
-            Data::Root => writeln!(dump, "{depth} #root"),
-            Data::Contents => writeln!(dump, "{depth} #contents"),
-            Data::Element(element) => writeln!(dump, "{depth} {}", element_dump(element)),
-            Data::Text(text) => writeln!(dump, "{depth} {text:?}"),
-            Data::Comment(text) => writeln!(dump, "{depth} <!--{text:?}-->"),
-        }
-        .unwrap();
-    }
-    dump
-}
-
-fn scraper_tree(document: &scraper::Html) -> String {
-    let mut dump = String::new();
-    for node in document.tree.root().descendants() {
-        let depth = node.ancestors().count();
-        match node.value() {
-            scraper::Node::Doctype(_) => continue,
-            _ if node.parent().is_none() => writeln!(dump, "{depth} #root"),
-            scraper::Node::Fragment => writeln!(dump, "{depth} #contents"),
-            scraper::Node::Element(element) => {
-                writeln!(dump, "{depth} {}", scraper_element_dump(element))
-            }
-            scraper::Node::Text(text) => writeln!(dump, "{depth} {:?}", &**text),
-            scraper::Node::Comment(text) => writeln!(dump, "{depth} <!--{:?}-->", &**text),
-            node => panic!("html5ever does not create {node:?}"),
-        }
-        .unwrap();
-    }
-    dump
-}
-
-/// Compares the trees and every element as scraper would select them; `thorough`
-/// also compares each element's serialization and text.
-fn assert_same_tree(html: &str, new: &Document<'_>, old: &scraper::Html, thorough: bool) {
-    assert_eq!(tree(new), scraper_tree(old), "tree of {html:?}");
-    let new_elements: Vec<_> = new.elements().collect();
-    let old_elements: Vec<_> = old
-        .tree
-        .nodes()
-        .filter(|node| node.parent().is_some())
-        .filter_map(scraper::ElementRef::wrap)
-        .collect();
-    let dumps = |elements: &[super::ElementRef<'_>]| -> Vec<String> {
-        elements
-            .iter()
-            .map(|element| element_dump(element.element))
-            .collect()
-    };
-    let old_dumps: Vec<_> = old_elements
-        .iter()
-        .map(|element| scraper_element_dump(element.value()))
-        .collect();
-    assert_eq!(dumps(&new_elements), old_dumps, "elements of {html:?}");
-    assert_eq!(
-        new.root_element().html(),
-        old.root_element().html(),
-        "html of {html:?}"
-    );
-    let pairs = new_elements.iter().zip(&old_elements);
-    for (new, old) in pairs.take(if thorough { usize::MAX } else { 1 }) {
-        assert_eq!(new.html(), old.html(), "element html in {html:?}");
-        assert_eq!(new.inner_html(), old.inner_html(), "inner html in {html:?}");
-        assert_eq!(
-            new.text().collect::<String>(),
-            old.text().collect::<String>(),
-            "element text in {html:?}"
-        );
-    }
-}
-
 /// Everything the views read from HTML, through their public entry points.
-fn assert_parity(html: &str, thorough: bool) {
-    let document = Document::parse(html);
-    let old_document = scraper::Html::parse_document(html);
-    assert_same_tree(html, &document, &old_document, thorough);
-    let fragment = Document::parse_fragment(html);
-    let old_fragment = scraper::Html::parse_fragment(html);
-    assert_same_tree(html, &fragment, &old_fragment, thorough);
-
+fn assert_parity(html: &str) {
     let message = Message {
         body_html: html.into(),
         body_loaded: true,
@@ -710,8 +633,9 @@ fn assert_parity(html: &str, thorough: bool) {
         reference::has_remote_media(html),
         "remote media of {html:?}"
     );
+    let shared = Html::new(html);
     assert_eq!(
-        components::preview::message(&message, &super::Html::new(html)),
+        components::preview::message(&message, &shared),
         reference::preview(html),
         "preview of {html:?}"
     );
@@ -720,30 +644,56 @@ fn assert_parity(html: &str, thorough: bool) {
         reference::html_text(html),
         "search text of {html:?}"
     );
+    let fragment = scraper::Html::parse_fragment(html);
     assert_eq!(
-        schema::json_ld(&fragment).collect::<Vec<_>>(),
-        reference::json_ld(&old_fragment),
+        schema::json_ld(&shared),
+        reference::json_ld(&fragment),
         "JSON-LD of {html:?}"
     );
-    let reservation = |kind: &str| kind.ends_with("Reservation");
-    assert_eq!(
-        schema::items(&fragment, reservation).collect::<Vec<_>>(),
-        reference::items(&old_fragment, reservation),
-        "schema items of {html:?}"
-    );
+    // The item types tickets, calendar events and parcels look inside of.
+    let tickets = |kind: &str| {
+        matches!(
+            kind.rsplit(['/', ':', '#']).next(),
+            Some(
+                "EventReservation"
+                    | "BusReservation"
+                    | "TrainReservation"
+                    | "FlightReservation"
+                    | "Ticket"
+            )
+        )
+    };
+    let events = |kind: &str| {
+        matches!(
+            kind.rsplit('/').next(),
+            Some("EventReservation" | "InviteAction" | "RsvpAction")
+        )
+    };
+    let parcels = |_: &str| false;
+    for (consumer, nested) in [
+        ("tickets", &tickets as &dyn Fn(&str) -> bool),
+        ("calendar", &events),
+        ("parcels", &parcels),
+    ] {
+        assert_eq!(
+            schema::items(&shared, nested).collect::<Vec<_>>(),
+            reference::items(&fragment, nested),
+            "{consumer} schema items of {html:?}"
+        );
+    }
 }
 
 #[test]
 fn bun_fuzz_cases_match_scraper() {
     for html in bun_cases() {
-        assert_parity(&html, true);
+        assert_parity(&html);
     }
 }
 
 #[test]
 fn tricky_cases_match_scraper() {
     for html in TRICKY {
-        assert_parity(html, true);
+        assert_parity(html);
     }
 }
 
@@ -751,7 +701,7 @@ fn tricky_cases_match_scraper() {
 fn generated_tag_soup_matches_scraper() {
     let mut random = Random(7.0);
     for _ in 0..5000 {
-        assert_parity(&random.mixed_soup(), true);
+        assert_parity(&random.mixed_soup());
     }
 }
 
@@ -767,7 +717,7 @@ fn corpus_matches_scraper() -> anyhow::Result<()> {
     for (index, path) in paths.iter().enumerate() {
         let message = parser::parse(index as u32 + 1, &std::fs::read(path)?, false, true)?;
         if !message.body_html.is_empty() {
-            assert_parity(&message.body_html, false);
+            assert_parity(&message.body_html);
             compared += 1;
         }
     }
@@ -775,7 +725,7 @@ fn corpus_matches_scraper() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The scraper-based code this parser replaced, kept as the oracle.
+/// The scraper-based code this replaced, kept as the oracle.
 mod reference {
     use scraper::{ElementRef, Html, Node, Selector};
     use serde_json::{Map, Value};

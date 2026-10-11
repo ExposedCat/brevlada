@@ -2,7 +2,7 @@ use super::{
     Event,
     rsvp::{actions, web_url},
 };
-use crate::models::{dom::Html, schema};
+use crate::models::{html::Html, schema};
 use serde_json::Value;
 
 pub fn parse(html: &Html) -> Vec<Event> {
@@ -10,7 +10,7 @@ pub fn parse(html: &Html) -> Vec<Event> {
         return Vec::new();
     }
     let mut events = Vec::new();
-    for value in schema::items(html.fragment(), |kind| {
+    for value in schema::items(html, |kind| {
         matches!(
             kind.rsplit('/').next(),
             Some("EventReservation" | "InviteAction" | "RsvpAction")

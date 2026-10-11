@@ -2,8 +2,8 @@ pub mod action_target;
 pub mod attachment;
 pub mod calendar;
 pub mod conversation;
-pub mod dom;
 pub mod draft;
+pub mod html;
 pub mod parcel;
 pub mod pending_actions;
 pub mod read_state;
@@ -146,7 +146,7 @@ impl Message {
         if self.display_prepared {
             return;
         }
-        let html = dom::Html::new(&self.body_html);
+        let html = html::Html::new(&self.body_html);
         if self.tickets.is_empty() && !self.body_html.is_empty() {
             self.tickets = ticket::parse(&html);
         }
@@ -159,7 +159,7 @@ impl Message {
         if self.body_loaded || !self.body_text.is_empty() || !self.body_html.is_empty() {
             self.list_preview = Some(crate::components::preview::message(self, &html));
         }
-        self.remote_media = Some(crate::components::html::has_remote_media_in(self, &html));
+        self.remote_media = Some(crate::components::html::has_remote_media(self));
         self.display_prepared = true;
     }
 
