@@ -1,5 +1,13 @@
-use crate::{models::Message, theme};
-use scraper::{Html, Selector};
+use crate::{
+    models::{
+        Message,
+        html::{self, HTML_NAMESPACE},
+    },
+    theme,
+};
+use ego_tree::{NodeRef, iter::Edge};
+use lol_html::{Settings, element, html_content::Element};
+use scraper::{Html, Node, Selector};
 use std::sync::LazyLock;
 
 pub fn has_remote_media(message: &Message) -> bool {
@@ -9,20 +17,54 @@ pub fn has_remote_media(message: &Message) -> bool {
     if !message.body_loaded || message.body_html.is_empty() {
         return false;
     }
-    let document = Html::parse_fragment(&message.body_html);
-    let selector = Selector::parse("img[src], img[srcset], source[srcset], video[poster]").unwrap();
-    document.select(&selector).any(|element| {
-        ["src", "srcset", "poster"].into_iter().any(|attribute| {
-            element.value().attr(attribute).is_some_and(|value| {
-                value.split(',').any(|candidate| {
-                    let url = candidate.trim_start();
-                    url.starts_with("https://")
-                        || url.starts_with("http://")
-                        || url.starts_with("//")
-                        || url.starts_with("cid:")
-                })
-            })
-        })
+    let source = &message.body_html;
+    if !html::streamable(source) {
+        let document = Html::parse_fragment(source);
+        return document
+            .select(&Selector::parse(MEDIA).unwrap())
+            .any(|element| {
+                MEDIA_ATTRIBUTES
+                    .into_iter()
+                    .any(|attribute| element.value().attr(attribute).is_some_and(remote))
+            });
+    }
+    let check = |element: &mut Element<'_, '_>| {
+        let remote = MEDIA_ATTRIBUTES.into_iter().any(|attribute| {
+            html::attribute(source, element, attribute).is_some_and(|value| remote(&value))
+        });
+        // Failing stops the scan at the first remote resource.
+        if remote {
+            Err("remote media".into())
+        } else {
+            Ok(())
+        }
+    };
+    html::scan(
+        source,
+        Settings::new()
+            .append_element_content_handler(element!(MEDIA, &check))
+            // html5ever reads an HTML `<image>` as `<img>`.
+            .append_element_content_handler(element!("image[src], image[srcset]", |element| {
+                if element.namespace_uri() == HTML_NAMESPACE {
+                    check(element)
+                } else {
+                    Ok(())
+                }
+            })),
+    )
+    .is_err()
+}
+
+const MEDIA: &str = "img[src], img[srcset], source[srcset], video[poster]";
+const MEDIA_ATTRIBUTES: [&str; 3] = ["src", "srcset", "poster"];
+
+fn remote(value: &str) -> bool {
+    value.split(',').any(|candidate| {
+        let url = candidate.trim_start();
+        url.starts_with("https://")
+            || url.starts_with("http://")
+            || url.starts_with("//")
+            || url.starts_with("cid:")
     })
 }
 
@@ -59,10 +101,10 @@ fn normalized_html(source: &str) -> String {
     let document = Html::parse_document(source);
     let styles = Selector::parse("head style").unwrap();
     let body = Selector::parse("body").unwrap();
-    let mut result = document
-        .select(&styles)
-        .map(|style| style.html())
-        .collect::<String>();
+    let mut result = String::new();
+    for style in document.select(&styles) {
+        serialize(&mut result, *style, true);
+    }
     if let Some(body) = document.select(&body).next() {
         result.push_str("<div");
         for (name, value) in body.value().attrs() {
@@ -74,10 +116,129 @@ fn normalized_html(source: &str) -> String {
             }
         }
         result.push('>');
-        result.push_str(&body.inner_html());
+        serialize(&mut result, *body, false);
         result.push_str("</div>");
     }
     result
+}
+
+/// Writes what html5ever's serializer writes for `root`, without its
+/// character-at-a-time output.
+fn serialize(html: &mut String, root: NodeRef<'_, Node>, include_root: bool) {
+    // Per open element: whether its text is written raw, and whether its children are left out.
+    let mut open: Vec<(bool, bool)> = Vec::new();
+    for edge in root.traverse() {
+        match edge {
+            Edge::Open(node) if include_root || node != root => match node.value() {
+                Node::Doctype(doctype) => {
+                    html.push_str("<!DOCTYPE ");
+                    html.push_str(doctype.name());
+                    html.push('>');
+                }
+                Node::Comment(comment) => {
+                    html.push_str("<!--");
+                    html.push_str(comment);
+                    html.push_str("-->");
+                }
+                Node::Text(text) => {
+                    if open.last().is_some_and(|&(raw, _)| raw) {
+                        html.push_str(text);
+                    } else {
+                        escape(html, text, false);
+                    }
+                }
+                Node::Element(element) => {
+                    let ignored = open.last().is_some_and(|&(_, ignored)| ignored);
+                    let name = element.name();
+                    if !ignored {
+                        html.push('<');
+                        html.push_str(name);
+                        for (attribute, value) in &element.attrs {
+                            html.push(' ');
+                            // html5ever gives `xmlns` itself an empty prefix.
+                            if let Some(prefix) = &attribute.prefix
+                                && !prefix.is_empty()
+                            {
+                                html.push_str(prefix);
+                                html.push(':');
+                            }
+                            html.push_str(&attribute.local);
+                            html.push_str("=\"");
+                            escape(html, value, true);
+                            html.push('"');
+                        }
+                        html.push('>');
+                    }
+                    let is_html = *element.name.ns == *HTML_NAMESPACE;
+                    open.push((
+                        is_html
+                            && matches!(
+                                name,
+                                "style"
+                                    | "script"
+                                    | "xmp"
+                                    | "iframe"
+                                    | "noembed"
+                                    | "noframes"
+                                    | "plaintext"
+                            ),
+                        ignored
+                            || is_html
+                                && matches!(
+                                    name,
+                                    "area"
+                                        | "base"
+                                        | "basefont"
+                                        | "bgsound"
+                                        | "br"
+                                        | "col"
+                                        | "embed"
+                                        | "frame"
+                                        | "hr"
+                                        | "img"
+                                        | "input"
+                                        | "keygen"
+                                        | "link"
+                                        | "meta"
+                                        | "param"
+                                        | "source"
+                                        | "track"
+                                        | "wbr"
+                                ),
+                    ));
+                }
+                _ => {}
+            },
+            Edge::Close(node) if include_root || node != root => {
+                if let Node::Element(element) = node.value()
+                    && open.pop().is_some_and(|(_, ignored)| !ignored)
+                {
+                    html.push_str("</");
+                    html.push_str(element.name());
+                    html.push('>');
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn escape(html: &mut String, text: &str, attribute: bool) {
+    let mut written = 0;
+    for (index, special) in text.match_indices(|character| {
+        matches!(character, '&' | '\u{a0}' | '<' | '>') || attribute && character == '"'
+    }) {
+        html.push_str(&text[written..index]);
+        html.push_str(match special {
+            "&" => "&amp;",
+            "\u{a0}" => "&nbsp;",
+            "<" => "&lt;",
+            ">" => "&gt;",
+            _ => "&quot;",
+        });
+        written = index + special.len();
+    }
+    html.push_str(&text[written..]);
 }
 
 fn plain_text(text: &str, hide_quotes: bool) -> String {

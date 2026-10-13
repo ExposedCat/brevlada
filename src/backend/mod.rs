@@ -14,6 +14,7 @@ mod http;
 pub mod mail;
 mod mail_headers;
 mod mail_sync;
+mod mime;
 mod parcel_worker;
 pub mod parser;
 pub mod search;

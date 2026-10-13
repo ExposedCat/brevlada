@@ -1,7 +1,7 @@
-use crate::models::{InlineMedia, Message, Unsubscribe};
+use super::mime;
+use crate::models::{InlineMedia, Message, Unsubscribe, html::Html};
 use anyhow::Result;
 use base64::Engine;
-use mailparse::{MailHeaderMap, ParsedMail};
 
 pub fn parse(uid: u32, bytes: &[u8], is_read: bool, body_loaded: bool) -> Result<Message> {
     parse_inner(uid, bytes, is_read, body_loaded, false)
@@ -18,8 +18,8 @@ fn parse_inner(
     body_loaded: bool,
     inline: bool,
 ) -> Result<Message> {
-    let mail = mailparse::parse_mail(bytes)?;
-    let header = |name| mail.headers.get_first_value(name).unwrap_or_default();
+    let mail = mime::parse(bytes)?;
+    let header = |name| mail.header(name).unwrap_or_default();
     let date = header("Date");
     let references = format!("{} {}", header("References"), header("In-Reply-To"));
     let mut message = Message {
@@ -52,8 +52,9 @@ fn parse_inner(
     if body_loaded {
         message.inline_media_loaded = inline;
         bodies(&mail, &mut message, inline)?;
-        message.calendar_events = crate::models::calendar::events(&message);
-        message.tickets = crate::models::ticket::parse(&message.body_html);
+        let html = Html::new(&message.body_html);
+        message.calendar_events = crate::models::calendar::events_in(&message, &html);
+        message.tickets = crate::models::ticket::parse(&html);
     }
     Ok(message)
 }
@@ -77,23 +78,20 @@ pub fn normalize_message_id(value: &str) -> &str {
     value.trim().trim_matches(['<', '>']).trim()
 }
 
-fn bodies(mail: &ParsedMail<'_>, message: &mut Message, inline: bool) -> Result<()> {
+fn bodies(mail: &mime::Part<'_>, message: &mut Message, inline: bool) -> Result<()> {
     if inline
         && matches!(
             mail.ctype.mimetype.as_str(),
             "image/png" | "image/jpeg" | "image/gif" | "image/webp"
         )
     {
-        let content_id = mail
-            .headers
-            .get_first_value("Content-ID")
-            .unwrap_or_default();
+        let content_id = mail.header("Content-ID").unwrap_or_default();
         let content_id = content_id
             .trim()
             .trim_matches(['<', '>'])
             .to_ascii_lowercase();
         if !content_id.is_empty() {
-            let bytes = mail.get_body_raw()?;
+            let bytes = mail.body_raw()?;
             let current: usize = message
                 .inline_media
                 .iter()
@@ -108,6 +106,7 @@ fn bodies(mail: &ParsedMail<'_>, message: &mut Message, inline: bool) -> Result<
             }
         }
     }
+    let disposition = mail.disposition();
     let mut calendar_rendered = false;
     if mail.ctype.mimetype == "text/calendar"
         || (mail.ctype.mimetype == "application/ics")
@@ -116,23 +115,24 @@ fn bodies(mail: &ParsedMail<'_>, message: &mut Message, inline: bool) -> Result<
             .params
             .get("name")
             .is_some_and(|name| name.to_ascii_lowercase().ends_with(".ics"))
-        || mail
-            .get_content_disposition()
+        || disposition
             .params
             .get("filename")
             .is_some_and(|name| name.to_ascii_lowercase().ends_with(".ics"))
     {
-        let events = crate::models::calendar::parse_ical(&mail.get_body()?);
+        let events = crate::models::calendar::parse_ical(&mail.body()?);
         calendar_rendered = !events.is_empty();
         message.calendar_events.extend(events);
     }
-    if let Some(name) = crate::models::attachment::name(mail) {
+    if let Some(name) =
+        crate::models::attachment::part_name(&disposition, &mail.ctype, &mail.headers)
+    {
         message.attachments.push(name);
         message
             .attachment_details
             .push(crate::models::attachment::Details {
                 mime: mail.ctype.mimetype.clone(),
-                size: mail.get_body_raw()?.len() as u64,
+                size: mail.body_len()? as u64,
                 calendar_rendered: Some(calendar_rendered),
             });
         return Ok(());
@@ -142,12 +142,12 @@ fn bodies(mail: &ParsedMail<'_>, message: &mut Message, inline: bool) -> Result<
             bodies(part, message, inline)?;
         }
     } else if mail.ctype.mimetype == "text/html" {
-        message.body_html.push_str(&mail.get_body()?);
+        message.body_html.push_str(&mail.body()?);
     } else if mail.ctype.mimetype == "text/plain" {
         if !message.body_text.is_empty() {
             message.body_text.push('\n');
         }
-        message.body_text.push_str(&mail.get_body()?);
+        message.body_text.push_str(&mail.body()?);
     }
     Ok(())
 }
@@ -341,5 +341,184 @@ mod tests {
             normalize_message_id("<other@example.com>"),
             header.message_id
         );
+    }
+
+    mod mailparse_reference {
+        use super::super::{normalize_message_id, unsubscribe};
+        use crate::models::{InlineMedia, Message};
+        use anyhow::Result;
+        use base64::Engine;
+        use mailparse::{MailHeaderMap, ParsedMail};
+
+        pub fn parse(
+            uid: u32,
+            bytes: &[u8],
+            is_read: bool,
+            body_loaded: bool,
+            inline: bool,
+        ) -> Result<Message> {
+            let mail = mailparse::parse_mail(bytes)?;
+            let header = |name| mail.headers.get_first_value(name).unwrap_or_default();
+            let date = header("Date");
+            let references = format!("{} {}", header("References"), header("In-Reply-To"));
+            let mut message = Message {
+                uid,
+                message_id: normalize_message_id(&header("Message-ID")).to_string(),
+                subject: header("Subject"),
+                sender: header("From"),
+                reply_to: header("Reply-To"),
+                recipients: header("To"),
+                cc: header("Cc"),
+                in_reply_to: {
+                    let value = header("In-Reply-To");
+                    let id = normalize_message_id(&value);
+                    (!id.is_empty()).then(|| id.to_owned())
+                },
+                timestamp: mailparse::dateparse(&date).unwrap_or_default(),
+                date,
+                references: references
+                    .split_whitespace()
+                    .map(|s| s.trim_matches(['<', '>']).to_string())
+                    .collect(),
+                is_read,
+                body_loaded,
+                unsubscribe: unsubscribe(
+                    &header("List-Unsubscribe"),
+                    &header("List-Unsubscribe-Post"),
+                ),
+                ..Default::default()
+            };
+            if body_loaded {
+                message.inline_media_loaded = inline;
+                bodies(&mail, &mut message, inline)?;
+                message.calendar_events = crate::models::calendar::events(&message);
+                message.tickets = crate::models::ticket::parse(&crate::models::html::Html::new(
+                    &message.body_html,
+                ));
+            }
+            Ok(message)
+        }
+
+        fn bodies(mail: &ParsedMail<'_>, message: &mut Message, inline: bool) -> Result<()> {
+            if inline
+                && matches!(
+                    mail.ctype.mimetype.as_str(),
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                )
+            {
+                let content_id = mail
+                    .headers
+                    .get_first_value("Content-ID")
+                    .unwrap_or_default();
+                let content_id = content_id
+                    .trim()
+                    .trim_matches(['<', '>'])
+                    .to_ascii_lowercase();
+                if !content_id.is_empty() {
+                    let bytes = mail.get_body_raw()?;
+                    let current: usize = message
+                        .inline_media
+                        .iter()
+                        .map(|part| part.data.len())
+                        .sum();
+                    if current + bytes.len() * 4 / 3 <= 8 * 1024 * 1024 {
+                        message.inline_media.push(InlineMedia {
+                            content_id,
+                            mime: mail.ctype.mimetype.clone(),
+                            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                        });
+                    }
+                }
+            }
+            let mut calendar_rendered = false;
+            if mail.ctype.mimetype == "text/calendar"
+                || (mail.ctype.mimetype == "application/ics")
+                || mail
+                    .ctype
+                    .params
+                    .get("name")
+                    .is_some_and(|name| name.to_ascii_lowercase().ends_with(".ics"))
+                || mail
+                    .get_content_disposition()
+                    .params
+                    .get("filename")
+                    .is_some_and(|name| name.to_ascii_lowercase().ends_with(".ics"))
+            {
+                let events = crate::models::calendar::parse_ical(&mail.get_body()?);
+                calendar_rendered = !events.is_empty();
+                message.calendar_events.extend(events);
+            }
+            if let Some(name) = crate::models::attachment::name(mail) {
+                message.attachments.push(name);
+                message
+                    .attachment_details
+                    .push(crate::models::attachment::Details {
+                        mime: mail.ctype.mimetype.clone(),
+                        size: mail.get_body_raw()?.len() as u64,
+                        calendar_rendered: Some(calendar_rendered),
+                    });
+                return Ok(());
+            }
+            if !mail.subparts.is_empty() {
+                for part in &mail.subparts {
+                    bodies(part, message, inline)?;
+                }
+            } else if mail.ctype.mimetype == "text/html" {
+                message.body_html.push_str(&mail.get_body()?);
+            } else if mail.ctype.mimetype == "text/plain" {
+                if !message.body_text.is_empty() {
+                    message.body_text.push('\n');
+                }
+                message.body_text.push_str(&mail.get_body()?);
+            }
+            Ok(())
+        }
+    }
+
+    fn assert_matches_mailparse(label: &str, raw: &[u8]) {
+        let serialize = |parsed: Result<Message>| {
+            parsed
+                .map(|message| serde_json::to_string(&message).unwrap())
+                .map_err(|error| format!("{error:#}"))
+        };
+        for (body_loaded, inline) in [(false, false), (true, false), (true, true)] {
+            assert_eq!(
+                serialize(parse_inner(5, raw, true, body_loaded, inline)),
+                serialize(mailparse_reference::parse(
+                    5,
+                    raw,
+                    true,
+                    body_loaded,
+                    inline
+                )),
+                "{label} (body_loaded: {body_loaded}, inline: {inline})"
+            );
+        }
+    }
+
+    #[test]
+    fn matches_mailparse_on_unusual_messages() {
+        for raw in [
+            &b"Subject: caf\xe9 =?ISO-8859-1?Q?Gr=FC=DFe?=\r\nFrom: =?windows-1251?B?z/Do4uXy?= <a@example.com>\r\nDate: Thu, 8 Oct 2026 13:00:00 +0200\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain; charset=koi8-r\r\nContent-Transfer-Encoding: 8bit\r\n\r\n\xf0\xd2\xc9\xd7\xc5\xd4\r\n--x\r\nContent-Type: text/html; charset=windows-1251\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<b>=CF=F0=E8=E2=E5=F2</b>=\r\n\r\n--x\r\nContent-Type: application/pdf; name=a.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\nJSVFT0YK\r\n--x\r\nContent-Type: image/png\r\nContent-ID: <Logo>\r\nContent-Transfer-Encoding: base64\r\n\r\naGVs bG8=\r\n--x--\r\n"[..],
+            b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Disposition: attachment; filename=bad.bin\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8\r\n--x--\r\n",
+            b"Content-Type: multipart/related; boundary=x\r\n\r\n--x\r\nContent-Type: image/gif\r\nContent-ID: <bad>\r\nContent-Transfer-Encoding: base64\r\n\r\nR0lGOD!h\r\n--x--\r\n",
+            b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/calendar\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nBEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:one\r\nDTSTART:20261002T120000Z\r\nSUMMARY:Lunch =E2=82=AC\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n--x--\r\n",
+            b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\n Overhang: x\r\n\r\nbody\r\n--x--\r\n",
+        ] {
+            assert_matches_mailparse(&String::from_utf8_lossy(raw), raw);
+        }
+    }
+
+    #[test]
+    #[ignore = "Parity check: set BREVLADA_CORPUS to a directory of .eml files"]
+    fn matches_mailparse_across_corpus() {
+        let corpus = std::env::var("BREVLADA_CORPUS").unwrap();
+        let mut count = 0;
+        for entry in std::fs::read_dir(corpus).unwrap() {
+            let path = entry.unwrap().path();
+            assert_matches_mailparse(&path.display().to_string(), &std::fs::read(&path).unwrap());
+            count += 1;
+        }
+        println!("{count} messages match");
     }
 }

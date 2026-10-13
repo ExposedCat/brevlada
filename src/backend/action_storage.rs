@@ -1,7 +1,7 @@
-use super::Storage;
+use super::{Storage, messages::Mailbox};
 use crate::models::{Message, sender_action::SenderAction};
 use anyhow::{Context, Result};
-use rusqlite::{TransactionBehavior, params};
+use rusqlite::params;
 
 impl Storage {
     pub fn confirm_action(
@@ -11,64 +11,69 @@ impl Storage {
         messages: &[Message],
         action: SenderAction,
     ) -> Result<()> {
-        let _write = self.1.lock()?;
-        let transaction = self
-            .0
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for message in messages {
-            let validity = message
-                .uid_validity
-                .context("Missing message UIDVALIDITY")?;
-            if let Some(read) = action.read_state() {
-                Self::record_read_state(
-                    &transaction,
-                    account,
-                    folder,
-                    Some(validity),
-                    message.uid,
-                    read,
-                )?;
-            } else if let Some(flagged) = action.flagged_state() {
-                let revision = Self::next_read_revision(&transaction)?;
-                transaction.execute(
-                    "UPDATE rust_messages SET data=json_set(data, '$.is_flagged', json(?5), '$.flag_revision', ?6)
-                     WHERE account_id=?1 AND folder=?2 AND uid=?3
-                     AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2)=?4",
-                    params![account, folder, message.uid, validity, if flagged { "true" } else { "false" }, revision],
-                )?;
-            } else {
-                transaction.execute(
-                    "INSERT OR IGNORE INTO rust_removed_messages VALUES (?1,?2,?3,?4)",
-                    params![account, folder, validity, message.uid],
-                )?;
-                transaction.execute(
-                    "DELETE FROM rust_messages WHERE account_id=?1 AND folder=?2 AND uid=?3
-                     AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2)=?4",
-                    params![account, folder, message.uid, validity],
-                )?;
+        self.write(|transaction| {
+            let mailbox = Mailbox::ensure(transaction, account, folder)?;
+            for message in messages {
+                let validity = message
+                    .uid_validity
+                    .context("Missing message UIDVALIDITY")?;
+                if let Some(read) = action.read_state() {
+                    Self::record_read_state(
+                        transaction,
+                        account,
+                        folder,
+                        Some(validity),
+                        message.uid,
+                        read,
+                    )?;
+                } else if let Some(flagged) = action.flagged_state() {
+                    let revision = Self::next_read_revision(transaction)?;
+                    transaction.execute(
+                        "UPDATE rust_headers SET is_flagged=?4, flag_revision=?5 WHERE id=?3
+                         AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2)=?6",
+                        params![account, folder, mailbox.id(message.uid), flagged, revision, validity],
+                    )?;
+                } else {
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO rust_removed_messages VALUES (?1,?2,?3,?4)",
+                        params![account, folder, validity, message.uid],
+                    )?;
+                    transaction.execute(
+                        "DELETE FROM rust_headers WHERE id=?3
+                         AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2)=?4",
+                        params![account, folder, mailbox.id(message.uid), validity],
+                    )?;
+                }
             }
-        }
-        transaction.commit()?;
-        Ok(())
+            Ok(())
+        })
     }
 
     pub(super) fn flags_since(
         connection: &rusqlite::Connection,
+        mailbox: Mailbox,
         account: &str,
         folder: &str,
         validity: u32,
         revision: i64,
     ) -> Result<std::collections::HashMap<u32, bool>> {
         let mut statement = connection.prepare(
-            "SELECT uid, json_extract(data, '$.is_flagged') FROM rust_messages
-             WHERE account_id=?1 AND folder=?2
-             AND (SELECT uid_validity FROM rust_folders WHERE account_id=?1 AND folder=?2)=?3
-             AND coalesce(json_extract(data, '$.flag_revision'), 0)>?4",
+            "SELECT uid, is_flagged FROM rust_headers WHERE id BETWEEN ?1 AND ?2
+             AND (SELECT uid_validity FROM rust_folders WHERE account_id=?3 AND folder=?4)=?5
+             AND flag_revision>?6",
         )?;
         Ok(statement
-            .query_map(params![account, folder, validity, revision], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_map(
+                params![
+                    mailbox.first(),
+                    mailbox.last(),
+                    account,
+                    folder,
+                    validity,
+                    revision
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
             .collect::<rusqlite::Result<_>>()?)
     }
 

@@ -2,38 +2,21 @@ use super::{
     Event,
     rsvp::{actions, web_url},
 };
-use scraper::{Html, Selector};
+use crate::models::{html::Html, schema};
 use serde_json::Value;
 
-pub fn parse(html: &str) -> Vec<Event> {
-    if !html.contains("Event") {
+pub fn parse(html: &Html) -> Vec<Event> {
+    if !html.source.contains("Event") {
         return Vec::new();
     }
-    let document = Html::parse_fragment(html);
     let mut events = Vec::new();
-    for script in document.select(&Selector::parse("script[type='application/ld+json']").unwrap()) {
-        if let Ok(value) = serde_json::from_str::<Value>(&script.text().collect::<String>()) {
-            collect(&value, &mut events);
-        }
-    }
-    for element in document.select(&Selector::parse("[itemscope][itemtype]").unwrap()) {
-        if element
-            .ancestors()
-            .filter_map(scraper::ElementRef::wrap)
-            .any(|parent| {
-                parent.value().attr("itemtype").is_some_and(|kind| {
-                    kind.split_whitespace().any(|kind| {
-                        matches!(
-                            kind.rsplit('/').next(),
-                            Some("EventReservation" | "InviteAction" | "RsvpAction")
-                        )
-                    })
-                })
-            })
-        {
-            continue;
-        }
-        collect(&crate::models::schema::microdata(&element), &mut events);
+    for value in schema::items(html, |kind| {
+        matches!(
+            kind.rsplit('/').next(),
+            Some("EventReservation" | "InviteAction" | "RsvpAction")
+        )
+    }) {
+        collect(&value, &mut events);
     }
     events
 }
@@ -161,9 +144,9 @@ mod tests {
 
     #[test]
     fn reservation_with_rsvp_and_event_subtype() {
-        let events = parse(
+        let events = parse(&Html::new(
             r#"<script type="application/ld+json">{"@graph":[{"@type":"EventReservation","reservationFor":{"@type":"MusicEvent","name":"Concert","startDate":"2026-10-02T19:00:00+02:00","location":{"name":"Hall","address":{"streetAddress":"Main Street","addressLocality":"Berlin"}},"potentialAction":[{"@type":"RsvpAction","rsvpResponse":"https://schema.org/RsvpResponseYes","target":{"urlTemplate":"https://example.com/yes"}},{"@type":"RsvpAction","name":"No","target":{"urlTemplate":"https://example.com/no","httpMethod":"POST"}}]}}]}</script>"#,
-        );
+        ));
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].location.as_deref(),
@@ -175,11 +158,16 @@ mod tests {
 
     #[test]
     fn microdata_keeps_nested_scopes_and_deduplicates() {
-        let events = parse(
+        let events = parse(&Html::new(
             r#"<div itemscope itemtype="https://schema.org/EventReservation"><div itemprop="reservationFor" itemscope itemtype="https://schema.org/Event"><meta itemprop="name" content="Lunch"><meta itemprop="startDate" content="2026-10-02"><div itemprop="potentialAction" itemscope itemtype="https://schema.org/RsvpAction"><link itemprop="target" href="https://example.com/rsvp"></div></div></div>"#,
-        );
+        ));
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].rsvp[0].url, "https://example.com/rsvp");
-        assert!(parse("<script type='application/ld+json'>{broken}</script>").is_empty());
+        assert!(
+            parse(&Html::new(
+                "<script type='application/ld+json'>{broken}</script>"
+            ))
+            .is_empty()
+        );
     }
 }

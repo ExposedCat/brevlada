@@ -74,23 +74,11 @@ impl Filters {
 
 /// Search the visible HTML text too, including older HTML-only cache entries.
 pub fn html_text(html: &str) -> String {
-    let document = scraper::Html::parse_document(html);
-    let mut text = String::new();
-    // Iterative traversal also handles deeply nested mail without using the stack.
-    let mut pending = vec![Some(*document.root_element())];
-    while let Some(node) = pending.pop() {
-        let Some(node) = node else {
-            text.push(' ');
-            continue;
-        };
-        if let Some(value) = node.value().as_text() {
-            text.push_str(value);
-        } else if let Some(element) = scraper::ElementRef::wrap(node) {
-            let name = element.value().name();
-            if matches!(name, "script" | "style" | "head") {
-                continue;
-            }
-            let block = matches!(
+    let text = super::html::layout_text(
+        scraper::Html::parse_document(html).root_element(),
+        |name| matches!(name, "script" | "style" | "head"),
+        |name| {
+            matches!(
                 name,
                 "p" | "div"
                     | "br"
@@ -109,15 +97,35 @@ pub fn html_text(html: &str) -> String {
                     | "h5"
                     | "h6"
                     | "pre"
-            );
-            if block {
-                text.push(' ');
-                pending.push(None);
-            }
-            pending.extend(element.children().rev().map(Some));
-        }
-    }
+            )
+        },
+    );
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `str::to_lowercase`, which leaves its ASCII fast path for good at the first other
+/// character, while mail is mostly ASCII with an occasional å or é.
+pub fn lowercase(text: &str) -> String {
+    // Only a capital sigma lowercases differently depending on its neighbours.
+    if text.contains('Σ') {
+        return text.to_lowercase();
+    }
+    let mut lower = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let (ascii, other) = rest.split_at(
+            rest.bytes()
+                .position(|byte| !byte.is_ascii())
+                .unwrap_or(rest.len()),
+        );
+        let start = lower.len();
+        lower.push_str(ascii);
+        lower[start..].make_ascii_lowercase();
+        let mut chars = other.chars();
+        lower.extend(chars.next().into_iter().flat_map(char::to_lowercase));
+        rest = chars.as_str();
+    }
+    lower
 }
 
 pub fn fields(message: &Message) -> [std::borrow::Cow<'_, str>; 7] {
@@ -162,6 +170,37 @@ mod tests {
         filters.sources[5] = true;
         assert!(filters.matches_fields(&fields, "plain needle"));
         assert!(filters.matches_fields(&fields, "html needle"));
+    }
+
+    #[test]
+    fn lowercase_matches_the_standard_library() {
+        let parts = [
+            "",
+            "A",
+            "z",
+            " ",
+            "Σ",
+            "ΑΣ ",
+            "Ö",
+            "İ",
+            "\u{212A}",
+            "ẞ",
+            "ǅ",
+            "é",
+            "🎉",
+            "Straße",
+            "ΟΔΟΣ",
+            "Ⅻ",
+            "\u{10400}",
+        ];
+        for a in parts {
+            for b in parts {
+                for c in parts {
+                    let text = [a, b, c, "Tail"].concat();
+                    assert_eq!(lowercase(&text), text.to_lowercase(), "{text:?}");
+                }
+            }
+        }
     }
 
     #[test]

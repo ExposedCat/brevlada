@@ -200,7 +200,7 @@ impl State {
                     key == *sender || own.as_deref() == Some(key.as_str())
                 })
                 .collect();
-            let mut groups = models::threads(&messages, "");
+            let mut groups = models::threads(messages, "");
             groups.retain(|group| {
                 group
                     .iter()
@@ -208,7 +208,7 @@ impl State {
             });
             groups
         } else {
-            models::senders::groups(&messages, "")
+            models::senders::groups(messages, "")
         };
         self.publish_search_groups(threads, &query, groups, Vec::new());
     }

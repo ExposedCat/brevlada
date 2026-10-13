@@ -1,18 +1,54 @@
-use crate::models::{Message, calendar};
-use scraper::{ElementRef, Html, Node};
+use crate::models::{
+    Message, calendar,
+    html::{Html, layout_text},
+};
 
-pub fn message(message: &Message) -> String {
+pub fn message(message: &Message, html: &Html) -> String {
     if let Some(preview) = &message.list_preview {
         return preview.clone();
     }
-    if calendar::is_reply(message) {
+    if calendar::is_reply_in(message, html) {
         return String::new();
     }
     let text = if message.body_text.trim().is_empty() {
-        let document = Html::parse_document(&message.body_html);
-        let mut text = String::new();
-        append_text(document.root_element(), &mut text);
-        text
+        layout_text(
+            html.document().root_element(),
+            |name| matches!(name, "head" | "script" | "style" | "template"),
+            |name| {
+                matches!(
+                    name,
+                    "address"
+                        | "article"
+                        | "aside"
+                        | "blockquote"
+                        | "br"
+                        | "div"
+                        | "dl"
+                        | "dt"
+                        | "dd"
+                        | "footer"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "h6"
+                        | "header"
+                        | "hr"
+                        | "li"
+                        | "main"
+                        | "ol"
+                        | "p"
+                        | "pre"
+                        | "section"
+                        | "table"
+                        | "td"
+                        | "th"
+                        | "tr"
+                        | "ul"
+                )
+            },
+        )
     } else {
         message.body_text.chars().take(4096).collect()
     };
@@ -30,67 +66,17 @@ pub fn thread(messages: &[Message]) -> String {
     messages
         .iter()
         .find(|message| !calendar::is_reply(message))
-        .map(message)
+        .map(|found| message(found, &Html::new(&found.body_html)))
         .unwrap_or_default()
-}
-
-fn append_text(element: ElementRef<'_>, text: &mut String) {
-    if matches!(
-        element.value().name(),
-        "head" | "script" | "style" | "template"
-    ) {
-        return;
-    }
-    let block = matches!(
-        element.value().name(),
-        "address"
-            | "article"
-            | "aside"
-            | "blockquote"
-            | "br"
-            | "div"
-            | "dl"
-            | "dt"
-            | "dd"
-            | "footer"
-            | "h1"
-            | "h2"
-            | "h3"
-            | "h4"
-            | "h5"
-            | "h6"
-            | "header"
-            | "hr"
-            | "li"
-            | "main"
-            | "ol"
-            | "p"
-            | "pre"
-            | "section"
-            | "table"
-            | "td"
-            | "th"
-            | "tr"
-            | "ul"
-    );
-    if block {
-        text.push(' ');
-    }
-    for child in element.children() {
-        match child.value() {
-            Node::Text(value) => text.push_str(value),
-            Node::Element(_) => append_text(ElementRef::wrap(child).unwrap(), text),
-            _ => {}
-        }
-    }
-    if block {
-        text.push(' ');
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview(message: &Message) -> String {
+        super::message(message, &Html::new(&message.body_html))
+    }
 
     #[test]
     fn skips_rsvp_bodies_before_the_invitation_or_body_loads() {
@@ -105,7 +91,7 @@ mod tests {
         };
         for loaded in [false, true] {
             reply.body_loaded = loaded;
-            assert_eq!(message(&reply), "");
+            assert_eq!(preview(&reply), "");
             assert_eq!(thread(std::slice::from_ref(&reply)), "");
             assert_eq!(
                 thread(&[
@@ -119,20 +105,20 @@ mod tests {
             );
         }
         reply.is_draft = true;
-        assert_eq!(message(&reply), "Accepted: Lunch");
+        assert_eq!(preview(&reply), "Accepted: Lunch");
         reply.is_draft = false;
         reply.calendar_events.push(calendar::Event {
             method: Some("REQUEST".into()),
             name: "Another event".into(),
             ..Default::default()
         });
-        assert_eq!(message(&reply), "Accepted: Lunch");
+        assert_eq!(preview(&reply), "Accepted: Lunch");
     }
 
     #[test]
     fn prefers_plain_text_and_collapses_whitespace() {
         assert_eq!(
-            message(&Message {
+            preview(&Message {
                 body_text: "  Hello\n\tworld <3  ".into(),
                 body_html: "<p>Different text</p>".into(),
                 ..Default::default()
@@ -143,7 +129,7 @@ mod tests {
 
     #[test]
     fn extracts_html_text_without_metadata_or_tags() {
-        assert_eq!(message(&Message {
+        assert_eq!(preview(&Message {
             body_text: " \n ".into(),
             body_html: "<head><title>Title</title><style>p { color: red }</style></head><body><!-- comment --><script>ignored()</script><template>hidden</template><p data-value='>'>Hello <b>world</b>! &amp; &#x1F600;</p><div>Next<br>line&nbsp;here</div></body>".into(),
             ..Default::default()
@@ -152,9 +138,9 @@ mod tests {
 
     #[test]
     fn handles_empty_and_truncates_unicode() {
-        assert_eq!(message(&Message::default()), "");
+        assert_eq!(preview(&Message::default()), "");
         assert_eq!(
-            message(&Message {
+            preview(&Message {
                 body_text: "é".repeat(161),
                 ..Default::default()
             }),

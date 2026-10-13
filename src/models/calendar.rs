@@ -8,6 +8,7 @@ mod rsvp;
 mod scheduling;
 mod schema;
 
+use super::html::Html;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -79,10 +80,15 @@ pub use scheduling::{snapshot, status_label};
 pub use schema::parse as parse_html;
 
 pub fn is_reply(message: &super::Message) -> bool {
+    is_reply_in(message, &Html::new(&message.body_html))
+}
+
+/// [`is_reply`] for a message whose body is already being parsed.
+pub fn is_reply_in(message: &super::Message, html: &Html) -> bool {
     if message.is_draft {
         return false;
     }
-    let events = events(message);
+    let events = events_in(message, html);
     !events.is_empty()
         && events
             .iter()
@@ -90,6 +96,11 @@ pub fn is_reply(message: &super::Message) -> bool {
 }
 
 pub fn events(message: &super::Message) -> Vec<Event> {
+    events_in(message, &Html::new(&message.body_html))
+}
+
+/// [`events`] for a message whose body is already being parsed.
+pub fn events_in(message: &super::Message, html: &Html) -> Vec<Event> {
     if message.display_prepared {
         return message.calendar_events.clone();
     }
@@ -109,7 +120,7 @@ pub fn events(message: &super::Message) -> Vec<Event> {
             events.push(hydrated);
         }
     }
-    for event in parse_html(&message.body_html) {
+    for event in parse_html(html) {
         if let Some(old) = events.iter_mut().find(|old| old.same_event(&event)) {
             for action in event.rsvp {
                 if !old.rsvp.contains(&action) {

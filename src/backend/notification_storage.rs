@@ -1,4 +1,7 @@
-use super::Storage;
+use super::{
+    Storage,
+    messages::{self, Mailbox},
+};
 use crate::models::Message;
 use anyhow::Result;
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
@@ -15,6 +18,7 @@ impl Storage {
     }
     pub(super) fn observe_notifications(
         transaction: &Transaction<'_>,
+        mailbox: Mailbox,
         account: &str,
         folder: &str,
         validity: u32,
@@ -32,8 +36,8 @@ impl Storage {
             Some((epoch, uid)) if epoch == validity => Some(uid),
             Some(_) => None,
             None if previous == Some(validity) => transaction.query_row(
-                "SELECT max(uid) FROM rust_messages WHERE account_id=?1 AND folder=?2",
-                params![account, folder],
+                "SELECT max(uid) FROM rust_headers WHERE id BETWEEN ?1 AND ?2",
+                params![mailbox.first(), mailbox.last()],
                 |row| row.get::<_, Option<u32>>(0),
             )?,
             None => None,
@@ -88,19 +92,23 @@ impl Storage {
         folder: &str,
         validity: u32,
     ) -> Result<Vec<Message>> {
-        let mut statement = self.0.prepare(
-            "SELECT m.data FROM rust_notification_pending n
-             JOIN rust_messages m ON m.account_id=n.account_id AND m.folder=n.folder AND m.uid=n.uid
-             JOIN rust_folders f ON f.account_id=n.account_id AND f.folder=n.folder AND f.uid_validity=n.uid_validity
-             WHERE n.account_id=?1 AND n.folder=?2 AND n.uid_validity=?3
-             AND NOT coalesce(json_extract(m.data,'$.is_read'),0)
-             AND NOT coalesce(json_extract(m.data,'$.is_draft'),0)
-             ORDER BY n.uid DESC",
-        )?;
-        let rows = statement.query_map(params![account, folder, validity], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+        let Some(mailbox) = Mailbox::find(&self.0, account, folder)? else {
+            return Ok(Vec::new());
+        };
+        let mut statement = self.0.prepare(concat!(
+            messages::select!(),
+            " WHERE h.id IN (SELECT ?1 + n.uid FROM rust_notification_pending n
+             JOIN rust_folders f ON f.account_id=n.account_id AND f.folder=n.folder
+             AND f.uid_validity=n.uid_validity
+             WHERE n.account_id=?2 AND n.folder=?3 AND n.uid_validity=?4)
+             AND NOT h.is_read AND NOT h.is_draft ORDER BY h.uid DESC"
+        ))?;
+        Ok(statement
+            .query_map(
+                params![mailbox.first(), account, folder, validity],
+                messages::decode,
+            )?
+            .collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn acknowledge_notifications(
