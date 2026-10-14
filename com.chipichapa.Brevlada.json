@@ -1,5 +1,5 @@
 {
-    "app-id": "io.github.ExposedCat.Brevlada",
+    "app-id": "com.chipichapa.Brevlada",
     "runtime": "org.gnome.Platform",
     "runtime-version": "50",
     "sdk": "org.gnome.Sdk",
@@ -29,11 +29,11 @@
             "build-commands": [
                 "cargo build --frozen --release",
                 "install -Dm755 target/release/brevlada /app/bin/brevlada",
-                "install -Dm644 data/io.github.ExposedCat.Brevlada.service /app/share/dbus-1/services/io.github.ExposedCat.Brevlada.service",
-                "install -Dm644 data/io.github.ExposedCat.Brevlada.desktop /app/share/applications/io.github.ExposedCat.Brevlada.desktop",
-                "install -Dm644 data/io.github.ExposedCat.Brevlada.metainfo.xml /app/share/metainfo/io.github.ExposedCat.Brevlada.metainfo.xml",
-                "install -Dm644 resources/brevlada-mail-read-symbolic.svg /app/share/icons/hicolor/scalable/apps/io.github.ExposedCat.Brevlada.svg",
-                "install -Dm644 resources/brevlada-mail-read-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.ExposedCat.Brevlada-symbolic.svg"
+                "install -Dm644 data/com.chipichapa.Brevlada.service /app/share/dbus-1/services/com.chipichapa.Brevlada.service",
+                "install -Dm644 data/com.chipichapa.Brevlada.desktop /app/share/applications/com.chipichapa.Brevlada.desktop",
+                "install -Dm644 data/com.chipichapa.Brevlada.metainfo.xml /app/share/metainfo/com.chipichapa.Brevlada.metainfo.xml",
+                "install -Dm644 resources/com.chipichapa.Brevlada.svg /app/share/icons/hicolor/scalable/apps/com.chipichapa.Brevlada.svg",
+                "install -Dm644 resources/brevlada-mail-read-symbolic.svg /app/share/icons/hicolor/symbolic/apps/com.chipichapa.Brevlada-symbolic.svg"
             ],
             "sources": [
                 {

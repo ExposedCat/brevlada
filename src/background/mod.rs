@@ -133,7 +133,7 @@ mod diagnostics {
     fn opening_window_ends_login_only_hold_and_closing_preference_is_independent() {
         gtk::init().unwrap();
         let app = adw::Application::builder()
-            .application_id("io.github.ExposedCat.Brevlada.BackgroundLifetimeDiagnostics")
+            .application_id("com.chipichapa.Brevlada.BackgroundLifetimeDiagnostics")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(gio::Cancellable::NONE).unwrap();

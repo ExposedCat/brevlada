@@ -37,7 +37,7 @@ mod diagnostics {
     fn login_command_does_not_activate_or_create_a_window() {
         gtk::init().unwrap();
         let app = adw::Application::builder()
-            .application_id("io.github.ExposedCat.Brevlada.StartupDiagnostics")
+            .application_id("com.chipichapa.Brevlada.StartupDiagnostics")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
         let activated = Rc::new(Cell::new(false));

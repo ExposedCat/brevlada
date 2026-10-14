@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.ExposedCat.Brevlada</id>
+  <id>com.chipichapa.Brevlada</id>
   <metadata_license>CC0-1.0</metadata_license>
   <name>Brevlada</name>
   <summary>Read and send mail with GNOME Online Accounts</summary>
@@ -10,10 +10,10 @@
     <p>Messages are cached locally for browsing while offline. HTML messages
     are displayed with remote media disabled until you choose to load it.</p>
   </description>
-  <launchable type="desktop-id">io.github.ExposedCat.Brevlada.desktop</launchable>
+  <launchable type="desktop-id">com.chipichapa.Brevlada.desktop</launchable>
   <url type="homepage">https://github.com/ExposedCat/brevlada</url>
   <url type="bugtracker">https://github.com/ExposedCat/brevlada/issues</url>
-  <developer id="io.github.exposedcat">
+  <developer id="com.chipichapa">
     <name>ExposedCat</name>
   </developer>
   <provides>

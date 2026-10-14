@@ -3,7 +3,7 @@ use gtk::glib;
 
 pub fn set(enabled: bool) -> Result<()> {
     let directory = glib::user_config_dir().join("autostart");
-    let path = directory.join("io.github.ExposedCat.Brevlada.desktop");
+    let path = directory.join("com.chipichapa.Brevlada.desktop");
     if !enabled {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
@@ -33,7 +33,7 @@ fn entry(executable: &str) -> glib::KeyFile {
         "Exec",
         &format!("\"{executable}\" --background"),
     );
-    desktop.set_string("Desktop Entry", "Icon", "io.github.ExposedCat.Brevlada");
+    desktop.set_string("Desktop Entry", "Icon", "com.chipichapa.Brevlada");
     desktop.set_boolean("Desktop Entry", "Terminal", false);
     desktop
 }

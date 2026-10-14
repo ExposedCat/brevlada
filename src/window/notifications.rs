@@ -183,7 +183,7 @@ mod diagnostics {
         gtk::init().unwrap();
         adw::init().unwrap();
         let app = adw::Application::builder()
-            .application_id("io.github.ExposedCat.Brevlada.NotificationFeedbackDiagnostics")
+            .application_id("com.chipichapa.Brevlada.NotificationFeedbackDiagnostics")
             .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(gtk::gio::Cancellable::NONE).unwrap();
@@ -379,7 +379,7 @@ mod diagnostics {
     fn notification_selects_its_message_in_the_full_folder_and_sender_history() {
         gtk::init().unwrap();
         let app = adw::Application::builder()
-            .application_id("io.github.ExposedCat.Brevlada.NotificationNavigationDiagnostics")
+            .application_id("com.chipichapa.Brevlada.NotificationNavigationDiagnostics")
             .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(gtk::gio::Cancellable::NONE).unwrap();

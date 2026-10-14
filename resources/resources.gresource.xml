@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
+  <gresource prefix="/com/chipichapa/Brevlada/icons/scalable/apps/">
+    <file preprocess="xml-stripblanks">com.chipichapa.Brevlada.svg</file>
+  </gresource>
   <gresource prefix="/org/gtk/example/icons/scalable/actions/">
     <file preprocess="xml-stripblanks">shoe-box-symbolic.svg</file>
     <file preprocess="xml-stripblanks">brevlada-mail-read-symbolic.svg</file>

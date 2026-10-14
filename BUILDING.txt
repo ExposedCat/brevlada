@@ -14,7 +14,7 @@ Verify: cargo test && cargo fmt --check && cargo clippy --all-targets -- -D warn
 
 Flatpak
 
-Application ID: io.github.ExposedCat.Brevlada
+Application ID: com.chipichapa.Brevlada
 Runtime: org.gnome.Platform 50, with org.gnome.Sdk 50 for builds and the
 org.freedesktop.Sdk.Extension.rust-stable 25.08 build extension.
 
@@ -22,16 +22,16 @@ Install build dependencies:
   flatpak install --user flathub org.gnome.Platform//50 org.gnome.Sdk//50 org.freedesktop.Sdk.Extension.rust-stable//25.08
 
 Build a local repository and distributable bundle from the current source tree:
-  flatpak-builder --user --force-clean --repo=.flatpak/repo .flatpak/build io.github.ExposedCat.Brevlada.json
-  flatpak build-bundle .flatpak/repo .flatpak/Brevlada.flatpak io.github.ExposedCat.Brevlada --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+  flatpak-builder --user --force-clean --repo=.flatpak/repo .flatpak/build com.chipichapa.Brevlada.json
+  flatpak build-bundle .flatpak/repo .flatpak/Brevlada.flatpak com.chipichapa.Brevlada --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
 
 If the build host cannot mount FUSE filesystems, add --disable-rofiles-fuse to
 flatpak-builder. This changes its build cache handling, not sandbox permissions.
 
 Install, inspect permissions, and run:
   flatpak install --user .flatpak/Brevlada.flatpak
-  flatpak info --show-permissions io.github.ExposedCat.Brevlada
-  flatpak run io.github.ExposedCat.Brevlada
+  flatpak info --show-permissions com.chipichapa.Brevlada
+  flatpak run com.chipichapa.Brevlada
 
 The manifest grants Wayland, X11 only as a fallback when Wayland is unavailable,
 GPU rendering, network access for IMAP/SMTP and avatar downloads, and access to
@@ -45,7 +45,7 @@ or host-command permissions are needed. The Rust extension is build-only.
 
 GNOME Online Accounts and xdg-desktop-portal must be available on the host.
 The Flatpak cache is separate from the native cache, at
-~/.var/app/io.github.ExposedCat.Brevlada/data/brevlada/emails.db. It is created
+~/.var/app/com.chipichapa.Brevlada/data/brevlada/emails.db. It is created
 automatically without a filesystem permission. Existing mail is synced again;
 the native cache is not imported from outside the sandbox.
 

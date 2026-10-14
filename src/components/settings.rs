@@ -124,7 +124,7 @@ mod tests {
     fn background_switch_uses_application_actions() {
         gtk::init().unwrap();
         let app = adw::Application::builder()
-            .application_id("io.github.ExposedCat.Brevlada.BackgroundDiagnostics")
+            .application_id("com.chipichapa.Brevlada.BackgroundDiagnostics")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(gio::Cancellable::NONE).unwrap();

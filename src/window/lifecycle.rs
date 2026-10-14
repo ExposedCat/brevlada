@@ -82,7 +82,7 @@ mod diagnostics {
     fn reopened_windows_reject_previous_window_results() {
         gtk::init().unwrap();
         let app = adw::Application::builder()
-            .application_id("io.github.ExposedCat.Brevlada.LifecycleDiagnostics")
+            .application_id("com.chipichapa.Brevlada.LifecycleDiagnostics")
             .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(gtk::gio::Cancellable::NONE).unwrap();

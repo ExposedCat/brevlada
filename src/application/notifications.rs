@@ -68,9 +68,7 @@ impl Delivery {
         if let Some(image) = self.sender.as_ref().and_then(|sender| icons.get(sender)) {
             notification.set_icon(&gio::BytesIcon::new(&glib::Bytes::from(image.as_slice())));
         } else {
-            notification.set_icon(&gio::ThemedIcon::new(
-                "io.github.ExposedCat.Brevlada-symbolic",
-            ));
+            notification.set_icon(&gio::ThemedIcon::new("com.chipichapa.Brevlada-symbolic"));
         }
         let target = (account, validity, self.uid).to_variant();
         notification.set_default_action_and_target_value("app.open-message", Some(&target));
@@ -256,7 +254,7 @@ mod tests {
             )
             .unwrap();
         let app = adw::Application::builder()
-            .application_id("io.github.ExposedCat.Brevlada.NotificationActionsDiagnostic")
+            .application_id("com.chipichapa.Brevlada.NotificationActionsDiagnostic")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(gio::Cancellable::NONE).unwrap();
@@ -351,7 +349,7 @@ mod tests {
                 app_icon
                     .names()
                     .iter()
-                    .any(|name| name == "io.github.ExposedCat.Brevlada-symbolic")
+                    .any(|name| name == "com.chipichapa.Brevlada-symbolic")
             );
         }
         assert_eq!(

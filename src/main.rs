@@ -18,7 +18,7 @@ use std::{
 fn main() -> glib::ExitCode {
     gio::resources_register_include!("brevlada.gresource").expect("Bundled resources are invalid");
     let app = adw::Application::builder()
-        .application_id("io.github.ExposedCat.Brevlada")
+        .application_id("com.chipichapa.Brevlada")
         .build();
     let engine = Rc::new(RefCell::new(None::<Rc<application::Engine>>));
     let background = Rc::new(RefCell::new(None::<Rc<background::Background>>));

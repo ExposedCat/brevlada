@@ -1,3 +1,3 @@
 [D-BUS Service]
-Name=io.github.ExposedCat.Brevlada
+Name=com.chipichapa.Brevlada
 Exec=/app/bin/brevlada --gapplication-service
