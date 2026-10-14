@@ -624,10 +624,14 @@ fn assert_parity(html: &str) {
     let rendered = components::html::document(&message, false, false);
     let body = rendered
         .split_once("data-hide-quotes='false'>")
-        .and_then(|(_, rest)| rest.rsplit_once("</div><style>"))
+        .and_then(|(_, rest)| rest.rsplit_once("</div></body></html>"))
         .unwrap()
         .0;
-    assert_eq!(body, reference::normalized_html(html), "render of {html:?}");
+    assert_eq!(
+        body,
+        reference::normalized_content(html),
+        "render of {html:?}"
+    );
     assert_eq!(
         components::html::has_remote_media(&message),
         reference::has_remote_media(html),
@@ -772,6 +776,25 @@ mod reference {
             result.push_str("</div>");
         }
         result
+    }
+
+    pub fn normalized_content(source: &str) -> String {
+        let normalized = normalized_html(source);
+        let document = Html::parse_document(source);
+        let styles = Selector::parse("head style").unwrap();
+        let after_styles: usize = document
+            .select(&styles)
+            .map(|style| style.html().len())
+            .sum();
+        let Some(div) = normalized[after_styles..]
+            .find("<div")
+            .map(|index| index + after_styles)
+        else {
+            return String::new();
+        };
+        let start = div + normalized[div..].find('>').unwrap() + 1;
+        let end = normalized.rfind("</div>").unwrap();
+        normalized[start..end].to_owned()
     }
 
     pub fn preview(html: &str) -> String {

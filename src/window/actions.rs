@@ -97,6 +97,7 @@ impl State {
         self.refresh_account_title();
         self.next_message.set(None);
         self.search_message.borrow_mut().take();
+        self.notification_message.borrow_mut().take();
         self.search_sender.borrow_mut().take();
         self.sender_pane.borrow_mut().select(None);
         self.back.set_visible(false);
@@ -140,8 +141,25 @@ impl State {
     }
 
     pub(super) fn show_thread(self: &Rc<Self>, group: Vec<Message>) {
+        self.notification_message.borrow_mut().take();
         self.search_message.borrow_mut().take();
         self.next_message.set(None);
+        let opened = self.open_group.borrow();
+        if !group.is_empty()
+            && group.len() == opened.len()
+            && group.iter().all(|message| {
+                opened.iter().any(|old| {
+                    old.uid == message.uid
+                        && old.message_id == message.message_id
+                        && old.uid_validity == message.uid_validity
+                })
+            })
+        {
+            drop(opened);
+            self.load_expanded();
+            return;
+        }
+        drop(opened);
         self.new_selection();
         let selected: Vec<_> = group.iter().map(|message| message.uid).collect();
         if *self.selected.borrow() != selected {
@@ -163,7 +181,6 @@ impl State {
         self.request_related_sent();
         self.render_conversation();
         self.refresh_open_styles();
-        self.viewer_reveal.play();
     }
 
     pub(super) fn request_related_sent(self: &Rc<Self>) {

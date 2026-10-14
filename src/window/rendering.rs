@@ -228,6 +228,9 @@ impl State {
         if self.search_running[usize::from(threads)].get()
             && self.search_preserve_results[usize::from(threads)].get()
         {
+            if !threads {
+                self.preserve_sender_matches(&mut groups, &locations);
+            }
             let present: HashSet<_> = groups
                 .iter()
                 .enumerate()
@@ -491,14 +494,11 @@ impl State {
                 let Some(replacement) = &replacement else {
                     continue;
                 };
-                let old = row.messages[index].list_header(threads);
-                let changed = !same_row(
-                    std::slice::from_ref(&old),
-                    std::slice::from_ref(replacement),
-                    threads,
-                );
+                let previous = row.messages.clone();
+                let search_match = row.messages[index].search_match;
                 row.messages[index] = replacement.clone();
-                row.messages[index].search_match = old.search_match;
+                row.messages[index].search_match = search_match;
+                let changed = !same_row(&previous, &row.messages, threads);
                 let updated = changed.then(|| glib::BoxedAnyObject::new(row.clone()));
                 drop(row);
                 if let Some(updated) = updated {

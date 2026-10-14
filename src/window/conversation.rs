@@ -1,6 +1,45 @@
 use super::*;
 
 impl State {
+    pub(super) fn refresh_open_thread(self: &Rc<Self>) {
+        let group = ui::virtual_list::selected(&self.thread_list)
+            .and_then(|position| ui::virtual_list::item(&self.thread_list, position))
+            .filter(|row| {
+                row.messages.iter().any(|message| {
+                    self.open_group.borrow().iter().any(|opened| {
+                        opened.uid == message.uid && opened.message_id == message.message_id
+                    })
+                })
+            })
+            .map(|row| row.messages);
+        if let Some(group) = group {
+            let opened = self.open_group.borrow();
+            if group.len() == opened.len()
+                && group.iter().all(|message| {
+                    opened.iter().any(|old| {
+                        old.uid == message.uid
+                            && old.message_id == message.message_id
+                            && old.uid_validity == message.uid_validity
+                    })
+                })
+            {
+                return;
+            }
+            drop(opened);
+            self.deferred_read_sort.borrow_mut().extend(
+                group
+                    .iter()
+                    .filter(|message| !message.is_read)
+                    .map(|message| message.uid),
+            );
+            *self.selected.borrow_mut() = group.iter().map(|message| message.uid).collect();
+            *self.open_group.borrow_mut() = group;
+            self.request_related_sent();
+            self.render_conversation();
+            self.refresh_open_styles();
+        }
+    }
+
     pub(super) fn render_conversation(self: &Rc<Self>) {
         // Sort borrowed metadata first. Opening a long conversation must not copy
         // or create widgets for every cached body before the first card appears.

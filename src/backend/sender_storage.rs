@@ -104,7 +104,18 @@ impl Storage {
             if message.tickets.is_empty() {
                 message.tickets = messages::json(row, 30)?;
             }
-            messages::append_html_text(&mut message.body_text, row.get_ref(29)?.as_str()?);
+            let html = row.get_ref(29)?.as_str()?;
+            if !html.is_empty() {
+                message.list_preview = Some(if crate::models::calendar::is_reply(&message) {
+                    String::new()
+                } else {
+                    crate::components::preview::short_text(html)
+                });
+            } else if !message.body_text.is_empty() {
+                message.list_preview =
+                    Some(crate::components::preview::short_text(&message.body_text));
+            }
+            messages::append_html_text(&mut message.body_text, html);
             Ok(message)
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

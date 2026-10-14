@@ -4,6 +4,7 @@ use webkit6::prelude::*;
 
 const WORLD: &str = "brevlada-layout";
 const SCRIPT: &str = concat!(
+    include_str!("html_viewer/spacing.js"),
     include_str!("html_viewer/text_quotes.js"),
     include_str!("html_viewer/quotes.js"),
     include_str!("html_viewer/layout.js"),

@@ -197,12 +197,14 @@ fn publish_notifications(
 ) -> Result<()> {
     let messages = storage.pending_notifications(&job.account.email, &job.folder, validity)?;
     if !messages.is_empty() {
-        events.send_blocking(Event::NewMail(
-            job.account.email.clone(),
-            job.folder.clone(),
+        let icons = storage.notification_icons(&messages);
+        events.send_blocking(Event::NewMail {
+            account: job.account.email.clone(),
+            folder: job.folder.clone(),
             validity,
             messages,
-        ))?;
+            icons,
+        })?;
     }
     Ok(())
 }

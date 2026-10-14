@@ -52,6 +52,10 @@ pub fn message(message: &Message, html: &Html) -> String {
     } else {
         message.body_text.chars().take(4096).collect()
     };
+    short_text(&text)
+}
+
+pub(crate) fn short_text(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut characters = text.chars();
     let mut preview: String = characters.by_ref().take(160).collect();

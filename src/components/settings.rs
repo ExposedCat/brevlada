@@ -64,12 +64,18 @@ impl SettingsWindow {
             .icon_name("preferences-system-symbolic")
             .build();
         let background = adw::SwitchRow::builder()
-            .title("Background service")
-            .subtitle("Keep checking for new mail when the window is closed")
+            .title("Keep checking when the window is closed")
+            .subtitle("Continue checking for new mail and sending notifications")
             .action_name("app.background")
             .build();
         let group = adw::PreferencesGroup::new();
         group.add(&background);
+        let autostart = adw::SwitchRow::builder()
+            .title("Start at login")
+            .subtitle("Start checking for mail without opening a window")
+            .action_name("app.autostart")
+            .build();
+        group.add(&autostart);
         general.add(&group);
         sections.add(&section(
             &window,
@@ -123,20 +129,37 @@ mod tests {
             .build();
         app.register(gio::Cancellable::NONE).unwrap();
         let action = gio::SimpleAction::new_stateful("background", None, &false.to_variant());
+        let autostart = gio::SimpleAction::new_stateful("autostart", None, &true.to_variant());
         app.add_action(&action);
+        app.add_action(&autostart);
         let parent = adw::ApplicationWindow::new(&app);
         let settings = SettingsWindow::new(&parent, false);
         let overview = settings.window.visible_page().unwrap();
         let section = find_row(overview.upcast(), "General").unwrap();
         section.emit_by_name::<()>("activated", &[]);
-        let switch = find_row(settings.window.clone().upcast(), "Background service")
+        let switch = find_row(
+            settings.window.clone().upcast(),
+            "Keep checking when the window is closed",
+        )
+        .unwrap()
+        .downcast::<adw::SwitchRow>()
+        .unwrap();
+        assert!(!switch.is_active());
+        let startup_switch = find_row(settings.window.clone().upcast(), "Start at login")
             .unwrap()
             .downcast::<adw::SwitchRow>()
             .unwrap();
+        assert!(startup_switch.is_active());
+        startup_switch
+            .activate_action("app.autostart", None)
+            .unwrap();
+        assert!(!startup_switch.is_active());
+        assert_eq!(autostart.state().unwrap().get::<bool>(), Some(false));
         assert!(!switch.is_active());
         switch.activate_action("app.background", None).unwrap();
         assert_eq!(action.state().unwrap().get::<bool>(), Some(true));
         assert!(switch.is_active());
+        assert!(!startup_switch.is_active());
         action.set_state(&false.to_variant());
         assert!(!switch.is_active());
         action.set_enabled(false);

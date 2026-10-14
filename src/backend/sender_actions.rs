@@ -17,6 +17,7 @@ pub fn execute(
     action: SenderAction,
     storage: &mut Storage,
     events: &async_channel::Sender<Event>,
+    expected_validity: Option<u32>,
 ) -> Result<Outcome> {
     let mut mail = Mail::connect(account)?;
     let result = match target {
@@ -26,7 +27,7 @@ pub fn execute(
         crate::models::action_target::ActionTarget::Messages(messages) => apply_messages(
             &mut mail,
             folder,
-            storage.validity(&account.email, folder)?,
+            expected_validity.or(storage.validity(&account.email, folder)?),
             messages,
             action.clone(),
         ),

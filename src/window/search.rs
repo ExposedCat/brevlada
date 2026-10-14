@@ -351,7 +351,7 @@ impl State {
     }
 }
 
-fn search_bar(entry: &gtk::SearchEntry) -> gtk::SearchBar {
+pub(super) fn search_bar(entry: &gtk::SearchEntry) -> gtk::SearchBar {
     entry
         .ancestor(gtk::SearchBar::static_type())
         .and_downcast::<gtk::SearchBar>()
@@ -622,6 +622,34 @@ mod diagnostics {
                 .text(),
             "2"
         );
+        state.cancel_search(false);
+        state.search_published_queries.borrow_mut()[0].clear();
+        state.begin_search(false, false);
+        state.publish_search_groups(
+            false,
+            "",
+            vec![vec![matched.clone()]],
+            vec![Some(location.clone())],
+        );
+        assert_eq!(ui::virtual_list::groups(&state.list)[0].len(), 2);
+        assert_eq!(visible(), vec![older.uid, matched.uid]);
+        layout();
+        let refreshed = ui::virtual_list::visible_row(&state.list, 0).unwrap();
+        assert_eq!(refreshed, row);
+        let refreshed_badge = refreshed
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .first_child()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        assert_eq!(refreshed_badge, badge);
+        state.cancel_search(false);
+        state.update_body(&matched);
+        layout();
+        assert_eq!(ui::virtual_list::visible_row(&state.list, 0).unwrap(), row);
         let first_ticket = state.sender_pane.borrow().ticket();
         state.event(Event::SenderPage(
             state.generation.get(),
@@ -743,9 +771,34 @@ mod diagnostics {
                 && visible() == vec![matched.uid]
                 && ui::virtual_list::groups(&state.list)[0].len() == 1
         });
+        state.search.set_text("message");
+        state.search.emit_by_name::<()>("search-changed", &[]);
+        wait(&|| {
+            !state.search_running[0].get() && ui::virtual_list::groups(&state.list)[0].len() == 60
+        });
+        let counts = Rc::new(RefCell::new(Vec::new()));
+        let recorded = counts.clone();
+        let model = ui::virtual_list::model(&state.list);
+        let changed = model.connect_items_changed(move |model, _, _, _| {
+            if let Some(row) = model.item(0).and_downcast::<glib::BoxedAnyObject>() {
+                recorded
+                    .borrow_mut()
+                    .push(row.borrow::<ui::virtual_list::Row>().messages.len());
+            }
+        });
+        state.list.emit_by_name::<()>("activate", &[&0u32]);
+        state.search.emit_by_name::<()>("search-changed", &[]);
+        wait(&|| !state.search_running[0].get());
+        layout();
+        assert!(
+            counts.borrow().iter().all(|count| *count == 60),
+            "partial refresh counts: {:?}",
+            counts.borrow()
+        );
+        model.disconnect(changed);
         state.filter_sender(Some(messages[0].clone()));
         assert!(state.search_sender.borrow().is_none());
-        assert!(visible().is_empty());
+        assert_eq!(visible(), (1..=60).collect::<Vec<_>>());
         window.close();
     }
 }

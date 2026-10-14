@@ -33,6 +33,7 @@ impl Editor {
             .vexpand(false)
             .hexpand(true)
             .build();
+        super::web_fonts::follow_ui(&view);
         view.set_background_color(&gtk::gdk::RGBA::TRANSPARENT);
         manager.register_script_message_handler("composeHeight", Some(WORLD));
         manager.connect_script_message_received(Some("composeHeight"), move |_, value| {
@@ -100,6 +101,8 @@ impl Editor {
                         "const quoteStyle = {};\n{}",
                         serde_json::to_string(include_str!("html_editor/quote.css")).unwrap(),
                         concat!(
+                            include_str!("html_viewer/spacing.js"),
+                            "\n",
                             include_str!("html_editor/editor.js"),
                             "\n",
                             include_str!("html_editor/formatting.js")

@@ -43,6 +43,35 @@ impl SenderPane {
             .map_or(&mut [], |session| &mut session.messages)
     }
 
+    pub fn include<'a>(&mut self, messages: impl IntoIterator<Item = &'a Message>) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let mut known: std::collections::HashSet<_> = session
+            .messages
+            .iter()
+            .map(|message| (message.uid, message.message_id.clone()))
+            .collect();
+        session.messages.extend(
+            messages
+                .into_iter()
+                .filter(|message| super::senders::key(message) == session.sender)
+                .filter(|message| known.insert((message.uid, message.message_id.clone())))
+                .cloned(),
+        );
+    }
+
+    pub fn include_newer(&mut self, messages: &[Message]) {
+        let Some(cursor) = self.session.as_ref().and_then(|session| session.cursor) else {
+            return;
+        };
+        self.include(
+            messages
+                .iter()
+                .filter(|message| (message.timestamp, message.uid) >= cursor),
+        );
+    }
+
     pub fn replace(&mut self, original: &Message, replacement: &Message) {
         for message in self.messages_mut() {
             if message.uid == original.uid && message.message_id == original.message_id {
@@ -128,13 +157,20 @@ impl SenderPane {
         if advances {
             session.cursor = cursor;
         }
-        let mut known: std::collections::HashSet<_> = session
+        let mut known: std::collections::HashMap<_, _> = session
             .messages
             .iter()
-            .map(|message| (message.uid, message.message_id.clone()))
+            .enumerate()
+            .map(|(index, message)| ((message.uid, message.message_id.clone()), index))
             .collect();
         for message in messages {
-            if known.insert((message.uid, message.message_id.clone())) {
+            let key = (message.uid, message.message_id.clone());
+            if let Some(&index) = known.get(&key) {
+                if !session.messages[index].body_loaded {
+                    session.messages[index] = message;
+                }
+            } else {
+                known.insert(key, session.messages.len());
                 session.messages.push(message);
             }
         }
@@ -203,6 +239,61 @@ mod tests {
         let retry = pane.request().unwrap();
         assert_eq!(retry.before, second.before);
         assert!(pane.finish(retry.ticket, Vec::new(), true));
+        assert!(!pane.can_load());
+    }
+
+    #[test]
+    fn arrivals_join_loaded_history_without_changing_its_cursor_or_reopening_paging() {
+        let mut pane = SenderPane::default();
+        pane.select(Some("a@example.com".into()));
+        let first = pane.request().unwrap();
+        let older = Message {
+            uid: 1,
+            timestamp: 1,
+            message_id: "older".into(),
+            sender: first.sender.clone(),
+            ..Message::default()
+        };
+        pane.finish(first.ticket, vec![older.clone()], true);
+        let newest = Message {
+            uid: 2,
+            timestamp: 2,
+            message_id: "newest".into(),
+            body_loaded: true,
+            body_html: "<p>Full body</p>".into(),
+            ..older.clone()
+        };
+        pane.include(&[
+            newest.clone(),
+            newest.clone(),
+            Message {
+                sender: "b@example.com".into(),
+                ..older.clone()
+            },
+        ]);
+        pane.include_newer(&[Message {
+            uid: 0,
+            timestamp: 0,
+            message_id: "outside-page".into(),
+            ..older.clone()
+        }]);
+        assert_eq!(pane.messages().len(), 2);
+        let next = pane.request().unwrap();
+        assert_eq!(next.before, Some((1, 1)));
+        pane.include(std::slice::from_ref(&newest));
+        assert!(pane.accepts(next.ticket));
+        pane.finish(
+            next.ticket,
+            vec![Message {
+                body_loaded: true,
+                body_html: "<p>Older body</p>".into(),
+                ..older
+            }],
+            false,
+        );
+        assert!(pane.messages().iter().all(|message| message.body_loaded));
+        pane.include(&[newest]);
+        assert_eq!(pane.messages().len(), 2);
         assert!(!pane.can_load());
     }
 }

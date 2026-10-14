@@ -1,11 +1,22 @@
 use serde::{Deserialize, Serialize};
 use std::{io::ErrorKind, path::Path};
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
     pub trust_all_senders: bool,
     pub background_service: bool,
+    pub start_at_login: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            trust_all_senders: false,
+            background_service: true,
+            start_at_login: true,
+        }
+    }
 }
 
 impl Settings {
@@ -31,13 +42,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn background_defaults_off_for_existing_settings_and_preserves_privacy() {
+    fn background_defaults_on_and_preserves_saved_preferences() {
         let mut settings: Settings = serde_json::from_str("{\"trust_all_senders\":true}").unwrap();
-        assert!(!settings.background_service);
-        settings.background_service = true;
+        assert!(settings.background_service && settings.start_at_login);
+        settings.background_service = false;
+        settings.start_at_login = false;
         let restored: Settings =
             serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
-        assert!(restored.background_service && restored.trust_all_senders);
+        assert!(!restored.background_service && !restored.start_at_login);
+        assert!(restored.trust_all_senders);
+        let previous: Settings = serde_json::from_str("{\"background_service\":false}").unwrap();
+        assert!(!previous.background_service && previous.start_at_login);
     }
 
     #[test]

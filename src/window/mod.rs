@@ -7,6 +7,7 @@ mod events;
 mod lifecycle;
 mod lists;
 mod message_navigation;
+mod notifications;
 mod parcel_history;
 mod previews;
 mod read_state;
@@ -38,6 +39,7 @@ use std::{
 struct State {
     sender: Rc<worker::Worker>,
     sender_actions: RefCell<models::pending_actions::PendingActions>,
+    notification_actions: RefCell<HashMap<(String, u32, u32), models::action_target::ActionTarget>>,
     account: RefCell<Option<Account>>,
     folder: RefCell<String>,
     generation: Cell<u64>,
@@ -56,6 +58,7 @@ struct State {
     selected: RefCell<Vec<u32>>,
     next_message: Cell<Option<(u32, u32)>>,
     search_message: RefCell<Option<(u32, String)>>,
+    notification_message: RefCell<Option<(u32, String)>>,
     search_sender: RefCell<Option<search_sender::SenderMatches>>,
     deferred_read_sort: RefCell<HashSet<u32>>,
     cards: RefCell<HashMap<u32, ui::viewer::Card>>,
@@ -90,7 +93,6 @@ struct State {
     thread_load_more: gtk::Button,
     viewer_scroll: gtk::ScrolledWindow,
     viewer: gtk::Box,
-    viewer_reveal: ui::reveal::Reveal,
     conversation_limit: Cell<usize>,
     conversation_more: gtk::Button,
     list_stack: gtk::Stack,
@@ -492,7 +494,6 @@ impl State {
             viewer_scroll,
             list_stack,
             viewer,
-            viewer_reveal,
             compose_button,
             composers,
             refresh,
@@ -521,6 +522,7 @@ impl State {
             pending: RefCell::new(HashSet::new()),
             preview_pending: RefCell::new(HashSet::new()),
             sender_actions: RefCell::default(),
+            notification_actions: RefCell::default(),
             loading: Cell::new(false),
             rendering: Cell::new(false),
             messages: RefCell::new(Vec::new()),
@@ -534,6 +536,7 @@ impl State {
             selected: RefCell::new(Vec::new()),
             next_message: Cell::new(None),
             search_message: RefCell::default(),
+            notification_message: RefCell::default(),
             search_sender: RefCell::default(),
             deferred_read_sort: RefCell::default(),
             cards: RefCell::new(HashMap::new()),
@@ -567,7 +570,6 @@ impl State {
             thread_load_more,
             viewer_scroll,
             viewer,
-            viewer_reveal,
             conversation_limit: Cell::new(25),
             conversation_more,
             list_stack,

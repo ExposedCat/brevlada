@@ -10,6 +10,7 @@ impl State {
     }
 
     pub(super) fn filter_sender(&self, message: Option<Message>) {
+        self.notification_message.borrow_mut().take();
         self.search_message.borrow_mut().take();
         let was_search = self.search_sender.borrow_mut().take().is_some();
         self.next_message.set(None);

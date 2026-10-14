@@ -1,3 +1,5 @@
+mod notifications;
+
 use crate::{
     backend::worker::{self, Command, Event},
     models::settings::Settings,
@@ -29,6 +31,7 @@ impl Engine {
             accounts: RefCell::default(),
             app: app.downgrade(),
         });
+        notifications::install_actions(app, &engine);
         let weak = Rc::downgrade(&engine);
         glib::spawn_future_local(async move {
             while let Ok(event) = events.recv().await {
@@ -59,6 +62,7 @@ impl Engine {
     pub fn detach(&self) {
         self.listener.borrow_mut().take();
         self.worker.select(self.worker.next_request());
+        crate::components::body_renderer::clear();
     }
 
     pub fn stop(&self) {
@@ -86,9 +90,27 @@ impl Engine {
                 }
             }
             Event::SidebarReady if self.listener.borrow().is_none() => self.worker.sync(),
+            Event::NotificationActionFinished(account, validity, uid, error) => {
+                if let Some(app) = self.app.upgrade() {
+                    if let Some(error) = error {
+                        let notification = gio::Notification::new("Could not update message");
+                        notification.set_body(Some(error));
+                        app.send_notification(Some("notification-action-error"), &notification);
+                    } else {
+                        app.withdraw_notification(&format!("new-mail-{account}-{validity}-{uid}"));
+                    }
+                }
+            }
             _ => {}
         }
-        if let Event::NewMail(account, folder, validity, messages) = event {
+        if let Event::NewMail {
+            account,
+            folder,
+            validity,
+            messages,
+            icons,
+        } = event
+        {
             if let Some(app) = self.app.upgrade()
                 && !app.is_action_enabled("background")
             {
@@ -109,29 +131,11 @@ impl Engine {
             if let Some(app) = self.app.upgrade()
                 && !fresh.is_empty()
                 && self.accounts.borrow().contains(&account)
-                && app
-                    .action_state("background")
-                    .and_then(|state| state.get::<bool>())
-                    .unwrap_or(false)
             {
-                let notification = gio::Notification::new(&if fresh.len() == 1 {
-                    fresh[0].sender.clone()
-                } else {
-                    format!("{} new messages", fresh.len())
-                });
-                notification.set_body(Some(&if fresh.len() == 1 {
-                    fresh[0].subject.clone()
-                } else {
-                    account.clone()
-                }));
-                notification.set_icon(&gio::ThemedIcon::new(
-                    "io.github.ExposedCat.Brevlada-symbolic",
-                ));
-                notification.set_default_action_and_target_value(
-                    "app.open-message",
-                    Some(&(account.clone(), validity, fresh[0].uid).to_variant()),
-                );
-                app.send_notification(Some(&format!("new-mail-{account}")), &notification);
+                for delivery in notifications::deliveries(&account, validity, &fresh) {
+                    let notification = delivery.notification(&account, validity, &icons);
+                    app.send_notification(Some(&delivery.id), &notification);
+                }
             }
             let _ = self.worker.send(Command::NotificationsHandled {
                 account,
@@ -149,9 +153,10 @@ pub fn settings() -> anyhow::Result<Settings> {
     Settings::load(&glib::user_config_dir().join("brevlada/settings.json"))
 }
 
-pub fn save_background(enabled: bool) -> anyhow::Result<()> {
+pub fn save_background(keep_checking: bool, start_at_login: bool) -> anyhow::Result<()> {
     let path = glib::user_config_dir().join("brevlada/settings.json");
     let mut settings = Settings::load(&path)?;
-    settings.background_service = enabled;
+    settings.background_service = keep_checking;
+    settings.start_at_login = start_at_login;
     settings.save(&path)
 }

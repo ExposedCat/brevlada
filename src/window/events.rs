@@ -3,17 +3,20 @@ use super::*;
 impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
         match event {
+            Event::NotificationActionStarted {
+                account,
+                validity,
+                uid,
+                action,
+            } => {
+                self.notification_action_started(&account, validity, uid, action);
+            }
+            Event::NotificationActionFinished(account, validity, uid, _) => {
+                self.notification_action_finished(&account, validity, uid);
+            }
             Event::NotificationOpened(email, result) => match result {
                 Ok(Some(message)) => {
-                    let account = self
-                        .folder_boxes
-                        .borrow()
-                        .get(&email)
-                        .map(|(account, _)| account.clone());
-                    if let Some(account) = account {
-                        self.select(account, "INBOX".into());
-                        self.open_search_sender(models::senders::key(&message), vec![message]);
-                    }
+                    self.open_notification(&email, message);
                 }
                 Ok(None) => self
                     .toast
@@ -297,6 +300,11 @@ impl State {
                 error,
                 removed,
             } => {
+                if folder == "INBOX" {
+                    self.notification_actions
+                        .borrow_mut()
+                        .retain(|(email, _, _), target| email != &account || target != &sender);
+                }
                 let action = self
                     .sender_actions
                     .borrow_mut()
@@ -516,8 +524,13 @@ impl State {
                             *sender_message = (*updated).clone();
                         }
                     }
+                    self.sender_pane
+                        .borrow_mut()
+                        .include_newer(&folder_messages);
                 }
                 self.render_list();
+                self.select_notification_message();
+                self.refresh_open_thread();
                 self.load_expanded();
             }
             Event::SenderPage(generation, sender_generation, mut messages, has_more)
@@ -528,9 +541,14 @@ impl State {
                 self.sender_pane
                     .borrow_mut()
                     .finish(sender_generation, messages, has_more);
+                self.sender_pane
+                    .borrow_mut()
+                    .include_newer(&self.messages.borrow());
                 self.thread_load_more.set_visible(false);
                 self.thread_load_more.set_sensitive(true);
                 self.render_sender_pane();
+                self.select_notification_message();
+                self.refresh_open_thread();
                 self.reveal_search_message();
                 self.advance_message();
             }

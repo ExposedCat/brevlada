@@ -75,19 +75,32 @@ The SQLite cache remains at $XDG_DATA_HOME/brevlada/emails.db, defaulting to
 once into Rust tables and retained. New cache records use account, folder,
 and UID together; UIDVALIDITY changes invalidate the affected folder cache.
 
-Background service
+Background and login startup
 
-Settings > General > Background service is off by default. Enabling it keeps
-mail checking alive after Brevlada's window closes. Brevlada does not start
-automatically at login. The Flatpak requests background access through the
-desktop portal with autostart disabled; permission failures restore the previous
-setting. Native builds keep the application alive without an autostart entry.
-Neither needs additional Flatpak sandbox permissions.
+Settings > General has independent "Keep checking when the window is closed"
+and "Start at login" switches. Both default on. Existing saved choices are
+preserved; the new login setting defaults on when absent.
+Login startup runs brevlada --background without opening a window. If keeping
+mail checking after closure is off, opening the window ends the login-only
+background lifetime, so closing the window then exits the application.
+Flatpak uses the Background portal to request background access and configure
+login startup. Native builds use an XDG autostart entry. Permission or settings
+failures restore the previous switches. No additional Flatpak permissions are
+needed. Mail notifications are available while the application is running,
+regardless of these lifetime switches.
 Quit from the application menu or Ctrl+Q stops checking until the next launch.
 Closing the window waits for unsaved drafts to finish saving.
 
-New unread inbox arrivals produce desktop notifications. Clicking one opens its
-message. Notification checkpoints and pending arrivals are stored separately
+New unread inbox arrivals produce desktop notifications. Clicking one opens the
+normal inbox and sender history, selecting the notified message without narrowing
+the folder to search results. Individual notifications include Mark as read,
+Archive, and Delete buttons that act on that message without opening a window.
+They use the sender's cached avatar when available, falling back to the app icon.
+Sender icons have softly rounded rectangular corners in notifications.
+Grouped notifications use the app icon. Avatar downloads do not delay notifications.
+Notification actions update an open window immediately while the server operation
+runs in the background. Failed operations restore the cached message state.
+Notification checkpoints and pending arrivals are stored separately
 from downloaded headers and bodies, so interrupted downloads and offline
 arrivals are handled across restarts. A newly added account establishes a silent
 baseline; an existing cache supplies the baseline when upgrading. A UIDVALIDITY
@@ -216,5 +229,7 @@ addressbook-query is rejected, so it is left unbuilt rather than unavailable.
 Avatar downloads need no IMAP connection and never block the mail workers.
 
 Message cards update in place, retain loading/error states, and create HTML views
-only as expanded cards enter the viewport. Scripts supplied by mail HTML and
+only as expanded cards enter the viewport. Re-selecting the current conversation
+keeps its cards, pending loads, and scroll position. Message HTML views share a
+renderer process while the window is open; closing the window releases it. Scripts supplied by mail HTML and
 external resource loading are blocked; links open externally.

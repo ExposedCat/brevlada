@@ -39,10 +39,11 @@
         frame = 0;
         const width = window.innerWidth;
         if (width <= 0) return;
+        addMessageSpacing(document);
         const bounds = root.getBoundingClientRect();
-        const body = document.body.getBoundingClientRect();
-        const bottom = parseFloat(getComputedStyle(document.body).paddingBottom) || 0;
-        const height = Math.ceil(bounds.top - body.top + Math.max(bounds.height, root.scrollHeight) + bottom);
+        const style = getComputedStyle(document.body);
+        const bottom = (parseFloat(style.paddingBottom) || 0) + (parseFloat(style.marginBottom) || 0);
+        const height = Math.ceil(bounds.top + window.scrollY + Math.max(bounds.height, root.scrollHeight) + bottom);
         if (height > 0 && (height !== previous || width !== previousWidth)) {
             previous = height;
             previousWidth = width;

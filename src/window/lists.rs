@@ -27,10 +27,6 @@ impl State {
                     ui::sender_row(group, &state.avatars)
                 };
                 if !threads && let Some(location) = state.search_locations.borrow().get(&data.key) {
-                    row.set_tooltip_text(Some(&format!(
-                        "{} · {}",
-                        location.account, location.folder
-                    )));
                     if let Some(content) = row
                         .first_child()
                         .and_then(|avatar| avatar.next_sibling())

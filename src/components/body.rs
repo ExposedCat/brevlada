@@ -10,13 +10,8 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
         .auto_load_images(media)
         .build();
     let manager = webkit6::UserContentManager::new();
-    let view = webkit6::WebView::builder()
-        .user_content_manager(&manager)
-        .vexpand(false)
-        .settings(&settings)
-        .height_request(theme::BODY_HEIGHT)
-        .hexpand(true)
-        .build();
+    let view = super::body_renderer::create(&settings, &manager);
+    super::web_fonts::follow_ui(&view);
     // WebKit's minimum height can exceed a short message's measured content.
     // Keep that minimum from propagating into the card's layout.
     let content = gtk::ScrolledWindow::builder()
@@ -255,7 +250,17 @@ mod diagnostics {
                 ..Default::default()
             },
         ] {
+            let started = std::time::Instant::now();
             let (body, view) = view(&message, false, false);
+            let measured = view.ancestor(gtk::ScrolledWindow::static_type()).unwrap();
+            measured.connect_opacity_notify(move |content| {
+                if content.opacity() == 1.0 {
+                    eprintln!("Message visible after {:?}", started.elapsed());
+                }
+            });
+            view.connect_load_changed(move |_, event| {
+                eprintln!("Message load {event:?} after {:?}", started.elapsed());
+            });
             let peak_request = std::rc::Rc::new(std::cell::Cell::new(theme::BODY_HEIGHT));
             let peak = peak_request.clone();
             view.connect_height_request_notify(move |view| {
@@ -282,7 +287,13 @@ mod diagnostics {
             let context = gtk::glib::MainContext::default();
             drain(&context, std::time::Duration::from_secs(3));
             assert!(view.is_mapped() && !view.is_loading());
-            assert_eq!(view.parent().unwrap().opacity(), 1.0);
+            assert_eq!(
+                view.ancestor(gtk::ScrolledWindow::static_type())
+                    .unwrap()
+                    .opacity(),
+                1.0
+            );
+            peak_allocation.set(peak_allocation.get().max(body.height()));
             assert_eq!(view.height(), view.height_request());
             assert_eq!(peak_request.get(), view.height_request());
             assert_eq!(peak_allocation.get(), body.height());
@@ -290,6 +301,11 @@ mod diagnostics {
             window.close();
             drain(&context, std::time::Duration::from_millis(250));
         }
+        super::super::body_renderer::clear();
+        drain(
+            &gtk::glib::MainContext::default(),
+            std::time::Duration::from_millis(250),
+        );
     }
 
     #[test]
@@ -334,6 +350,7 @@ mod diagnostics {
             assert!(scroll.vadjustment().upper() > 1000.0);
         }
         window.close();
+        super::super::body_renderer::clear();
         drain(&context, std::time::Duration::from_millis(250));
     }
 }

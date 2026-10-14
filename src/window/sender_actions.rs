@@ -86,14 +86,22 @@ impl State {
             self.toast.add_toast(adw::Toast::new(&error.to_string()));
             return;
         }
+        self.show_pending_action(&sender, &action);
+    }
+
+    pub(super) fn show_pending_action(
+        self: &Rc<Self>,
+        sender: &models::action_target::ActionTarget,
+        action: &SenderAction,
+    ) {
         let affects_open_message = self
             .open_group
             .borrow()
             .iter()
             .any(|message| sender.matches(message));
         let replace_open_message =
-            action.removes_messages() && action != SenderAction::Spam && affects_open_message;
-        let close_unread = action == SenderAction::MarkUnread && affects_open_message;
+            action.removes_messages() && *action != SenderAction::Spam && affects_open_message;
+        let close_unread = *action == SenderAction::MarkUnread && affects_open_message;
         if replace_open_message {
             let sender_index = ui::virtual_list::groups(&self.list)
                 .iter()

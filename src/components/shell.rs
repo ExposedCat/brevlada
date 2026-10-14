@@ -18,7 +18,6 @@ pub struct Shell {
     pub viewer_scroll: gtk::ScrolledWindow,
     pub list_stack: gtk::Stack,
     pub viewer: gtk::Box,
-    pub viewer_reveal: super::reveal::Reveal,
     pub compose_button: gtk::Button,
     pub composers: gtk::Box,
     pub refresh: gtk::Button,
@@ -190,8 +189,7 @@ impl Shell {
             .scroll_to_focus(false)
             .build();
         let viewer_scroll = scroll(&viewer_viewport);
-        let viewer_reveal = super::reveal::Reveal::new(&viewer_scroll);
-        viewer_root.append(&viewer_reveal);
+        viewer_root.append(&viewer_scroll);
         right.append(&viewer_root);
         let thread_sidebar =
             super::motion::Sidebar::new(&thread_sidebar, &right, theme::LIST_WIDTH, false);
@@ -254,7 +252,6 @@ impl Shell {
             viewer_scroll,
             list_stack,
             viewer,
-            viewer_reveal,
             compose_button,
             composers,
             refresh,

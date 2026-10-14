@@ -1,3 +1,4 @@
+use super::Options;
 use anyhow::{Context, Result, ensure};
 use glib::variant::ToVariant;
 use gtk::{gio, glib};
@@ -7,7 +8,7 @@ const SERVICE: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 const INTERFACE: &str = "org.freedesktop.portal.Background";
 
-pub async fn request() -> Result<()> {
+pub(super) async fn request(options: Options) -> Result<()> {
     let bus = gio::bus_get_future(gio::BusType::Session).await?;
     let token = format!("brevlada_{}", glib::uuid_string_random().replace('-', "_"));
     let sender = bus
@@ -28,14 +29,8 @@ pub async fn request() -> Result<()> {
             let _ = response.try_send(signal.parameters.clone());
         },
     );
-    let options = HashMap::from([
-        ("handle_token", token.to_variant()),
-        (
-            "reason",
-            "Check for new mail and notify you when Brevlada is closed".to_variant(),
-        ),
-        ("autostart", false.to_variant()),
-    ]);
+    let requested = options;
+    let options = request_options(options, &token);
     let reply = bus
         .call_future(
             Some(SERVICE),
@@ -55,10 +50,22 @@ pub async fn request() -> Result<()> {
         handle.as_str() == path,
         "Unexpected background request path"
     );
-    validate_response(&results.recv().await?)
+    validate_response(requested, &results.recv().await?)
 }
 
-fn validate_response(result: &glib::Variant) -> Result<()> {
+fn request_options(options: Options, token: &str) -> HashMap<&'static str, glib::Variant> {
+    HashMap::from([
+        ("handle_token", token.to_variant()),
+        (
+            "reason",
+            "Check for new mail and notify you when Brevlada is closed".to_variant(),
+        ),
+        ("autostart", options.start_at_login.to_variant()),
+        ("commandline", vec!["brevlada", "--background"].to_variant()),
+    ])
+}
+
+fn validate_response(options: Options, result: &glib::Variant) -> Result<()> {
     let (code, values) = result
         .get::<(u32, HashMap<String, glib::Variant>)>()
         .context("Invalid background response")?;
@@ -67,14 +74,15 @@ fn validate_response(result: &glib::Variant) -> Result<()> {
         values
             .get("autostart")
             .and_then(|value| value.get::<bool>())
-            == Some(false),
-        "Login startup was not disabled"
+            == Some(options.start_at_login),
+        "Could not update login startup"
     );
     ensure!(
-        values
-            .get("background")
-            .and_then(|value| value.get::<bool>())
-            == Some(true),
+        !options.needs_background()
+            || values
+                .get("background")
+                .and_then(|value| value.get::<bool>())
+                == Some(true),
         "Background access was denied"
     );
     Ok(())
@@ -130,10 +138,27 @@ mod tests {
     }
 
     #[test]
-    fn background_permission_requires_login_startup_to_stay_disabled() {
-        assert!(validate_response(&response(0, true, false)).is_ok());
-        assert!(validate_response(&response(0, false, false)).is_err());
-        assert!(validate_response(&response(0, true, true)).is_err());
-        assert!(validate_response(&response(1, true, false)).is_err());
+    fn permission_responses_must_match_both_requested_behaviors() {
+        for keep_checking in [false, true] {
+            for start_at_login in [false, true] {
+                let options = Options {
+                    keep_checking,
+                    start_at_login,
+                };
+                assert!(validate_response(options, &response(0, true, start_at_login)).is_ok());
+                assert!(validate_response(options, &response(0, true, !start_at_login)).is_err());
+                assert!(validate_response(options, &response(1, true, start_at_login)).is_err());
+                assert_eq!(
+                    validate_response(options, &response(0, false, start_at_login)).is_err(),
+                    options.needs_background()
+                );
+                let request = request_options(options, "test_token");
+                assert_eq!(request["autostart"].get::<bool>(), Some(start_at_login));
+                assert_eq!(
+                    request["commandline"].get::<Vec<String>>().unwrap(),
+                    ["brevlada", "--background"]
+                );
+            }
+        }
     }
 }

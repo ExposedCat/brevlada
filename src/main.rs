@@ -30,6 +30,7 @@ fn main() -> glib::ExitCode {
         *startup_engine.borrow_mut() = Some(engine);
     });
     let activated_engine = engine.clone();
+    let activated_background = background.clone();
     app.connect_activate(move |app| {
         if let Some(window) = app
             .windows()
@@ -39,6 +40,15 @@ fn main() -> glib::ExitCode {
             window.present();
         } else if let Some(engine) = activated_engine.borrow().as_ref() {
             window::create(app, engine);
+        }
+        if let Some(background) = activated_background.borrow().as_ref() {
+            background.window_opened();
+        }
+    });
+    let command_background = background.clone();
+    background::install_startup(&app, move || {
+        if let Some(background) = command_background.borrow().as_ref() {
+            background.start_headless();
         }
     });
     let quit = gio::SimpleAction::new("quit", None);

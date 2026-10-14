@@ -22,6 +22,12 @@ pub enum Command {
         validity: u32,
         uid: u32,
     },
+    NotificationAction {
+        account: String,
+        validity: u32,
+        uid: u32,
+        action: crate::models::sender_action::SenderAction,
+    },
     CalendarHistory {
         account: Account,
         uid: String,
@@ -109,8 +115,21 @@ pub enum Command {
 }
 
 pub enum Event {
-    NewMail(String, String, u32, Vec<Message>),
+    NewMail {
+        account: String,
+        folder: String,
+        validity: u32,
+        messages: Vec<Message>,
+        icons: std::collections::HashMap<String, Vec<u8>>,
+    },
     NotificationOpened(String, Result<Option<Message>, String>),
+    NotificationActionStarted {
+        account: String,
+        validity: u32,
+        uid: u32,
+        action: crate::models::sender_action::SenderAction,
+    },
+    NotificationActionFinished(String, u32, u32, Option<String>),
     CalendarHistory(u64, String, Result<Vec<Message>, String>),
     CalendarReplied {
         account: String,
@@ -456,7 +475,14 @@ fn execute(
             for (account, folder, validity) in storage.notification_folders()? {
                 let messages = storage.pending_notifications(&account, &folder, validity)?;
                 if !messages.is_empty() {
-                    events.send_blocking(Event::NewMail(account, folder, validity, messages))?;
+                    let icons = storage.notification_icons(&messages);
+                    events.send_blocking(Event::NewMail {
+                        account,
+                        folder,
+                        validity,
+                        messages,
+                        icons,
+                    })?;
                 }
             }
         }
@@ -477,10 +503,66 @@ fn execute(
                 if storage.validity(&account, "INBOX")? != Some(validity) {
                     return Ok(None);
                 }
-                storage.message(&account, "INBOX", uid)
+                Ok(storage.message(&account, "INBOX", uid)?.map(|mut message| {
+                    message.prepare_display();
+                    message
+                }))
             })()
             .map_err(|error| error.to_string());
             events.send_blocking(Event::NotificationOpened(account, result))?;
+        }
+        Command::NotificationAction {
+            account,
+            validity,
+            uid,
+            action,
+        } => {
+            let result = (|| -> Result<_> {
+                anyhow::ensure!(
+                    storage.validity(&account, "INBOX")? == Some(validity),
+                    "This notification is no longer current; refresh your inbox"
+                );
+                let message = storage
+                    .message(&account, "INBOX", uid)?
+                    .ok_or_else(|| anyhow::anyhow!("This message is no longer available"))?;
+                let sender = crate::models::action_target::ActionTarget::Messages(vec![(
+                    uid,
+                    message.message_id,
+                )]);
+                let account = accounts::discover()?
+                    .into_iter()
+                    .find(|item| item.email == account)
+                    .ok_or_else(|| anyhow::anyhow!("This account is no longer available"))?;
+                let outcome = super::sender_actions::execute(
+                    &account,
+                    "INBOX",
+                    &sender,
+                    action,
+                    storage,
+                    events,
+                    Some(validity),
+                )?;
+                Ok((sender, outcome))
+            })();
+            let error = match result {
+                Ok((sender, outcome)) => {
+                    let error = outcome.error.clone();
+                    events.send_blocking(Event::SenderActionFinished {
+                        account: account.clone(),
+                        folder: "INBOX".into(),
+                        sender,
+                        messages: outcome.messages,
+                        error: outcome.error,
+                        removed: outcome.removed,
+                    })?;
+                    background.refresh();
+                    error
+                }
+                Err(error) => Some(error.to_string()),
+            };
+            events.send_blocking(Event::NotificationActionFinished(
+                account, validity, uid, error,
+            ))?;
         }
         Command::CalendarReply {
             account,
@@ -639,8 +721,9 @@ fn execute(
             sender,
             action,
         } => {
-            let outcome =
-                super::sender_actions::execute(&account, &folder, &sender, action, storage, events);
+            let outcome = super::sender_actions::execute(
+                &account, &folder, &sender, action, storage, events, None,
+            );
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(error) => super::sender_actions::Outcome {
@@ -738,6 +821,73 @@ fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_or_missing_notification_targets_fail_before_accessing_accounts_or_mail() {
+        use crate::models::sender_action::SenderAction;
+
+        let mut storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        storage.inventory("account", "INBOX", 8, &[]).unwrap();
+        storage
+            .store_headers(
+                "account",
+                "INBOX",
+                8,
+                &[Message {
+                    uid: 1,
+                    uid_validity: Some(8),
+                    message_id: "new-message".into(),
+                    ..Message::default()
+                }],
+            )
+            .unwrap();
+        let (events, results) = async_channel::unbounded();
+        for action in [
+            SenderAction::MarkRead,
+            SenderAction::Archive,
+            SenderAction::Delete,
+        ] {
+            for (validity, uid, expected_error) in
+                [(7, 1, "no longer current"), (8, 2, "no longer available")]
+            {
+                execute(
+                    Command::NotificationAction {
+                        account: "account".into(),
+                        validity,
+                        uid,
+                        action: action.clone(),
+                    },
+                    &mut storage,
+                    &mut Connections::default(),
+                    &events,
+                    &super::super::sync_queue::SyncQueue::default(),
+                )
+                .unwrap();
+                let Event::NotificationActionFinished(
+                    account,
+                    actual_validity,
+                    actual_uid,
+                    Some(error),
+                ) = results.try_recv().unwrap()
+                else {
+                    panic!("Expected a failed notification action")
+                };
+                assert_eq!(
+                    (account.as_str(), actual_validity, actual_uid),
+                    ("account", validity, uid)
+                );
+                assert!(error.contains(expected_error), "{error}");
+                assert!(results.try_recv().is_err());
+                assert!(
+                    !storage
+                        .message("account", "INBOX", 1)
+                        .unwrap()
+                        .unwrap()
+                        .is_read
+                );
+            }
+        }
+    }
 
     #[test]
     fn reads_cached_draft_bodies_without_waiting_for_the_network_worker() {

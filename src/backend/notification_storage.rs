@@ -2,12 +2,27 @@ use super::{
     Storage,
     messages::{self, Mailbox},
 };
-use crate::models::Message;
+use crate::models::{Message, senders};
 use anyhow::Result;
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 impl Storage {
+    /// Read cached sender images on the mail worker, without delaying alerts
+    /// for avatar downloads. Missing images and cache errors use the app icon.
+    pub fn notification_icons(&self, messages: &[Message]) -> HashMap<String, Vec<u8>> {
+        messages
+            .iter()
+            .map(senders::key)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter_map(|sender| {
+                let image = self.avatar(&sender).ok().flatten()?.image?;
+                Some((sender, super::super::notification_icon::rounded(&image)?))
+            })
+            .collect()
+    }
+
     pub fn notification_folders(&self) -> Result<Vec<(String, String, u32)>> {
         let mut statement = self.0.prepare(
             "SELECT DISTINCT account_id,folder,uid_validity FROM rust_notification_pending",
@@ -137,6 +152,48 @@ impl Storage {
 mod tests {
     use super::*;
     use crate::backend::mail_sync::Flags;
+
+    #[test]
+    fn notification_icons_reuse_normalized_cached_senders_and_ignore_misses() {
+        use crate::backend::avatars::Source;
+
+        let storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        storage
+            .store_avatar(
+                "alice@example.com",
+                Source::Gravatar,
+                Some(crate::components::avatars::PIXEL),
+            )
+            .unwrap();
+        storage
+            .store_avatar("bob@example.com", Source::None, None)
+            .unwrap();
+        let messages: Vec<_> = [
+            "Alice <ALICE@example.com>",
+            "Old Alice <alice@example.com>",
+            "Bob <bob@example.com>",
+            "Unknown <unknown@example.com>",
+        ]
+        .into_iter()
+        .map(|sender| Message {
+            sender: sender.into(),
+            ..Message::default()
+        })
+        .collect();
+        let icons = storage.notification_icons(&messages);
+        assert_eq!(icons.len(), 1);
+        assert!(icons.contains_key("alice@example.com"));
+        assert_eq!(
+            storage
+                .avatar("alice@example.com")
+                .unwrap()
+                .unwrap()
+                .image
+                .as_deref(),
+            Some(crate::components::avatars::PIXEL)
+        );
+        assert!(storage.notification_icons(&[]).is_empty());
+    }
 
     fn flags(items: &[(u32, bool)]) -> Vec<Flags> {
         items

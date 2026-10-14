@@ -1,3 +1,5 @@
+mod document;
+
 use crate::{
     models::{
         Message,
@@ -70,10 +72,15 @@ fn remote(value: &str) -> bool {
 
 pub fn document(message: &Message, hide_quotes: bool, media: bool) -> String {
     let plain_text_body = message.body_html.is_empty();
+    let original = if plain_text_body {
+        document::Document::default()
+    } else {
+        document::parse(&message.body_html)
+    };
     let body = if plain_text_body {
         plain_text(&message.body_text, hide_quotes)
     } else {
-        normalized_html(&message.body_html)
+        original.content.clone()
     };
     static CID: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r#"(?i)cid:([^\s"'<>)]+)"#).unwrap());
@@ -92,34 +99,11 @@ pub fn document(message: &Message, hide_quotes: bool, media: bool) -> String {
         body
     };
     format!(
-        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:;\"></head><body><div id='brevlada-content' data-plain-text='{plain_text_body}' data-hide-quotes='{hide_quotes}'>{body}</div><style>{}</style></body></html>",
+        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:;\"><style>{}</style>{}</head><body{}><div id='brevlada-content' data-plain-text='{plain_text_body}' data-hide-quotes='{hide_quotes}'>{body}</div></body></html>",
         theme::HTML_CSS,
+        original.styles,
+        original.attributes,
     )
-}
-
-fn normalized_html(source: &str) -> String {
-    let document = Html::parse_document(source);
-    let styles = Selector::parse("head style").unwrap();
-    let body = Selector::parse("body").unwrap();
-    let mut result = String::new();
-    for style in document.select(&styles) {
-        serialize(&mut result, *style, true);
-    }
-    if let Some(body) = document.select(&body).next() {
-        result.push_str("<div");
-        for (name, value) in body.value().attrs() {
-            if matches!(name, "style" | "class" | "id" | "dir" | "lang") {
-                result.push_str(&format!(
-                    " {name}=\"{}\"",
-                    gtk::glib::markup_escape_text(value)
-                ));
-            }
-        }
-        result.push('>');
-        serialize(&mut result, *body, false);
-        result.push_str("</div>");
-    }
-    result
 }
 
 /// Writes what html5ever's serializer writes for `root`, without its
@@ -306,10 +290,14 @@ mod tests {
             .next()
             .unwrap();
         assert!(root.text().collect::<String>().contains("Bottom"));
-        assert!(root.inner_html().contains("newsletter"));
-        assert!(root.inner_html().contains("background:blue"));
+        let body = parsed
+            .select(&Selector::parse("body").unwrap())
+            .next()
+            .unwrap();
+        assert_eq!(body.value().attr("class"), Some("newsletter"));
+        assert_eq!(body.value().attr("style"), Some("background:blue"));
         assert_eq!(parsed.select(&Selector::parse("html").unwrap()).count(), 1);
-        assert!(html.find("body{padding:0}").unwrap() < html.find(theme::HTML_CSS).unwrap());
+        assert!(html.find(theme::HTML_CSS).unwrap() < html.find("body{padding:0}").unwrap());
     }
 
     #[test]

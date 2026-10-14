@@ -67,6 +67,12 @@ impl Card {
     pub fn is_expanded(&self) -> bool {
         self.content.expanded.get()
     }
+    pub fn expand(&self) {
+        self.content.expanded.set(true);
+        self.content.body.set_reveal_child(true);
+        self.content.show();
+        (self.content.open)();
+    }
     pub fn layout_matches(&self, message: &Message, threaded: bool, hide_quotes: bool) -> bool {
         let current = self.content.message.borrow();
         current.uid == message.uid
@@ -345,6 +351,16 @@ pub fn card(
         );
         expand.add_css_class("message-expand");
         expand.set_valign(gtk::Align::Center);
+        let weak_button = expand.downgrade();
+        body.connect_reveal_child_notify(move |body| {
+            if let Some(button) = weak_button.upgrade() {
+                button.set_icon_name(if body.reveals_child() {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                });
+            }
+        });
         let weak = Rc::downgrade(&content);
         expand.connect_clicked(move |button| {
             if let Some(content) = weak.upgrade() {

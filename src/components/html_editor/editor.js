@@ -69,8 +69,8 @@ function getMessageHtml() {
     const quote = body.querySelector('blockquote iframe');
     if (quote) {
         const original = document.querySelector('blockquote iframe');
-        const source = original?.contentDocument?.body;
-        quote.replaceWith(...(source ? [...source.childNodes].map(node => node.cloneNode(true)) : []));
+        const doc = original?.contentDocument;
+        quote.replaceWith(...(doc?.body ? cloneMessageContent(doc) : []));
     }
     return body.innerHTML;
 }
@@ -86,6 +86,7 @@ function setContent(content) {
         frame.addEventListener('load', () => {
             const doc = frame.contentDocument;
             if (!doc?.body) return;
+            addMessageSpacing(doc);
             const resize = () => {
                 const height = Math.ceil(Math.max(doc.body.scrollHeight, doc.body.getBoundingClientRect().height));
                 if (frame.height !== String(height)) frame.height = String(height);

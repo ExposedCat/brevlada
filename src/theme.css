@@ -3,7 +3,6 @@
 
 .attachment-section { padding: var(--spacing-md); }
 .compose-card .attachment-section { padding: 0; }
-.attachment-toolbar { margin-top: var(--spacing-sm); }
 
 .attachment-grid { margin-top: var(--spacing-md); }
 .attachment-grid > flowboxchild { padding: 0; }

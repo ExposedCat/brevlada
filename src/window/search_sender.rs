@@ -6,6 +6,52 @@ pub(super) struct SenderMatches {
 }
 
 impl State {
+    pub(super) fn preserve_sender_matches(
+        &self,
+        groups: &mut [Vec<Message>],
+        locations: &[Option<crate::backend::search::Location>],
+    ) {
+        let positions: HashMap<_, _> = (0..ui::virtual_list::model(&self.list).n_items())
+            .filter_map(|position| {
+                ui::virtual_list::with_item(&self.list, position, |row| (row.key.clone(), position))
+            })
+            .collect();
+        for (index, group) in groups.iter_mut().enumerate() {
+            let sender = models::senders::key(&group[0]);
+            let key = locations
+                .get(index)
+                .and_then(Option::as_ref)
+                .map_or(sender.clone(), |location| location.key(&sender));
+            if let Some(position) = positions.get(&key).copied() {
+                ui::virtual_list::with_item(&self.list, position, |row| {
+                    let incoming: HashSet<_> = group
+                        .iter()
+                        .map(|message| {
+                            (
+                                message.uid,
+                                message.message_id.clone(),
+                                message.uid_validity,
+                            )
+                        })
+                        .collect();
+                    group.extend(
+                        row.messages
+                            .iter()
+                            .filter(|message| {
+                                !incoming.contains(&(
+                                    message.uid,
+                                    message.message_id.clone(),
+                                    message.uid_validity,
+                                ))
+                            })
+                            .cloned(),
+                    );
+                });
+                group.sort_by_key(|message| std::cmp::Reverse((message.timestamp, message.uid)));
+            }
+        }
+    }
+
     pub(super) fn open_search_sender(self: &Rc<Self>, key: String, messages: Vec<Message>) {
         let Some(mut message) = models::senders::preview(&messages).cloned() else {
             return;
