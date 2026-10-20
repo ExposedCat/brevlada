@@ -1,11 +1,11 @@
 Brevlada
 
 Requires Rust 1.92 or newer, GTK 4.12 or newer, libadwaita 1.4 or newer,
-WebKitGTK 6.0, OpenSSL, pkg-config, glib-compile-resources, and xdg-open
-(xdg-utils) for opening links in the desktop's default browser.
+WebKitGTK 6.0, OpenSSL, SQLite, pkg-config, glib-compile-resources, and
+xdg-open (xdg-utils) for opening links in the desktop's default browser.
 
 Fedora development packages:
-  gtk4-devel libadwaita-devel webkitgtk6.0-devel openssl-devel gcc
+  gtk4-devel libadwaita-devel webkitgtk6.0-devel openssl-devel sqlite-devel gcc
 
 Build: cargo build
 Run: cargo run
