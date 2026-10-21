@@ -25,7 +25,7 @@ impl State {
             .enumerate()
             .filter_map(|(index, group)| {
                 let message = group.first()?;
-                (current_sender.as_deref() != Some(models::senders::key(message).as_str()))
+                (current_sender.as_deref() != Some(models::senders::list_key(message).as_str()))
                     .then_some((index, message.clone()))
             })
             .collect();

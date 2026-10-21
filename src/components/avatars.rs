@@ -1,12 +1,18 @@
 use adw::prelude::*;
 use gtk::{gdk, gdk_pixbuf, glib};
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    time::Duration,
+};
 
 /// Avatars are prepared at twice the size they are drawn at, so the result is
 /// either an exact fit on a HiDPI screen or an exact halving on a normal one.
 /// Handing the widget a much larger image instead makes GTK minify it in one
 /// step at draw time, which is what turns a crisp logo into mush.
 const OVERSAMPLE: i32 = 2;
+const RETRY_DELAY: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Cache {
@@ -17,7 +23,9 @@ struct Cache {
     /// Masters resampled for one avatar size. The few sizes in the window are
     /// shared by every row, so this stays small.
     scaled: HashMap<(String, i32), gdk::Texture>,
-    waiting: HashMap<String, Vec<glib::WeakRef<adw::Avatar>>>,
+    widgets: HashMap<String, Vec<glib::WeakRef<adw::Avatar>>>,
+    pending: HashSet<String>,
+    retrying: HashSet<String>,
 }
 
 /// Fills sender avatars in as lookups come back. Rows are rebuilt often, so
@@ -43,20 +51,20 @@ impl Avatars {
             return;
         }
         let mut cache = self.cache.borrow_mut();
-        if cache.masters.contains_key(email) {
-            drop(cache);
-            self.draw(avatar, email);
-            return;
-        }
-        let waiting = cache.waiting.entry(email.to_owned());
-        let requested = matches!(waiting, std::collections::hash_map::Entry::Occupied(_));
-        let widgets = waiting.or_default();
+        let widgets = cache.widgets.entry(email.to_owned()).or_default();
         widgets.retain(|widget| widget.upgrade().is_some());
-        let weak = glib::WeakRef::new();
-        weak.set(Some(avatar));
-        widgets.push(weak);
+        if !widgets
+            .iter()
+            .any(|widget| widget.upgrade().as_ref() == Some(avatar))
+        {
+            widgets.push(avatar.downgrade());
+        }
+        let request = !cache.masters.contains_key(email)
+            && !cache.retrying.contains(email)
+            && cache.pending.insert(email.to_owned());
         drop(cache);
-        if !requested {
+        self.draw(avatar, email);
+        if request {
             (self.request)(email);
         }
     }
@@ -66,12 +74,51 @@ impl Avatars {
         let master = image.and_then(|data| decode(&data));
         let mut cache = self.cache.borrow_mut();
         cache.masters.insert(email.to_owned(), master);
-        let waiting = cache.waiting.remove(email).unwrap_or_default();
+        cache.scaled.retain(|(sender, _), _| sender != email);
+        cache.pending.remove(email);
+        cache.retrying.remove(email);
+        let widgets = cache.widgets.entry(email.to_owned()).or_default();
+        widgets.retain(|widget| widget.upgrade().is_some());
+        let widgets = widgets.clone();
         drop(cache);
-        for widget in waiting {
+        for widget in widgets {
             if let Some(avatar) = widget.upgrade() {
                 self.draw(&avatar, email);
             }
+        }
+    }
+
+    pub fn failed(self: &Rc<Self>, email: &str) {
+        let mut cache = self.cache.borrow_mut();
+        cache.pending.remove(email);
+        if !cache.retrying.insert(email.to_owned()) {
+            return;
+        }
+        drop(cache);
+        let weak = Rc::downgrade(self);
+        let email = email.to_owned();
+        glib::timeout_add_local_once(RETRY_DELAY, move || {
+            if let Some(avatars) = weak.upgrade() {
+                avatars.retry(&email);
+            }
+        });
+    }
+
+    fn retry(&self, email: &str) {
+        let mut cache = self.cache.borrow_mut();
+        if !cache.retrying.remove(email) {
+            return;
+        }
+        let visible = cache.widgets.get(email).is_some_and(|widgets| {
+            widgets
+                .iter()
+                .filter_map(glib::WeakRef::upgrade)
+                .any(|avatar| avatar.is_mapped())
+        });
+        let request = visible && cache.pending.insert(email.to_owned());
+        drop(cache);
+        if request {
+            (self.request)(email);
         }
     }
 
@@ -89,6 +136,8 @@ impl Avatars {
             return;
         }
         let Some(Some(master)) = cache.masters.get(email) else {
+            drop(cache);
+            avatar.set_custom_image(None::<&gdk::Texture>);
             return;
         };
         let scaled = master
@@ -121,6 +170,63 @@ pub(crate) const PIXEL: &[u8] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "Requires a graphical session; maps isolated avatar widgets"]
+    fn refresh_updates_existing_widgets_and_failed_lookups_can_retry() {
+        adw::init().unwrap();
+        let asked: Rc<RefCell<Vec<String>>> = Rc::default();
+        let recorder = asked.clone();
+        let avatars = Avatars::new(move |email| recorder.borrow_mut().push(email.to_owned()));
+        let first = adw::Avatar::new(40, Some("Ada"), true);
+        let second = adw::Avatar::new(32, Some("Ada"), true);
+        let content = super::super::column("avatar-diagnostic");
+        content.append(&first);
+        content.append(&second);
+        let window = gtk::Window::builder().child(&content).build();
+        window.present();
+        let context = glib::MainContext::default();
+        context.block_on(glib::timeout_future(Duration::from_millis(100)));
+
+        avatars.attach(&first, "ada@example.com");
+        avatars.resolved("ada@example.com", Some(PIXEL.to_vec()));
+        avatars.attach(&second, "ada@example.com");
+        let original = first.custom_image().unwrap();
+        let rebuilt = second.custom_image().unwrap();
+        let image = decode(PIXEL).unwrap();
+        image.fill(0xFF0000FF);
+        avatars.resolved(
+            "ada@example.com",
+            Some(image.save_to_bufferv("png", &[]).unwrap()),
+        );
+        assert_ne!(first.custom_image().unwrap(), original);
+        assert_ne!(second.custom_image().unwrap(), rebuilt);
+
+        let refreshed = first.custom_image().unwrap();
+        avatars.failed("ada@example.com");
+        avatars.attach(&first, "ada@example.com");
+        assert_eq!(asked.borrow().len(), 1);
+        assert_eq!(first.custom_image().unwrap(), refreshed);
+        avatars.retry("ada@example.com");
+        assert_eq!(asked.borrow().len(), 2);
+        avatars.retry("ada@example.com");
+        assert_eq!(asked.borrow().len(), 2);
+        avatars.resolved("ada@example.com", None);
+        assert!(first.custom_image().is_none());
+        assert!(second.custom_image().is_none());
+        avatars.attach(&first, "ada@example.com");
+        assert_eq!(asked.borrow().len(), 2);
+
+        let missing = adw::Avatar::new(40, Some("Grace"), true);
+        content.append(&missing);
+        context.block_on(glib::timeout_future(Duration::from_millis(100)));
+        avatars.attach(&missing, "grace@example.com");
+        avatars.failed("grace@example.com");
+        avatars.retry("grace@example.com");
+        assert_eq!(asked.borrow().last().unwrap(), "grace@example.com");
+        assert_eq!(asked.borrow().len(), 4);
+        window.destroy();
+    }
 
     #[test]
     #[ignore = "Requires a graphical session; constructs widgets without presenting a window"]

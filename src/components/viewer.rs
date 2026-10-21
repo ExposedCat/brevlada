@@ -145,8 +145,13 @@ impl Card {
 
 impl Content {
     fn update_media_button(&self) {
-        self.media_button
-            .set_visible(!self.trusted.get() && !self.media.get() && self.has_media.get());
+        self.media_button.set_visible(
+            !self.media.get()
+                && self.has_media.get()
+                && (!self.trusted.get()
+                    || (self.message.borrow().body_html.contains("cid:")
+                        && !self.message.borrow().inline_media_loaded)),
+        );
     }
 
     fn download_media(&self) {
@@ -212,7 +217,9 @@ impl Content {
                 self.webview.borrow_mut().take();
                 return;
             }
-            if self.trusted.get() {
+            let inline_missing = self.message.borrow().body_html.contains("cid:")
+                && !self.message.borrow().inline_media_loaded;
+            if self.trusted.get() && !inline_missing {
                 self.media.set(true);
                 self.media_button.set_visible(false);
                 (self.on_media)();
@@ -236,7 +243,7 @@ pub fn card(
     message: &Message,
     expanded: bool,
     threaded: bool,
-    sent: bool,
+    own: bool,
     hide_quotes: bool,
     avatars: &Avatars,
     media_downloaded: bool,
@@ -266,7 +273,8 @@ pub fn card(
     unsubscribe_button.set_visible(message.unsubscribe.is_some());
     media_button.set_valign(gtk::Align::Center);
     let has_media = !calendar::is_reply(message) && super::html::has_remote_media(message);
-    media_button.set_visible(!media_downloaded && !trusted && has_media);
+    let inline_missing = message.body_html.contains("cid:") && !message.inline_media_loaded;
+    media_button.set_visible(!media_downloaded && has_media && (!trusted || inline_missing));
     let star = gtk::Image::from_icon_name("starred-symbolic");
     star.add_css_class("message-row-flag-icon");
     star.set_halign(gtk::Align::End);
@@ -382,8 +390,10 @@ pub fn card(
     }
     let (name, email) = display::sender(message);
     let row = adw::ActionRow::builder()
-        .title(if sent || message.is_draft {
+        .title(if message.is_draft {
             format!("To: {}", message.recipients)
+        } else if own {
+            "Me".into()
         } else {
             display::sender_name(message)
         })
@@ -392,9 +402,7 @@ pub fn card(
         .build();
     if message.is_draft {
         row.set_subtitle("Draft");
-    } else if sent {
-        row.set_subtitle("Sent");
-    } else if !name.is_empty() && !email.is_empty() {
+    } else if !own && !name.is_empty() && !email.is_empty() && name != email {
         row.set_subtitle(&email);
     }
     for (icon, label, action) in [

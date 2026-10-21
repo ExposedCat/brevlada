@@ -199,7 +199,7 @@ pub fn create(app: &adw::Application, engine: &Rc<crate::application::Engine>) {
                     index.try_into().ok()?,
                 )?;
                 let group = &row.messages;
-                let bulk = !threads;
+                let bulk = !threads && group.first()?.list_recipient.is_none();
                 let target = if bulk {
                     models::action_target::ActionTarget::Sender(models::senders::key(
                         group.first()?,
@@ -686,6 +686,10 @@ mod diagnostics {
     }
 
     fn unread_test_state(id: &str) -> Rc<State> {
+        unread_test_state_with_worker(id, worker::Worker::disconnected())
+    }
+
+    fn unread_test_state_with_worker(id: &str, worker: worker::Worker) -> Rc<State> {
         gtk::init().unwrap();
         adw::init().unwrap();
         let app = adw::Application::builder()
@@ -695,7 +699,7 @@ mod diagnostics {
         app.register(gtk::gio::Cancellable::NONE).unwrap();
         let state = State::new(
             ui::shell::Shell::new(&app),
-            worker::Worker::disconnected(),
+            worker,
             ui::expansion::Expansion::default(),
             ui::avatars::Avatars::new(|_| {}),
         );
@@ -713,6 +717,273 @@ mod diagnostics {
         });
         *state.folder.borrow_mut() = "INBOX".into();
         state
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; uses fixture accounts without mail workers"]
+    fn sent_recipient_rows_open_only_their_history_and_inbox_still_groups_senders() {
+        let (worker, commands) = worker::Worker::recording();
+        let state =
+            unread_test_state_with_worker("org.example.BrevladaRecipientDiagnostic", worker);
+        let account = state.account.borrow().clone().unwrap();
+        state.event(Event::Accounts(vec![account.clone()]));
+        state.select(account.clone(), "Sent".into());
+        let messages: Vec<_> = [
+            (3, "Alice Smith <alice@example.com>, Bob <bob@example.com>"),
+            (2, "Old Alice <ALICE@example.com>"),
+            (1, "Carol <carol@example.com>"),
+        ]
+        .into_iter()
+        .map(|(uid, recipients)| Message {
+            uid,
+            timestamp: uid as i64,
+            message_id: format!("sent-{uid}"),
+            sender: account.email.clone(),
+            recipients: recipients.into(),
+            subject: format!("Message {uid}"),
+            is_read: true,
+            ..Default::default()
+        })
+        .collect();
+        state.event(Event::Messages(
+            state.generation.get(),
+            messages.clone(),
+            false,
+        ));
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 3);
+        let position = ui::virtual_list::position(&state.list, "alice@example.com").unwrap();
+        let row = ui::virtual_list::item(&state.list, position).unwrap();
+        assert_eq!(
+            row.messages
+                .iter()
+                .map(|message| message.uid)
+                .collect::<Vec<_>>(),
+            vec![3, 2]
+        );
+        assert_eq!(
+            models::senders::list_identity(&row.messages[0]).0,
+            "Alice Smith"
+        );
+        assert_eq!(row.messages[0].sender, account.email);
+        let mut body = messages[0].clone();
+        body.body_loaded = true;
+        body.body_text = "Loaded body".into();
+        state.update_body(&body);
+        for recipient in ["alice@example.com", "bob@example.com"] {
+            let position = ui::virtual_list::position(&state.list, recipient).unwrap();
+            let row = ui::virtual_list::item(&state.list, position).unwrap();
+            assert_eq!(models::senders::list_key(&row.messages[0]), recipient);
+        }
+        let widget = ui::sender_row(&row.messages, &state.avatars);
+        assert_eq!(widget.tooltip_text().as_deref(), Some("alice@example.com"));
+        state.activate_sender(position);
+        assert_eq!(
+            state.sender_pane.borrow().sender(),
+            Some("alice@example.com")
+        );
+        assert!(commands.try_iter().any(|command| matches!(command,
+            Command::LoadSenderPage { sender, outgoing: true, .. } if sender == "alice@example.com"
+        )));
+        state.event(Event::SenderPage(
+            state.generation.get(),
+            sender_ticket(&state),
+            messages[..2].to_vec(),
+            false,
+        ));
+        assert_eq!(
+            ui::virtual_list::groups(&state.thread_list)
+                .iter()
+                .flatten()
+                .count(),
+            2
+        );
+        assert!(
+            ui::virtual_list::groups(&state.thread_list)
+                .iter()
+                .flatten()
+                .all(|message| message.uid != 1)
+        );
+        state.select(account, "INBOX".into());
+        let incoming = messages
+            .into_iter()
+            .map(|mut message| {
+                message.sender = "received@example.com".into();
+                message
+            })
+            .collect();
+        state.event(Event::Messages(state.generation.get(), incoming, false));
+        assert_eq!(ui::virtual_list::model(&state.list).n_items(), 1);
+        assert!(!state.sender_pane.borrow().outgoing);
+        let window = state
+            .sidebar
+            .root()
+            .unwrap()
+            .downcast::<adw::ApplicationWindow>()
+            .unwrap();
+        let account = state.account.borrow().clone().unwrap();
+        state.select(account, "Sent".into());
+        let cached = state
+            .folder_cache
+            .borrow()
+            .get(&(
+                state.account.borrow().as_ref().unwrap().email.clone(),
+                "Sent".into(),
+            ))
+            .cloned()
+            .unwrap();
+        state.event(Event::Messages(state.generation.get(), cached, false));
+        window.present();
+        if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+            glib::MainContext::default().block_on(glib::timeout_future(Duration::from_secs(15)));
+        }
+        window.destroy();
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; uses fixture accounts without mail workers"]
+    fn sent_shortcuts_open_their_accounts_folder_and_ignore_stale_discovery() {
+        let state = unread_test_state("org.example.BrevladaSentShortcutDiagnostic");
+        let mut first = state.account.borrow().clone().unwrap();
+        first.name = "Personal".into();
+        let mut second = first.clone();
+        second.email = "work@example.com".into();
+        second.name = "Work".into();
+        state.event(Event::Accounts(vec![first.clone(), second.clone()]));
+        let first_row = state.sidebar.first_child().unwrap();
+        let second_row = first_row.next_sibling().unwrap();
+        let sent_button = |row: &gtk::Widget| {
+            row.first_child()
+                .unwrap()
+                .last_child()
+                .unwrap()
+                .downcast::<gtk::Button>()
+                .unwrap()
+        };
+        let first_sent = sent_button(&first_row);
+        let second_sent = sent_button(&second_row);
+        assert_eq!(
+            first_sent.icon_name().as_deref(),
+            Some("mail-send-symbolic")
+        );
+        first_sent.emit_clicked();
+        let stale = state.generation.get();
+        second_sent.emit_clicked();
+        let current = state.generation.get();
+        assert_ne!(stale, current);
+        assert!(!first_sent.state_flags().contains(gtk::StateFlags::CHECKED));
+        assert!(second_sent.state_flags().contains(gtk::StateFlags::CHECKED));
+        state.event(Event::SentFolder(stale, first.clone(), "Sent".into()));
+        assert_eq!(state.folder.borrow().as_str(), "INBOX");
+        state.event(Event::SentFolder(
+            current,
+            second.clone(),
+            "Gesendet".into(),
+        ));
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, second.email);
+        assert_eq!(state.folder.borrow().as_str(), "Gesendet");
+        assert!(!state.folder_boxes.borrow()[&second.email].1.get_visible());
+        first_sent.emit_clicked();
+        let pending = state.generation.get();
+        let inbox = second_sent
+            .prev_sibling()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        inbox.emit_clicked();
+        state.event(Event::SentFolder(
+            pending,
+            first,
+            "[Gmail]/Sent Mail".into(),
+        ));
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, second.email);
+        assert_eq!(state.folder.borrow().as_str(), "INBOX");
+        assert!(inbox.state_flags().contains(gtk::StateFlags::CHECKED));
+        assert!(!second_sent.state_flags().contains(gtk::StateFlags::CHECKED));
+        let window = state
+            .sidebar
+            .root()
+            .unwrap()
+            .downcast::<adw::ApplicationWindow>()
+            .unwrap();
+        window.present();
+        if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+            glib::MainContext::default().block_on(glib::timeout_future(Duration::from_secs(15)));
+        }
+        window.destroy();
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session and WebKit"]
+    fn cached_html_body_remains_visible_in_the_conversation() {
+        use webkit6::prelude::*;
+        let state = unread_test_state("org.example.BrevladaBodyDiagnostic");
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+        let context = glib::MainContext::default();
+        let message = Message {
+            uid: 1,
+            message_id: "order".into(),
+            sender: "sender@example.com".into(),
+            body_html: std::env::var("BREVLADA_HTML_FIXTURE").ok().map(|path| std::fs::read_to_string(path).unwrap()).unwrap_or_else(|| "<html>\n<body>\n<p>Hello,</p>\n<p>Thank you for your <strong>order</strong>.</p>\n<p>The terms and conditions are attached to this message.</p>\n<p>We look forward to your next order.</p>\n<p>Your team</p>\n</body>\n</html>\n".into()),
+            body_loaded: true,
+            is_read: true,
+            attachments: vec!["terms.pdf".into(), "conditions.pdf".into()],
+            ..Default::default()
+        };
+        *state.messages.borrow_mut() = vec![message.clone()];
+        state.account_sidebar.set_visible(false);
+        state.thread_sidebar.set_visible(true);
+        let window = state
+            .viewer
+            .root()
+            .unwrap()
+            .downcast::<adw::ApplicationWindow>()
+            .unwrap();
+        window.set_default_size(1600, 600);
+        window.present();
+        state.show_thread(vec![message.list_header(true)]);
+        context.block_on(glib::timeout_future(Duration::from_secs(2)));
+        fn find(widget: &gtk::Widget) -> Option<webkit6::WebView> {
+            if let Some(view) = widget.downcast_ref::<webkit6::WebView>() {
+                return Some(view.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if let Some(view) = find(&widget) {
+                    return Some(view);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        let view = find(state.cards.borrow()[&1].widget.upcast_ref()).unwrap();
+        let text = context
+            .block_on(view.evaluate_javascript_future(
+                "document.getElementById('brevlada-content').innerText",
+                None,
+                None,
+            ))
+            .unwrap();
+        assert!(!text.to_str().trim().is_empty());
+        assert!(
+            view.height_request() > 150,
+            "height: {}",
+            view.height_request()
+        );
+        assert_eq!(
+            view.ancestor(gtk::ScrolledWindow::static_type())
+                .unwrap()
+                .opacity(),
+            1.0
+        );
+        if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+            context.block_on(glib::timeout_future(Duration::from_secs(15)));
+        }
+        drop(view);
+        window.close();
+        state.cards.borrow_mut().clear();
+        state.new_selection();
+        ui::body_renderer::clear();
+        context.block_on(glib::timeout_future(Duration::from_millis(250)));
     }
 
     #[test]

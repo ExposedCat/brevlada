@@ -91,7 +91,7 @@ pub(super) fn deliveries(account: &str, validity: u32, messages: &[&Message]) ->
             .iter()
             .map(|message| Delivery {
                 id: format!("new-mail-{account}-{validity}-{}", message.uid),
-                title: message.sender.clone(),
+                title: display::sender_name(message),
                 body: message.subject.clone(),
                 uid: message.uid,
                 sender: Some(senders::key(message)),
@@ -139,7 +139,7 @@ mod tests {
         let messages: Vec<_> = (1..=6)
             .map(|uid| Message {
                 uid,
-                sender: format!("Sender {uid}"),
+                sender: format!("\"Sender {uid}\" <sender{uid}@example.com>"),
                 subject: format!("Subject {uid}"),
                 ..Message::default()
             })
@@ -151,7 +151,7 @@ mod tests {
             let ids: HashSet<_> = notifications.iter().map(|item| &item.id).collect();
             assert_eq!(ids.len(), count);
             for (notification, message) in notifications.iter().zip(&messages) {
-                assert_eq!(notification.title, message.sender);
+                assert_eq!(notification.title, format!("Sender {}", message.uid));
                 assert_eq!(notification.body, message.subject);
                 assert_eq!(notification.uid, message.uid);
                 assert_eq!(
@@ -173,13 +173,13 @@ mod tests {
     #[test]
     fn lists_sender_names_once_per_address_in_message_order() {
         let messages = [
-            message("Alice <alice@example.com>"),
-            message("Bob <bob@example.com>"),
+            message("\"Alice Smith\" <alice@example.com>"),
+            message("\"Bob Jones\" <bob@example.com>"),
             message("Older Alice <ALICE@example.com>"),
         ];
         assert_eq!(
             grouped_body("me@example.com", &messages.iter().collect::<Vec<_>>()),
-            "me@example.com received messages from Alice, Bob"
+            "me@example.com received messages from Alice Smith, Bob Jones"
         );
     }
 

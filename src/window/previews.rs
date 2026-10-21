@@ -37,6 +37,8 @@ impl State {
             generation: self.generation.get(),
             selection: self.selection.get(),
             mark_read: false,
+            load_inline: false,
+            related: false,
         });
     }
 

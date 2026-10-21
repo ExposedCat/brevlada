@@ -1,6 +1,29 @@
 use super::*;
 
 impl State {
+    pub(super) fn correspondence(&self) -> models::senders::Correspondence {
+        let mut own: HashSet<_> = self
+            .folder_boxes
+            .borrow()
+            .keys()
+            .map(|email| models::senders::address(email))
+            .collect();
+        if let Some(account) = self.account.borrow().as_ref() {
+            own.insert(models::senders::address(&account.email));
+        }
+        models::senders::Correspondence {
+            outgoing: self.recipient_mode(),
+            own,
+        }
+    }
+    pub(super) fn recipient_mode(&self) -> bool {
+        let folder = self.folder.borrow();
+        models::senders::is_sent_folder(&folder)
+            || self.account.borrow().as_ref().is_some_and(|account| {
+                self.sender.sent_folder(&account.email).as_deref() == Some(folder.as_str())
+            })
+    }
+
     pub(super) fn send(&self, command: Command) {
         if self.sender.send(command).is_err() {
             self.toast.add_toast(adw::Toast::new(
@@ -56,6 +79,19 @@ impl State {
         self.select_mailbox(account, folder, false);
     }
 
+    pub(super) fn select_sent(self: &Rc<Self>, account: Account) {
+        if let Some(folder) = self.sender.sent_folder(&account.email) {
+            self.select(account, folder);
+        } else {
+            let generation = self.sender.next_request();
+            self.generation.set(generation);
+            self.send(Command::SentFolder {
+                account,
+                generation,
+            });
+        }
+    }
+
     pub(super) fn select_mailbox(
         self: &Rc<Self>,
         account: Account,
@@ -108,6 +144,7 @@ impl State {
         self.reset_threads();
         self.thread_search.set_text("");
         *self.folder.borrow_mut() = folder;
+        self.sender_pane.borrow_mut().outgoing = self.recipient_mode();
         self.selected.borrow_mut().clear();
         self.deferred_read_sort.borrow_mut().clear();
         self.cards.borrow_mut().clear();
@@ -188,9 +225,11 @@ impl State {
             return;
         }
         if let Some(account) = self.account.borrow().clone() {
+            self.sender.conversation_pending(self.selection.get(), true);
             if let Err(error) = self.sender.send(Command::RelatedSent {
                 account,
                 folder: self.folder.borrow().clone(),
+                outgoing: self.recipient_mode(),
                 messages: self
                     .open_group
                     .borrow()
@@ -202,6 +241,8 @@ impl State {
             }) {
                 self.toast.add_toast(adw::Toast::new(&error.to_string()));
                 self.render_conversation();
+                self.sender
+                    .conversation_pending(self.selection.get(), false);
             }
         }
     }
@@ -218,6 +259,8 @@ impl State {
         let uid = message.uid;
         let sent_folder = sent_folder.map(str::to_owned);
         let sent_id = message.message_id.clone();
+        let media_id = sent_id.clone();
+        let media_folder = sent_folder.clone();
         let response_state = Rc::downgrade(self);
         let media_state = Rc::downgrade(self);
         let unsubscribe_state = Rc::downgrade(self);
@@ -229,17 +272,13 @@ impl State {
         }
         let downloaded = self.downloaded_media.borrow().contains(&media_key);
         let sender = models::senders::key(message);
-        let own = self
-            .account
-            .borrow()
-            .as_ref()
-            .is_some_and(|account| sender == models::senders::address(&account.email));
+        let own = self.correspondence().own.contains(&sender);
         let trusted = own || self.is_trusted(&sender);
         ui::viewer::card(
             message,
             expanded,
             threaded,
-            sent_folder.is_some(),
+            own,
             hide_quotes,
             &self.avatars,
             downloaded,
@@ -251,7 +290,7 @@ impl State {
             move || {
                 if let Some(state) = weak.upgrade() {
                     if let Some(folder) = &sent_folder {
-                        state.open_sent(folder, uid, &sent_id);
+                        state.open_sent(folder, uid, &sent_id, false);
                     } else {
                         state.open(uid);
                     }
@@ -268,7 +307,11 @@ impl State {
             move || {
                 if let Some(state) = media_state.upgrade() {
                     state.mark_media_downloaded(media_key.clone());
-                    state.open(uid);
+                    if let Some(folder) = &media_folder {
+                        state.open_sent(folder, uid, &media_id, true);
+                    } else {
+                        state.open_with_media(uid, true);
+                    }
                 }
             },
             move |message| {
@@ -295,7 +338,7 @@ impl State {
         )
     }
 
-    pub(super) fn open_sent(&self, folder: &str, uid: u32, id: &str) {
+    pub(super) fn open_sent(&self, folder: &str, uid: u32, id: &str, load_inline: bool) {
         let Some(item) = self
             .related_sent
             .borrow()
@@ -305,7 +348,18 @@ impl State {
         else {
             return;
         };
-        if item.message.body_loaded
+        self.sender
+            .avatars()
+            .prioritize(models::senders::key(&item.message));
+        let own = self
+            .correspondence()
+            .own
+            .contains(&models::senders::key(&item.message));
+        if (item.message.body_loaded
+            && (item.message.is_read || own)
+            && (!load_inline
+                || !item.message.body_html.contains("cid:")
+                || item.message.inline_media_loaded))
             || folder.is_empty()
             || !self.sent_pending.borrow_mut().insert(id.to_owned())
         {
@@ -316,6 +370,8 @@ impl State {
                 account,
                 folder: folder.to_owned(),
                 uid,
+                mark_read: !own,
+                load_inline,
                 generation: self.generation.get(),
                 selection: self.selection.get(),
             });
@@ -333,19 +389,43 @@ impl State {
     }
 
     pub(super) fn load_expanded(&self) {
-        let uids: Vec<_> = self
-            .cards
-            .borrow()
-            .iter()
-            .filter(|(_, card)| card.is_expanded())
-            .map(|(uid, _)| *uid)
-            .collect();
-        for uid in uids {
-            self.open(uid);
+        let mut order = Vec::new();
+        let mut child = self.viewer.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            let current = self.cards.borrow().iter().find_map(|(uid, card)| {
+                (card.widget.upcast_ref::<gtk::Widget>() == &widget && card.is_expanded())
+                    .then_some(*uid)
+            });
+            if let Some(uid) = current {
+                order.push((self.folder.borrow().clone(), uid));
+                self.open(uid);
+            }
+            let related = self.sent_cards.borrow().iter().find_map(|(id, card)| {
+                (card.widget.upcast_ref::<gtk::Widget>() == &widget && card.is_expanded())
+                    .then(|| id.clone())
+            });
+            if let Some(id) = related {
+                let source = self
+                    .related_sent
+                    .borrow()
+                    .iter()
+                    .find(|item| item.message.message_id == id)
+                    .map(|item| (item.folder.clone(), item.message.uid));
+                if let Some((folder, uid)) = source {
+                    order.push((folder.clone(), uid));
+                    self.open_sent(&folder, uid, &id, false);
+                }
+            }
         }
+        self.sender.order_bodies(&order);
     }
 
     pub(super) fn open(&self, uid: u32) {
+        self.open_with_media(uid, false);
+    }
+
+    pub(super) fn open_with_media(&self, uid: u32, load_inline: bool) {
         let message = self
             .messages
             .borrow()
@@ -370,18 +450,19 @@ impl State {
         let Some(message) = message else {
             return;
         };
+        self.sender
+            .avatars()
+            .prioritize(models::senders::key(&message));
         if self.retained_spam(&message) {
             return;
         }
         if message.body_loaded
             && message.is_read
-            && (!message.body_html.contains("cid:") || message.inline_media_loaded)
+            && (!load_inline || !message.body_html.contains("cid:") || message.inline_media_loaded)
         {
             return;
         }
-        if self.preview_pending.borrow().contains(&uid) {
-            return;
-        }
+        self.preview_pending.borrow_mut().remove(&uid);
         if !self.pending.borrow_mut().insert(uid) {
             return;
         }
@@ -396,6 +477,8 @@ impl State {
                 generation: self.generation.get(),
                 selection: self.selection.get(),
                 mark_read: true,
+                load_inline,
+                related: false,
             });
         }
     }

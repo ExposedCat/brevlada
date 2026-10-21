@@ -90,6 +90,11 @@ impl State {
             });
             sources
                 .sort_by_key(|(_, _, message)| std::cmp::Reverse((message.timestamp, message.uid)));
+            let mut seen = HashSet::new();
+            sources.retain(|(_, _, message)| {
+                let id = message.message_id.trim().trim_matches(['<', '>']);
+                id.is_empty() || seen.insert(id.to_owned())
+            });
             let total = sources.len();
             sources.truncate(self.conversation_limit.get());
             let messages: Vec<_> = sources
@@ -153,7 +158,7 @@ impl State {
                 widgets.push(editor.widget.clone().upcast());
                 if !message.body_loaded && !editor.loaded.get() {
                     if *sent {
-                        self.open_sent(&folder, message.uid, &message.message_id);
+                        self.open_sent(&folder, message.uid, &message.message_id, false);
                     } else {
                         self.open(message.uid);
                     }
@@ -205,7 +210,7 @@ impl State {
                     .borrow_mut()
                     .insert(message.message_id.clone(), card);
                 if expanded && !message.body_loaded {
-                    self.open_sent(folder, message.uid, &message.message_id);
+                    self.open_sent(folder, message.uid, &message.message_id, false);
                 }
             } else {
                 self.cards.borrow_mut().insert(message.uid, card);
@@ -235,6 +240,7 @@ impl State {
             }
             previous = Some(widget);
         }
+        self.load_expanded();
     }
 }
 
@@ -293,6 +299,84 @@ mod diagnostics {
             .unwrap()
             .text()
             .to_string()
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session; constructs widgets without presenting a window"]
+    fn sent_conversation_shows_me_once_and_received_replies_without_duplicate_copies() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("org.example.BrevladaSentRepliesDiagnostic")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let state = State::new(
+            ui::shell::Shell::new(&app),
+            worker::Worker::disconnected(),
+            ui::expansion::Expansion::default(),
+            ui::avatars::Avatars::new(|_| {}),
+        );
+        *state.account.borrow_mut() = Some(Account {
+            email: "me@example.com".into(),
+            path: String::new(),
+            name: "Me".into(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        });
+        *state.folder.borrow_mut() = "Sent".into();
+        let mut sent = message(1, "\"me@example.com\" <me@example.com>");
+        sent.subject = "Plans".into();
+        sent.recipients = "Alice <alice@example.com>".into();
+        sent.body_text = "Let's meet tomorrow.".into();
+        let mut reply = message(2, "Alice <alice@example.com>");
+        reply.subject = "Re: Plans".into();
+        reply.recipients = "me@example.com".into();
+        reply.references = vec![sent.message_id.clone()];
+        reply.body_text = "Tomorrow works for me.".into();
+        *state.messages.borrow_mut() = vec![sent.clone()];
+        *state.open_group.borrow_mut() = vec![sent.clone()];
+        *state.related_sent.borrow_mut() = vec![
+            models::SentMessage {
+                folder: "INBOX".into(),
+                message: reply,
+            },
+            models::SentMessage {
+                folder: "INBOX".into(),
+                message: sent,
+            },
+        ];
+        state.render_conversation();
+        assert_eq!(state.cards.borrow().len(), 1);
+        assert_eq!(state.sent_cards.borrow().len(), 1);
+        assert!(contains_label(state.viewer.upcast_ref(), "Me"));
+        assert!(contains_label(state.viewer.upcast_ref(), "Alice"));
+        assert!(!contains_label(state.viewer.upcast_ref(), "me@example.com"));
+        assert!(!contains_label(
+            state.viewer.upcast_ref(),
+            "To: Alice <alice@example.com>"
+        ));
+        let window = state
+            .viewer
+            .root()
+            .unwrap()
+            .downcast::<adw::ApplicationWindow>()
+            .unwrap();
+        window.present();
+        if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+            glib::MainContext::default().block_on(glib::timeout_future(Duration::from_secs(15)));
+        }
+        window.destroy();
+        ui::clear(&state.viewer);
+        state.cards.borrow_mut().clear();
+        state.sent_cards.borrow_mut().clear();
+        ui::body_renderer::clear();
+        glib::MainContext::default().block_on(glib::timeout_future(Duration::from_millis(300)));
     }
 
     #[test]

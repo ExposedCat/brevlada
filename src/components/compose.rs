@@ -75,15 +75,22 @@ impl Compose {
         let body_group = adw::PreferencesGroup::builder()
             .css_classes(["compose-body"])
             .build();
+        libspelling::init();
+        let body_buffer = sourceview5::Buffer::new(None);
         let body = gtk::TextView::builder()
+            .buffer(&body_buffer)
             .wrap_mode(gtk::WrapMode::WordChar)
             .accepts_tab(false)
             .top_margin(theme::SPACING)
             .bottom_margin(theme::SPACING)
             .left_margin(theme::SPACING)
             .right_margin(theme::SPACING)
-            .tooltip_text("Body")
             .build();
+        let spelling =
+            libspelling::TextBufferAdapter::new(&body_buffer, &libspelling::Checker::default());
+        body.set_extra_menu(Some(&spelling.menu_model()));
+        body.insert_action_group("spelling", Some(&spelling));
+        spelling.set_enabled(true);
         let modes = horizontal("linked", 0);
         let text_mode = gtk::ToggleButton::with_label("Text");
         let html_mode = gtk::ToggleButton::with_label("HTML");
@@ -469,6 +476,71 @@ fn entry(name: &str) -> gtk::Entry {
 mod diagnostics {
     use super::*;
     use webkit6::prelude::WebViewExt;
+
+    #[test]
+    #[ignore = "Requires a graphical session, WebKit, and an English dictionary"]
+    fn body_spellcheck_underlines_and_corrects_misspellings() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let compose = Compose::new(&gtk::Button::new());
+        compose.widget.set_visible(true);
+        assert!(compose.body.tooltip_text().is_none());
+        let buffer = compose.body.buffer();
+        buffer.set_text("Hello wrld ");
+        let window = gtk::Window::builder()
+            .title("Body spellcheck diagnostic")
+            .default_width(800)
+            .child(&compose.widget)
+            .build();
+        window.present();
+        let context = gtk::glib::MainContext::default();
+        context.block_on(async {
+            compose.html_editor.message().await.unwrap();
+            for _ in 0..100 {
+                if !buffer.iter_at_offset(7).tags().is_empty() {
+                    break;
+                }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(!buffer.iter_at_offset(7).tags().is_empty());
+            assert!(buffer.iter_at_offset(1).tags().is_empty());
+            buffer.place_cursor(&buffer.iter_at_offset(7));
+            gtk::glib::timeout_future(std::time::Duration::from_millis(500)).await;
+            compose
+                .body
+                .activate_action("spelling.correct", Some(&"world".to_variant()))
+                .unwrap();
+            assert_eq!(
+                buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
+                "Hello world "
+            );
+            assert!(
+                compose
+                    .html_editor
+                    .view
+                    .context()
+                    .unwrap()
+                    .is_spell_checking_enabled()
+            );
+            let spellcheck = compose
+                .html_editor
+                .view
+                .evaluate_javascript_future(
+                    "document.body.spellcheck",
+                    Some(super::super::html_editor::WORLD),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(spellcheck.to_boolean());
+            if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+                buffer.set_text("Hello wrld ");
+                gtk::glib::timeout_future(std::time::Duration::from_secs(15)).await;
+            }
+        });
+        compose.html_editor.view.stop_loading();
+        window.destroy();
+    }
 
     #[test]
     #[ignore = "Requires a graphical session and WebKit"]

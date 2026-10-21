@@ -104,6 +104,7 @@ struct Progress<'a> {
     location: Option<Location>,
     /// Positions in `groups` of the senders matched in `location`.
     senders: HashMap<String, usize>,
+    recipients: HashMap<usize, (String, String)>,
     last_sent: Option<Instant>,
 }
 
@@ -121,15 +122,36 @@ impl Progress<'_> {
         if !entry.matches(self.request, &self.query) {
             return true;
         }
-        let position = match self.senders.get(&entry.sender) {
-            Some(&position) => position,
-            None => {
-                self.senders.insert(entry.sender.clone(), self.groups.len());
-                self.groups.push((self.location.clone(), Vec::new()));
-                self.groups.len() - 1
-            }
+        let outgoing = self
+            .location
+            .as_ref()
+            .map_or(self.request.outgoing, |location| {
+                models::senders::is_sent_folder(&location.folder)
+                    || self.request.sent_folders.get(&location.account) == Some(&location.folder)
+            });
+        let correspondents = if outgoing || self.request.own_addresses.contains(&entry.sender) {
+            models::senders::recipients(&entry.message)
+                .into_iter()
+                .filter(|(_, email)| !self.request.own_addresses.contains(email))
+                .map(|recipient| (recipient.1.clone(), Some(recipient)))
+                .collect()
+        } else {
+            vec![(entry.sender.clone(), None)]
         };
-        self.groups[position].1.push(entry.clone());
+        for (key, recipient) in correspondents {
+            let position = match self.senders.get(&key) {
+                Some(&position) => position,
+                None => {
+                    self.senders.insert(key, self.groups.len());
+                    if let Some(recipient) = recipient {
+                        self.recipients.insert(self.groups.len(), recipient);
+                    }
+                    self.groups.push((self.location.clone(), Vec::new()));
+                    self.groups.len() - 1
+                }
+            };
+            self.groups[position].1.push(entry.clone());
+        }
         if self
             .last_sent
             .is_none_or(|last| last.elapsed() >= Duration::from_millis(60))
@@ -146,14 +168,15 @@ impl Progress<'_> {
         let mut groups: Vec<_> = self
             .groups
             .iter_mut()
-            .map(|(location, group)| {
+            .enumerate()
+            .map(|(position, (location, group))| {
                 group.sort_by_key(|entry| {
                     std::cmp::Reverse((entry.message.timestamp, entry.message.uid))
                 });
-                (&*location, &*group)
+                (&*location, &*group, self.recipients.get(&position))
             })
             .collect();
-        groups.sort_by_cached_key(|(location, group)| {
+        groups.sort_by_cached_key(|(location, group, _)| {
             std::cmp::Reverse((
                 self.request.unread_first
                     && group.iter().any(|entry| {
@@ -171,10 +194,17 @@ impl Progress<'_> {
         });
         let (locations, groups) = groups
             .into_iter()
-            .map(|(location, group)| {
+            .map(|(location, group, recipient)| {
                 (
                     location.clone(),
-                    group.iter().map(|entry| entry.header()).collect(),
+                    group
+                        .iter()
+                        .map(|entry| {
+                            let mut header = entry.header();
+                            header.list_recipient = recipient.cloned();
+                            header
+                        })
+                        .collect(),
                 )
             })
             .unzip();
@@ -208,6 +238,7 @@ impl Cache {
             groups: Vec::new(),
             location: None,
             senders: HashMap::new(),
+            recipients: HashMap::new(),
             last_sent: None,
         };
         if let Some(scope) = &request.scope {

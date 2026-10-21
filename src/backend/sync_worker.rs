@@ -27,7 +27,7 @@ pub fn start(path: PathBuf, queue: SyncQueue, events: async_channel::Sender<Even
             while let Some(job) = queue.pop() {
                 let result = execute(&mut storage, &queue, &events, &mut connections, &job);
                 if let Err(error) = &result
-                    && queue.cancellation.current(0)
+                    && queue.checkpoint(&job).is_ok()
                 {
                     eprintln!(
                         "Background mail sync failed for {} / {}: {error}",
@@ -47,11 +47,13 @@ fn execute(
     connections: &mut Connections,
     job: &Job,
 ) -> Result<()> {
+    queue.checkpoint(job)?;
     let (account, folder) = (&job.account, &job.folder);
     match &job.task {
         Task::Discover => {
             let discovered = connections
                 .execute_body(account, &queue.cancellation, 0, |mail| mail.sync_folders())?;
+            queue.checkpoint(job)?;
             storage.store_folders(&account.email, &discovered.all)?;
             let folders = queue.discovered(
                 &account.email,
@@ -77,6 +79,7 @@ fn execute(
                 connections.execute_body(account, &queue.cancellation, 0, |mail| {
                     mail.inventory(folder)
                 })?;
+            queue.checkpoint(job)?;
             let missing =
                 storage.inventory_since(&account.email, folder, validity, &flags, revision)?;
             let mut needed = storage.uncached_uids(&account.email, folder)?;
@@ -124,6 +127,7 @@ fn execute(
             let messages = connections.execute_body(account, &queue.cancellation, 0, |mail| {
                 mail.header_batch(folder, *validity, &uids[*offset..end])
             })?;
+            queue.checkpoint(job)?;
             storage.store_headers(&account.email, folder, *validity, &messages)?;
             publish_notifications(storage, events, job, *validity)?;
             if end == uids.len() {
@@ -165,9 +169,13 @@ fn execute(
                 queue.body_cached(&account.email, folder, *validity, *uid);
                 return Ok(());
             }
-            let fetched = connections.execute_body(account, &queue.cancellation, 0, |mail| {
-                mail.cached_body(folder, *validity, *uid)
-            })?;
+            let fetched = match storage.cached_body_copy(&account.email, &message, false)? {
+                Some(cached) => cached,
+                None => connections.execute_body(account, &queue.cancellation, 0, |mail| {
+                    mail.cached_body(folder, *validity, *uid)
+                })?,
+            };
+            queue.checkpoint(job)?;
             if let Some(mut message) =
                 storage.store_body(&account.email, folder, Some(*validity), &fetched)?
             {
@@ -264,6 +272,88 @@ mod tests {
     use super::*;
     use crate::models::{Account, Message};
 
+    fn fixture_account() -> Account {
+        Account {
+            path: "a".into(),
+            email: "a".into(),
+            name: String::new(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        }
+    }
+
+    #[test]
+    fn sync_reuses_another_folders_cached_body_without_connecting() {
+        let mut storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        storage
+            .store(
+                "a",
+                "All Mail",
+                &Message {
+                    uid: 999,
+                    message_id: "same@example.com".into(),
+                    body_text: "Cached in All Mail".into(),
+                    body_loaded: true,
+                    is_read: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        storage
+            .reconcile(
+                "a",
+                "INBOX",
+                7,
+                vec![Message {
+                    uid: 3,
+                    message_id: "same@example.com".into(),
+                    ..Default::default()
+                }],
+                &[3],
+            )
+            .unwrap();
+        let queue = SyncQueue::default();
+        queue.focus("a", "INBOX");
+        queue.push(Job {
+            account: fixture_account(),
+            folder: "INBOX".into(),
+            task: Task::Body {
+                validity: 7,
+                uid: 3,
+                preview: true,
+                timestamp: 0,
+            },
+        });
+        let job = queue.pop().unwrap();
+        let (events, received) = async_channel::unbounded();
+        execute(
+            &mut storage,
+            &queue,
+            &events,
+            &mut Connections::default(),
+            &job,
+        )
+        .unwrap();
+        queue.finish(&job, true);
+        let Event::CacheBody(account, folder, message) = received.try_recv().unwrap() else {
+            panic!("Expected cached body notification");
+        };
+        assert_eq!(account, "a");
+        assert_eq!(folder, "INBOX");
+        assert_eq!(message.uid, 3);
+        assert_eq!(message.uid_validity, Some(7));
+        assert_eq!(message.body_text, "Cached in All Mail");
+        assert!(message.body_loaded && !message.is_read);
+        assert!(storage.uncached_uids("a", "INBOX").unwrap().is_empty());
+        assert_eq!(queue.status().unwrap().failed, 0);
+        queue.close();
+    }
+
     #[test]
     fn large_mailboxes_fill_a_bounded_queue_and_resume_after_restart() {
         let directory =
@@ -271,18 +361,7 @@ mod tests {
         let path = directory.join("cache.db");
         let mut storage = Storage::open(&path).unwrap();
         let job = Job {
-            account: Account {
-                path: "a".into(),
-                email: "a".into(),
-                name: String::new(),
-                host: String::new(),
-                username: String::new(),
-                port: 993,
-                ssl: true,
-                tls: false,
-                oauth2: false,
-                smtp: None,
-            },
+            account: fixture_account(),
             folder: "INBOX".into(),
             task: Task::Scan,
         };

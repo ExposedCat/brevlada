@@ -115,6 +115,14 @@ impl State {
             {
                 self.delivery_history_loaded(sender, identifier, messages);
             }
+            Event::RelatedSentError(generation, selection, error)
+                if generation == self.generation.get() && selection == self.selection.get() =>
+            {
+                self.sender.conversation_pending(selection, false);
+                self.toast.add_toast(adw::Toast::new(&format!(
+                    "Could not load conversation messages: {error}"
+                )));
+            }
             Event::RelatedSent(generation, selection, mut messages)
                 if generation == self.generation.get() && selection == self.selection.get() =>
             {
@@ -147,10 +155,18 @@ impl State {
                         }
                     });
                 }
+                self.sender.conversation_pending(selection, false);
             }
             Event::SentBody(generation, selection, folder, uid, result)
                 if generation == self.generation.get() && selection == self.selection.get() =>
             {
+                let finished = result.as_ref().map_or(true, |message| {
+                    message.is_read
+                        || self
+                            .correspondence()
+                            .own
+                            .contains(&models::senders::key(message))
+                });
                 let id = self
                     .related_sent
                     .borrow()
@@ -187,6 +203,9 @@ impl State {
                             self.draft_body_error(&folder, &id, &error);
                         }
                     }
+                }
+                if finished {
+                    self.sender.body_handled(selection, &folder, uid, true);
                 }
             }
             Event::SpamUndoFinished {
@@ -405,6 +424,13 @@ impl State {
                             }
                         },
                     );
+                    let weak = Rc::downgrade(self);
+                    let selected = account.clone();
+                    row.sent.connect_clicked(move |_| {
+                        if let Some(state) = weak.upgrade() {
+                            state.select_sent(selected.clone());
+                        }
+                    });
                     self.sidebar.append(&row.widget);
                     let weak = Rc::downgrade(self);
                     let email = account.email.clone();
@@ -423,6 +449,11 @@ impl State {
             }
             Event::SidebarReady => {
                 self.sender.sync();
+            }
+            Event::SentFolder(generation, account, folder)
+                if generation == self.generation.get() =>
+            {
+                self.select(account, folder);
             }
             Event::Folders(email, folders) => {
                 if self.folder_names.borrow().get(&email) == Some(&folders) {
@@ -575,6 +606,13 @@ impl State {
             }
             Event::CacheList(email, folder, mut messages) => {
                 self.refresh_search_cache(&email, &folder);
+                let refresh_conversation = self.recipient_mode()
+                    && self
+                        .account
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|account| account.email == email)
+                    && !self.open_group.borrow().is_empty();
                 let current = self
                     .account
                     .borrow()
@@ -596,6 +634,9 @@ impl State {
                     self.folder_cache
                         .borrow_mut()
                         .insert((email, folder), messages);
+                }
+                if refresh_conversation {
+                    self.request_related_sent();
                 }
             }
             Event::CacheBody(email, folder, message) => {
@@ -643,6 +684,8 @@ impl State {
                 }
                 if message.is_read {
                     self.load_expanded();
+                    self.sender
+                        .body_handled(selection, &self.folder.borrow(), message.uid, false);
                 }
             }
             Event::BodyError(generation, selection, uid, error)
@@ -666,8 +709,11 @@ impl State {
                 {
                     self.toast.add_toast(adw::Toast::new(&error));
                 }
+                self.sender
+                    .body_handled(selection, &self.folder.borrow(), uid, false);
             }
             Event::Avatar(email, image) => self.avatars.resolved(&email, image),
+            Event::AvatarError(email) => self.avatars.failed(&email),
             Event::Error(generation, error)
                 if generation.is_none() || generation == Some(self.generation.get()) =>
             {

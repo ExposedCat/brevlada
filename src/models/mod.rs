@@ -125,6 +125,9 @@ pub struct Message {
     pub remote_media: Option<bool>,
     #[serde(skip)]
     pub search_match: bool,
+    /// The recipient represented by a Sent Mail list row; never changes From.
+    #[serde(skip)]
+    pub list_recipient: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -180,6 +183,7 @@ impl Message {
             sender: self.sender.clone(),
             reply_to: self.reply_to.clone(),
             recipients: self.recipients.clone(),
+            list_recipient: self.list_recipient.clone(),
             cc: self.cc.clone(),
             in_reply_to: self.in_reply_to.clone(),
             references: self.references.clone(),

@@ -33,6 +33,9 @@ impl Editor {
             .vexpand(false)
             .hexpand(true)
             .build();
+        if let Some(context) = view.context() {
+            context.set_spell_checking_enabled(true);
+        }
         super::web_fonts::follow_ui(&view);
         view.set_background_color(&gtk::gdk::RGBA::TRANSPARENT);
         manager.register_script_message_handler("composeHeight", Some(WORLD));

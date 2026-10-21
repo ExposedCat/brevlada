@@ -127,6 +127,110 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inbox_correspondent_page_includes_own_replies_without_other_recipients() {
+        let storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        for (uid, sender, recipients) in [
+            (1, "alice@example.com", "me@example.com"),
+            (2, "alias@example.com", "Alice <alice@example.com>"),
+            (3, "me@example.com", "bob@example.com"),
+        ] {
+            storage
+                .store(
+                    "me@example.com",
+                    "INBOX",
+                    &Message {
+                        uid,
+                        timestamp: uid as i64,
+                        sender: sender.into(),
+                        recipients: recipients.into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let scope = crate::models::senders::Correspondence {
+            outgoing: false,
+            own: std::collections::HashSet::from([
+                "me@example.com".into(),
+                "alias@example.com".into(),
+            ]),
+        };
+        let page = storage
+            .correspondent_page(
+                "me@example.com",
+                "INBOX",
+                "alice@example.com",
+                None,
+                10,
+                &scope,
+            )
+            .unwrap();
+        assert_eq!(
+            page.iter().map(|message| message.uid).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn recipient_pages_match_addresses_exactly_and_continue_past_other_recipients() {
+        let storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        for (uid, recipients) in [
+            (7, "Bob <bob@example.com>"),
+            (6, "\"alice@example.com\" <bob@example.com>"),
+            (5, "Alice <ALICE@example.com>, Bob <bob@example.com>"),
+            (4, "alice@example.com.invalid"),
+            (3, "alice@example.com"),
+            (2, "carol@example.com"),
+            (1, "Alice <alice@example.com>"),
+        ] {
+            storage
+                .store(
+                    "me",
+                    "Sent",
+                    &Message {
+                        uid,
+                        timestamp: uid as i64,
+                        sender: "me@example.com".into(),
+                        recipients: recipients.into(),
+                        message_id: format!("message-{uid}"),
+                        body_loaded: true,
+                        body_text: format!("Body {uid}"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let page = storage
+            .recipient_page("me", "Sent", "alice@example.com", None, 2)
+            .unwrap();
+        assert_eq!(
+            page.iter().map(|message| message.uid).collect::<Vec<_>>(),
+            vec![5, 3]
+        );
+        assert_eq!(page[0].body_text, "Body 5");
+        assert_eq!(page[0].sender, "me@example.com");
+        let next = storage
+            .recipient_page("me", "Sent", "alice@example.com", Some((3, 3)), 2)
+            .unwrap();
+        assert_eq!(
+            next.iter().map(|message| message.uid).collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(
+            storage
+                .recipient_page("other", "Sent", "alice@example.com", None, 2)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            storage
+                .recipient_page("me", "INBOX", "alice@example.com", None, 2)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn search_messages_preserve_mailbox_identity_and_flag_revisions() {
         let mut storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
         let original = Message {

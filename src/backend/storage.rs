@@ -10,6 +10,8 @@ mod access;
 mod actions;
 #[path = "avatar_storage.rs"]
 pub mod avatar;
+#[path = "body_storage.rs"]
+mod bodies;
 #[path = "calendar_storage.rs"]
 mod calendar;
 #[cfg(test)]
@@ -202,11 +204,22 @@ impl Storage {
         })
     }
 
+    #[cfg(test)]
     pub fn related_sent(
         &self,
         account: &str,
         folder: &str,
         received: &[Message],
+    ) -> Result<Vec<SentMessage>> {
+        self.related_messages(account, folder, received, false)
+    }
+
+    pub fn related_messages(
+        &self,
+        account: &str,
+        folder: &str,
+        received: &[Message],
+        outgoing: bool,
     ) -> Result<Vec<SentMessage>> {
         let mut candidates = Vec::new();
         let mut local = self.0.prepare(concat!(
@@ -220,15 +233,11 @@ impl Storage {
             });
         }
         let mut cached = self.0.prepare(concat!(
-            messages::select!(
-                "coalesce(b.body_text, ''), coalesce(b.body_html, ''), \
-                 coalesce(b.inline_media, '[]'), h.folder, (SELECT f.uid_validity FROM rust_folders f \
-                 WHERE f.account_id=h.account_id AND f.folder=h.folder)"
-            ),
-            " WHERE h.account_id=?1 AND h.folder<>?2 AND (h.is_draft OR h.sender_key=lower(?1))
+            messages::select!("'', '', '[]', h.folder, (SELECT f.uid_validity FROM rust_folders f WHERE f.account_id=h.account_id AND f.folder=h.folder)"),
+            " WHERE h.account_id=?1 AND h.folder<>?2 AND (?3 OR h.is_draft OR h.sender_key=lower(?1))
              ORDER BY h.timestamp DESC, h.folder, h.uid DESC"
         ))?;
-        for row in cached.query_map(params![account, folder], |row| {
+        for row in cached.query_map(params![account, folder, outgoing], |row| {
             Ok((
                 messages::decode(row)?,
                 row.get::<_, String>(29)?,
@@ -237,10 +246,25 @@ impl Storage {
         })? {
             let (mut message, folder, validity) = row?;
             message.uid_validity = message.uid_validity.or(validity);
+            message.body_loaded = false;
             super::mail_sync::ensure_draft_id(&mut message, &folder);
             candidates.push(SentMessage { folder, message });
         }
-        Ok(crate::models::conversation::related(received, &candidates))
+        let mut related =
+            crate::models::conversation::related_direction(received, &candidates, outgoing);
+        for item in related
+            .iter_mut()
+            .filter(|item| !item.folder.is_empty())
+            .take(25)
+        {
+            if let Some(mut message) = self.message(account, &item.folder, item.message.uid)? {
+                message.is_draft |= item.message.is_draft;
+                message.uid_validity = message.uid_validity.or(item.message.uid_validity);
+                super::mail_sync::ensure_draft_id(&mut message, &item.folder);
+                item.message = message;
+            }
+        }
+        Ok(related)
     }
 
     #[cfg(test)]
@@ -615,6 +639,66 @@ mod tests {
             "Original"
         );
         assert_eq!(storage.messages("b", "INBOX").unwrap()[0].subject, "Other");
+    }
+
+    #[test]
+    fn sent_conversations_reconstruct_received_replies_and_deduplicate_mailbox_copies() {
+        let storage = Storage::open(Path::new(":memory:")).unwrap();
+        let sent = Message {
+            uid: 1,
+            message_id: "sent-original".into(),
+            sender: "me@example.com".into(),
+            recipients: "Alice <alice@example.com>".into(),
+            subject: "Plans".into(),
+            body_loaded: true,
+            ..Default::default()
+        };
+        storage.store("me@example.com", "Sent", &sent).unwrap();
+        storage.store("me@example.com", "INBOX", &sent).unwrap();
+        let reply = Message {
+            uid: 2,
+            message_id: "reply".into(),
+            sender: "Alice <alice@example.com>".into(),
+            recipients: "me@example.com".into(),
+            subject: "Re: Plans".into(),
+            references: vec![sent.message_id.clone()],
+            body_loaded: true,
+            body_text: "Yes, let's do it".into(),
+            ..Default::default()
+        };
+        storage.store("me@example.com", "INBOX", &reply).unwrap();
+        storage.store("me@example.com", "Archive", &reply).unwrap();
+        storage
+            .store(
+                "other@example.com",
+                "INBOX",
+                &Message {
+                    uid: 3,
+                    message_id: "wrong-account".into(),
+                    ..reply.clone()
+                },
+            )
+            .unwrap();
+        storage
+            .store(
+                "me@example.com",
+                "INBOX",
+                &Message {
+                    uid: 4,
+                    message_id: "unrelated".into(),
+                    sender: "bob@example.com".into(),
+                    references: vec![],
+                    ..reply.clone()
+                },
+            )
+            .unwrap();
+        let related = storage
+            .related_messages("me@example.com", "Sent", &[sent], true)
+            .unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].message.message_id, "reply");
+        assert_eq!(related[0].message.body_text, reply.body_text);
+        assert!(related[0].message.body_loaded);
     }
 
     #[test]

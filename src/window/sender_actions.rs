@@ -108,7 +108,7 @@ impl State {
                 .position(|group| {
                     group.first().is_some_and(|message| {
                         self.sender_pane.borrow().sender()
-                            == Some(models::senders::key(message).as_str())
+                            == Some(models::senders::list_key(message).as_str())
                     })
                 })
                 .unwrap_or(0);

@@ -82,6 +82,7 @@ impl Selection {
 pub struct AccountRow {
     pub widget: gtk::Box,
     pub folders: gtk::Box,
+    pub sent: gtk::Button,
 }
 
 impl AccountRow {
@@ -117,11 +118,16 @@ impl AccountRow {
             .hexpand(true)
             .css_classes(["flat", "account-button"])
             .build();
+        let selected = selection.clone();
         account_button.connect_clicked(move |button| {
-            selection.activate(button);
+            selected.activate(button);
             select();
         });
         row.append(&account_button);
+        let sent = button("mail-send-symbolic", "Sent mail");
+        sent.add_css_class("account-sent");
+        sent.connect_clicked(move |button| selection.activate(button));
+        row.append(&sent);
         widget.append(&row);
         let folders = column("account-folders");
         folders.set_visible(false);
@@ -151,7 +157,11 @@ impl AccountRow {
             expand.emit_clicked();
         }
         expansion.bind("", &folders);
-        Self { widget, folders }
+        Self {
+            widget,
+            folders,
+            sent,
+        }
     }
 }
 

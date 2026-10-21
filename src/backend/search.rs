@@ -52,6 +52,9 @@ pub struct Request {
     pub sender_messages: Option<Arc<Vec<Message>>>,
     pub unread_first: bool,
     pub deferred_read: HashSet<u32>,
+    pub outgoing: bool,
+    pub sent_folders: HashMap<String, String>,
+    pub own_addresses: HashSet<String>,
     ticket: u64,
 }
 
@@ -74,6 +77,9 @@ impl Request {
             sender_messages: None,
             unread_first: true,
             deferred_read: HashSet::new(),
+            outgoing: false,
+            sent_folders: HashMap::new(),
+            own_addresses: HashSet::new(),
             ticket: 0,
         }
     }
@@ -109,6 +115,8 @@ struct Index {
     source: Arc<Vec<Message>>,
     sender_source: Option<Arc<Vec<Message>>>,
     sender: Option<String>,
+    outgoing: bool,
+    own_addresses: HashSet<String>,
     messages: Arc<Vec<Message>>,
     fields: Vec<Arc<[String]>>,
     senders: Vec<String>,
@@ -164,6 +172,8 @@ impl Search {
                 if !thread_index.as_ref().is_some_and(|index| {
                     Arc::ptr_eq(&index.source, &request.messages)
                         && index.sender == request.sender
+                        && index.outgoing == request.outgoing
+                        && index.own_addresses == request.own_addresses
                         && match (&index.sender_source, &request.sender_messages) {
                             (None, None) => true,
                             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -182,8 +192,15 @@ impl Search {
                                 break;
                             }
                             let sender = models::senders::key(message);
-                            if request.sender.as_ref() == Some(&sender)
-                                || request.own.as_ref() == Some(&sender)
+                            if request.sender.as_ref().is_some_and(|recipient| {
+                                models::senders::matches(
+                                    message,
+                                    recipient,
+                                    request.outgoing || request.own_addresses.contains(&sender),
+                                )
+                            }) || (request.own_addresses.is_empty()
+                                && !request.outgoing
+                                && request.own.as_ref() == Some(&sender))
                             {
                                 scoped.insert(
                                     (message.uid, message.message_id.clone()),
@@ -218,6 +235,9 @@ impl Search {
                         if let Some(&(old, position)) =
                             previous.get(&(message.uid, message.message_id.as_str()))
                             && same_fields(message, &old.messages[position])
+                            && old.outgoing == request.outgoing
+                            && old.sender == request.sender
+                            && old.own_addresses == request.own_addresses
                         {
                             fields.push(old.fields[position].clone());
                             senders.push(old.senders[position].clone());
@@ -229,7 +249,17 @@ impl Search {
                                     .collect::<Vec<_>>()
                                     .into(),
                             );
-                            senders.push(models::senders::key(message));
+                            senders.push(
+                                if request.outgoing
+                                    || request
+                                        .own_addresses
+                                        .contains(&models::senders::key(message))
+                                {
+                                    request.sender.clone().unwrap_or_default()
+                                } else {
+                                    models::senders::key(message)
+                                },
+                            );
                         }
                     }
                     if !current(&worker, &request) {
@@ -239,6 +269,8 @@ impl Search {
                         source: request.messages.clone(),
                         sender_source: request.sender_messages.clone(),
                         sender: request.sender.clone(),
+                        outgoing: request.outgoing,
+                        own_addresses: request.own_addresses.clone(),
                         messages,
                         fields,
                         senders,
@@ -349,9 +381,18 @@ fn search(
     }
     let mut groups = models::threads(messages, "");
     groups.retain(|group| {
-        group
-            .iter()
-            .any(|message| Some(models::senders::key(message)) == request.sender)
+        group.iter().any(|message| {
+            request.sender.as_ref().is_some_and(|sender| {
+                models::senders::matches(
+                    message,
+                    sender,
+                    request.outgoing
+                        || request
+                            .own_addresses
+                            .contains(&models::senders::key(message)),
+                )
+            })
+        })
     });
     Some(groups.into_iter().map(|group| (None, group)).collect())
 }
@@ -359,6 +400,161 @@ fn search(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inbox_search_groups_own_replies_with_their_correspondent() {
+        let (search, results) = Search::start();
+        let messages = Arc::new(vec![
+            Message {
+                uid: 1,
+                sender: "alice@example.com".into(),
+                recipients: "me@example.com".into(),
+                subject: "Plans".into(),
+                ..Default::default()
+            },
+            Message {
+                uid: 2,
+                timestamp: 2,
+                sender: "me@example.com".into(),
+                recipients: "alice@example.com, me@example.com".into(),
+                subject: "Re: Plans".into(),
+                ..Default::default()
+            },
+        ]);
+        let mut request = Request::new(
+            false,
+            "plans".into(),
+            None,
+            Some("me@example.com".into()),
+            messages.clone(),
+        );
+        request.own_addresses.insert("me@example.com".into());
+        search.submit(request);
+        let response = finished(&results);
+        assert_eq!(response.groups.len(), 1);
+        assert_eq!(response.groups[0].len(), 2);
+        assert_eq!(
+            models::senders::list_key(&response.groups[0][0]),
+            "alice@example.com"
+        );
+        let mut request = Request::new(
+            true,
+            "plans".into(),
+            Some("alice@example.com".into()),
+            Some("me@example.com".into()),
+            messages,
+        );
+        request.own_addresses.insert("me@example.com".into());
+        search.submit(request);
+        assert_eq!(finished(&results).groups.iter().flatten().count(), 2);
+    }
+
+    #[test]
+    fn sent_search_groups_recipients_and_scopes_thread_search_to_the_selected_recipient() {
+        let (search, results) = Search::start();
+        let messages = Arc::new(vec![
+            Message {
+                uid: 3,
+                timestamp: 3,
+                message_id: "both".into(),
+                subject: "Needle shared".into(),
+                sender: "me@example.com".into(),
+                recipients: "Alice <ALICE@example.com>, Bob <bob@example.com>".into(),
+                ..Default::default()
+            },
+            Message {
+                uid: 2,
+                timestamp: 2,
+                message_id: "alice".into(),
+                subject: "Needle Alice".into(),
+                sender: "me@example.com".into(),
+                recipients: "alice@example.com".into(),
+                ..Default::default()
+            },
+            Message {
+                uid: 1,
+                timestamp: 1,
+                message_id: "bob".into(),
+                subject: "Needle Bob".into(),
+                sender: "me@example.com".into(),
+                recipients: "bob@example.com".into(),
+                ..Default::default()
+            },
+        ]);
+        let mut request = Request::new(
+            false,
+            "needle".into(),
+            None,
+            Some("me@example.com".into()),
+            messages.clone(),
+        );
+        request.outgoing = true;
+        search.submit(request);
+        let response = finished(&results);
+        assert_eq!(response.groups.len(), 2);
+        for group in &response.groups {
+            assert_eq!(group.len(), 2);
+            assert_ne!(models::senders::list_key(&group[0]), "me@example.com");
+            assert!(
+                group
+                    .iter()
+                    .all(|message| message.sender == "me@example.com")
+            );
+        }
+        let mut scoped = Request::new(false, "needle".into(), None, None, messages.clone());
+        let location = Location {
+            account: "me@example.com".into(),
+            folder: "Gesendet".into(),
+        };
+        scoped
+            .sent_folders
+            .insert(location.account.clone(), location.folder.clone());
+        scoped.scope = Some(Scope {
+            current: Some(location.clone()),
+            folder: Some(location.folder.clone()),
+            accounts: vec![location.account.clone()],
+            cache_path: std::path::PathBuf::new(),
+            revision: 0,
+        });
+        search.submit(scoped);
+        let response = finished(&results);
+        assert_eq!(response.groups.len(), 2);
+        assert!(
+            response
+                .groups
+                .iter()
+                .all(|group| group[0].list_recipient.is_some())
+        );
+        assert!(
+            response
+                .locations
+                .iter()
+                .all(|actual| actual.as_ref() == Some(&location))
+        );
+        for (recipient, expected) in [
+            ("alice@example.com", vec![3, 2]),
+            ("bob@example.com", vec![3, 1]),
+        ] {
+            let mut request = Request::new(
+                true,
+                "needle".into(),
+                Some(recipient.into()),
+                Some("me@example.com".into()),
+                messages.clone(),
+            );
+            request.outgoing = true;
+            search.submit(request);
+            let response = finished(&results);
+            let mut uids = response
+                .groups
+                .iter()
+                .flatten()
+                .map(|message| message.uid)
+                .collect::<Vec<_>>();
+            uids.sort_by_key(|uid| std::cmp::Reverse(*uid));
+            assert_eq!(uids, expected);
+        }
+    }
 
     pub(super) fn finished(results: &async_channel::Receiver<Response>) -> Response {
         loop {

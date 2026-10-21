@@ -17,7 +17,7 @@ impl State {
             })
             .collect();
         for (index, group) in groups.iter_mut().enumerate() {
-            let sender = models::senders::key(&group[0]);
+            let sender = models::senders::list_key(&group[0]);
             let key = locations
                 .get(index)
                 .and_then(Option::as_ref)

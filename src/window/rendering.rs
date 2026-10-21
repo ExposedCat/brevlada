@@ -126,6 +126,9 @@ impl State {
                     .map(|account| account.email.to_lowercase()),
                 messages,
             );
+            request.outgoing = self.recipient_mode();
+            request.own_addresses = self.correspondence().own;
+            request.sent_folders = self.sender.sent_folders();
             if !threads {
                 request.filters = self.search_filters.filters().unwrap();
                 let account = self.account.borrow();
@@ -188,27 +191,19 @@ impl State {
             self.visible_list_group(&self.messages.borrow(), false)
         };
         let groups = if let Some(sender) = &sender {
-            let own = self
-                .account
-                .borrow()
-                .as_ref()
-                .map(|account| account.email.to_lowercase());
             let messages: Vec<_> = messages
                 .into_iter()
-                .filter(|message| {
-                    let key = models::senders::key(message);
-                    key == *sender || own.as_deref() == Some(key.as_str())
-                })
+                .filter(|message| self.correspondence().matches(message, sender))
                 .collect();
             let mut groups = models::threads(messages, "");
             groups.retain(|group| {
                 group
                     .iter()
-                    .any(|message| models::senders::key(message) == *sender)
+                    .any(|message| self.correspondence().matches(message, sender))
             });
             groups
         } else {
-            models::senders::groups(messages, "")
+            self.correspondence().groups(messages)
         };
         self.publish_search_groups(threads, &query, groups, Vec::new());
     }
@@ -238,7 +233,7 @@ impl State {
                     if threads {
                         thread_key(group)
                     } else {
-                        let sender = models::senders::key(&group[0]);
+                        let sender = models::senders::list_key(&group[0]);
                         locations
                             .get(index)
                             .and_then(Option::as_ref)
@@ -330,7 +325,7 @@ impl State {
                 .collect();
             let mut located: Vec<_> = groups.into_iter().zip(locations).collect();
             located.sort_by_key(|(group, location)| {
-                let sender = models::senders::key(&group[0]);
+                let sender = models::senders::list_key(&group[0]);
                 let key = location
                     .as_ref()
                     .map_or(sender.clone(), |location| location.key(&sender));
@@ -345,7 +340,7 @@ impl State {
                 if sender.is_some() {
                     thread_key(group)
                 } else {
-                    let sender = models::senders::key(&group[0]);
+                    let sender = models::senders::list_key(&group[0]);
                     locations
                         .get(index)
                         .and_then(Option::as_ref)
@@ -443,7 +438,11 @@ impl State {
                 } else if searching {
                     "No matching messages"
                 } else if sender.is_some() {
-                    "No messages from this sender"
+                    if self.recipient_mode() {
+                        "No messages to this recipient"
+                    } else {
+                        "No messages from this sender"
+                    }
                 } else {
                     "No messages in this folder"
                 },
@@ -496,8 +495,10 @@ impl State {
                 };
                 let previous = row.messages.clone();
                 let search_match = row.messages[index].search_match;
+                let recipient = row.messages[index].list_recipient.clone();
                 row.messages[index] = replacement.clone();
                 row.messages[index].search_match = search_match;
+                row.messages[index].list_recipient = recipient;
                 let changed = !same_row(&previous, &row.messages, threads);
                 let updated = changed.then(|| glib::BoxedAnyObject::new(row.clone()));
                 drop(row);
@@ -693,6 +694,7 @@ fn same_row(left: &[Message], right: &[Message], threads: bool) -> bool {
             (Some(a), Some(b)) => {
                 a.uid == b.uid
                     && a.sender == b.sender
+                    && a.list_recipient == b.list_recipient
                     && a.subject == b.subject
                     && a.timestamp == b.timestamp
                     && a.date == b.date

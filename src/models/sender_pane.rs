@@ -4,6 +4,8 @@ use super::Message;
 pub struct SenderPane {
     revision: u64,
     session: Option<Session>,
+    pub outgoing: bool,
+    pub own: std::collections::HashSet<String>,
 }
 
 struct Session {
@@ -55,7 +57,13 @@ impl SenderPane {
         session.messages.extend(
             messages
                 .into_iter()
-                .filter(|message| super::senders::key(message) == session.sender)
+                .filter(|message| {
+                    super::senders::matches(
+                        message,
+                        &session.sender,
+                        self.outgoing || self.own.contains(&super::senders::key(message)),
+                    )
+                })
                 .filter(|message| known.insert((message.uid, message.message_id.clone())))
                 .cloned(),
         );

@@ -35,20 +35,30 @@ pub fn view(message: &Message, media: bool, hide_quotes: bool) -> (gtk::Widget, 
         .build();
     overlay.add_overlay(&stack);
     overlay.set_measure_overlay(&stack, true);
-    let target = stack.downgrade();
-    let loaded = content.downgrade();
-    super::body_layout::connect(&view, &content, &manager, move || {
-        if let Some(stack) = target.upgrade()
-            && stack.visible_child_name().as_deref() != Some("error")
-            && let Some(content) = loaded.upgrade()
-        {
-            content.set_opacity(1.0);
-            stack.set_visible(false);
+    let show_content: std::rc::Rc<dyn Fn()> = std::rc::Rc::new({
+        let target = stack.downgrade();
+        let loaded = content.downgrade();
+        move || {
+            if let Some(stack) = target.upgrade()
+                && stack.visible_child_name().as_deref() != Some("error")
+                && let Some(content) = loaded.upgrade()
+            {
+                content.set_opacity(1.0);
+                stack.set_visible(false);
+            }
         }
     });
+    let layout_ready = show_content.clone();
+    super::body_layout::connect(&view, &content, &manager, move || layout_ready());
+    let load_ready = show_content.clone();
     view.connect_load_changed(move |view, event| {
         if event == webkit6::LoadEvent::Finished {
             super::body_layout::observe(view);
+            // Body text and cached markup are usable even if WebKit's injected
+            // layout measurement never reports a size (for example when the
+            // web process is busy with remote media). Reveal the document now;
+            // the observer can still adjust its height afterward.
+            load_ready();
         }
     });
     let document: std::rc::Rc<std::cell::RefCell<Option<String>>> = Default::default();

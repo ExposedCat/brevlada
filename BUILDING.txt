@@ -1,16 +1,26 @@
 Brevlada
 
 Requires Rust 1.92 or newer, GTK 4.12 or newer, libadwaita 1.4 or newer,
-WebKitGTK 6.0, OpenSSL, pkg-config, glib-compile-resources, and xdg-open
+WebKitGTK 6.0, GtkSourceView 5, libspelling 0.4 or newer, OpenSSL, pkg-config,
+glib-compile-resources, and xdg-open
 (xdg-utils) for opening links in the desktop's default browser.
 
 Fedora development packages:
-  gtk4-devel libadwaita-devel webkitgtk6.0-devel openssl-devel gcc
+  gtk4-devel libadwaita-devel webkitgtk6.0-devel gtksourceview5-devel libspelling-devel openssl-devel gcc
+
+The message body has spellchecking in both Text and HTML modes, using the
+system language and installed dictionaries. Install Hunspell dictionaries for
+the languages you write in (for example, hunspell-en-US on Fedora).
 
 Build: cargo build
 Run: cargo run
 Format: cargo fmt
 Verify: cargo test && cargo fmt --check && cargo clippy --all-targets -- -D warnings
+
+When local development libraries are in .native/usr/lib64, Linux debug builds include
+that directory in their runtime search path, so target/debug/brevlada and cargo
+test work without setting LD_LIBRARY_PATH. Release builds use installed system
+libraries or the Flatpak runtime.
 
 Flatpak
 
@@ -110,6 +120,8 @@ Checking uses the existing five-minute sync cycle, including retries after a
 network failure and refreshing Online Accounts. IMAP IDLE is not implemented.
 
 Interactive folder/message loads and background caching run on separate workers.
+Opened conversation bodies load from top to bottom before previews and history
+lookups. Background caching pauses while those bodies load and then resumes.
 Background caching starts for all accounts at launch and checks again every five
 minutes. Four background workers allow up to two active requests per account.
 Background sync uses the persisted folder list in rust_sync_settings for each

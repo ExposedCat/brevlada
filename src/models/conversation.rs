@@ -13,36 +13,69 @@ pub fn quoted_message_visible<'a>(
 }
 
 pub fn related(received: &[Message], candidates: &[SentMessage]) -> Vec<SentMessage> {
+    related_direction(received, candidates, false)
+}
+
+pub fn related_direction(
+    received: &[Message],
+    candidates: &[SentMessage],
+    outgoing: bool,
+) -> Vec<SentMessage> {
     let received_ids: HashSet<_> = received
         .iter()
-        .map(|message| message.message_id.as_str())
+        .map(|message| message.message_id.trim().trim_matches(['<', '>']))
         .collect();
     let mut linked: HashSet<String> = received
         .iter()
-        .flat_map(|message| std::iter::once(&message.message_id).chain(&message.references))
+        .flat_map(|message| {
+            std::iter::once(&message.message_id)
+                .chain(&message.references)
+                .chain(&message.in_reply_to)
+        })
         .filter(|id| !id.is_empty())
-        .cloned()
+        .map(|id| id.trim().trim_matches(['<', '>']).to_owned())
         .collect();
     let mut found = HashSet::new();
     loop {
         let mut changed = false;
         for candidate in candidates {
             let message = &candidate.message;
-            if message.message_id.is_empty()
-                || received_ids.contains(message.message_id.as_str())
-                || found.contains(&message.message_id)
-            {
+            let id = message.message_id.trim().trim_matches(['<', '>']);
+            if id.is_empty() || received_ids.contains(id) || found.contains(id) {
                 continue;
             }
-            if linked.contains(&message.message_id)
-                || message.references.iter().any(|id| linked.contains(id))
-                || received
+            if linked.contains(id)
+                || message
+                    .references
                     .iter()
-                    .any(|incoming| same_conversation(incoming, message))
+                    .chain(&message.in_reply_to)
+                    .any(|id| linked.contains(id.trim().trim_matches(['<', '>'])))
+                || received.iter().any(|incoming| {
+                    if outgoing {
+                        same_conversation(message, incoming)
+                            || ((message.is_draft
+                                || senders::key(message) == senders::key(incoming))
+                                && subject_key(&message.subject) == subject_key(&incoming.subject)
+                                && !subject_key(&message.subject).is_empty()
+                                && senders::recipients(message).iter().any(|(_, email)| {
+                                    senders::recipients(incoming)
+                                        .iter()
+                                        .any(|(_, other)| email == other)
+                                }))
+                    } else {
+                        same_conversation(incoming, message)
+                    }
+                })
             {
-                found.insert(message.message_id.clone());
-                linked.insert(message.message_id.clone());
-                linked.extend(message.references.iter().cloned());
+                found.insert(id.to_owned());
+                linked.insert(id.to_owned());
+                linked.extend(
+                    message
+                        .references
+                        .iter()
+                        .chain(&message.in_reply_to)
+                        .map(|id| id.trim().trim_matches(['<', '>']).to_owned()),
+                );
                 changed = true;
             }
         }
@@ -52,7 +85,7 @@ pub fn related(received: &[Message], candidates: &[SentMessage]) -> Vec<SentMess
     }
     let mut result = Vec::new();
     for candidate in candidates {
-        if found.remove(&candidate.message.message_id) {
+        if found.remove(candidate.message.message_id.trim().trim_matches(['<', '>'])) {
             result.push(candidate.clone());
         }
     }

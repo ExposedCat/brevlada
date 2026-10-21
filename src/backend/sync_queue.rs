@@ -96,6 +96,8 @@ struct Pending {
     known: HashSet<Key>,
     active: HashMap<String, usize>,
     closed: bool,
+    paused: bool,
+    interrupted: HashSet<Key>,
     visible: Option<(String, String)>,
     running: HashMap<Key, Job>,
     failed: usize,
@@ -105,6 +107,9 @@ struct Pending {
 
 impl Pending {
     fn next(&self) -> Option<usize> {
+        if self.paused {
+            return None;
+        }
         let inbox_pending = self
             .jobs
             .iter()
@@ -151,6 +156,32 @@ pub struct SyncQueue {
 }
 
 impl SyncQueue {
+    // A cancelled job must yield even if foreground work finished in the meantime.
+    pub fn checkpoint(&self, job: &Job) -> anyhow::Result<()> {
+        let state = self.state.0.lock().unwrap();
+        anyhow::ensure!(
+            !state.closed && !state.paused && !state.interrupted.contains(&job.key()),
+            "Background sync interrupted by opened messages"
+        );
+        Ok(())
+    }
+
+    pub fn pause_for_opened(&self, paused: bool) {
+        let mut state = self.state.0.lock().unwrap();
+        if state.paused == paused {
+            return;
+        }
+        state.paused = paused;
+        if paused {
+            let running: Vec<_> = state.running.keys().cloned().collect();
+            state.interrupted.extend(running);
+            self.cancellation.select(1);
+        } else {
+            self.cancellation.select(0);
+        }
+        self.state.1.notify_all();
+    }
+
     pub fn status(&self) -> Option<Status> {
         let state = self.state.0.try_lock().ok()?;
         let job = state
@@ -234,6 +265,23 @@ impl SyncQueue {
         selected.dedup();
         state.progress.discovered(account, &selected);
         selected
+    }
+
+    pub fn sent_folder(&self, account: &str) -> Option<String> {
+        self.state.0.lock().unwrap().sent.get(account).cloned()
+    }
+
+    pub fn sent_folders(&self) -> HashMap<String, String> {
+        self.state.0.lock().unwrap().sent.clone()
+    }
+
+    pub fn set_sent_folder(&self, account: &str, folder: &str) {
+        self.state
+            .0
+            .lock()
+            .unwrap()
+            .sent
+            .insert(account.into(), folder.into());
     }
 
     pub fn headers_only(&self, account: &str, folder: &str) -> bool {
@@ -405,8 +453,17 @@ impl SyncQueue {
         let mut state = self.state.0.lock().unwrap();
         state.known.remove(&job.key());
         state.running.remove(&job.key());
-        state.failed += usize::from(!success);
+        let interrupted = state.interrupted.remove(&job.key());
+        state.failed += usize::from(!success && !interrupted);
         *state.active.get_mut(&job.account.email).unwrap() -= 1;
+        if interrupted
+            && !success
+            && !state.closed
+            && !state.removed_accounts.contains(&job.account.email)
+        {
+            state.known.insert(job.key());
+            state.jobs.push(job.clone());
+        }
         self.state.1.notify_all();
     }
 
@@ -440,6 +497,30 @@ mod tests {
             folder: folder.into(),
             task,
         }
+    }
+
+    #[test]
+    fn foreground_loads_interrupt_and_requeue_background_jobs_without_failures() {
+        let queue = SyncQueue::default();
+        let first = job("a", "INBOX", Task::Scan);
+        queue.push(first);
+        let running = queue.pop().unwrap();
+        assert!(queue.checkpoint(&running).is_ok());
+        queue.pause_for_opened(true);
+        assert!(queue.checkpoint(&running).is_err());
+        queue.pause_for_opened(false);
+        assert!(queue.checkpoint(&running).is_err());
+        queue.pause_for_opened(true);
+        assert!(queue.state.0.lock().unwrap().next().is_none());
+        queue.finish(&running, false);
+        assert_eq!(queue.queued_len(), 1);
+        assert_eq!(queue.state.0.lock().unwrap().failed, 0);
+        queue.pause_for_opened(false);
+        let resumed = queue.pop().unwrap();
+        assert!(queue.checkpoint(&resumed).is_ok());
+        assert_eq!(resumed.key(), running.key());
+        queue.finish(&resumed, true);
+        queue.close();
     }
 
     #[test]
@@ -495,6 +576,8 @@ mod tests {
             Some("Sent"),
             None,
         );
+        assert_eq!(queue.sent_folder("account").as_deref(), Some("Sent"));
+        assert_eq!(queue.sent_folder("other"), None);
         assert!(queue.headers_only("account", "Sent"));
         assert!(!queue.headers_only("account", "INBOX"));
         queue.restore_folders("account", vec!["INBOX".into(), "Sent".into()]);

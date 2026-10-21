@@ -10,11 +10,12 @@ impl State {
     }
 
     pub(super) fn filter_sender(&self, message: Option<Message>) {
+        self.sender_pane.borrow_mut().own = self.correspondence().own;
         self.notification_message.borrow_mut().take();
         self.search_message.borrow_mut().take();
         let was_search = self.search_sender.borrow_mut().take().is_some();
         self.next_message.set(None);
-        let sender = message.as_ref().map(models::senders::key);
+        let sender = message.as_ref().map(models::senders::list_key);
         let opening = sender.is_some() && self.sender_pane.borrow().sender().is_none();
         let dismissed = sender.as_ref().is_some_and(|sender| {
             self.account.borrow().as_ref().is_some_and(|account| {
@@ -82,6 +83,8 @@ impl State {
             account,
             folder: self.folder.borrow().clone(),
             sender: page.sender,
+            outgoing: self.recipient_mode(),
+            own: self.correspondence().own,
             generation: self.generation.get(),
             sender_generation: page.ticket,
             before: page.before,

@@ -791,6 +791,7 @@ impl State {
                         &source.folder,
                         source.message.uid,
                         &source.message.message_id,
+                        false,
                     );
                 }
             });
@@ -858,7 +859,7 @@ impl State {
                 desired.push((true, editor.widget.clone().upcast::<gtk::Widget>()));
                 if !message.body_loaded && !editor.loaded.get() {
                     if *sent {
-                        self.open_sent(folder, message.uid, &message.message_id);
+                        self.open_sent(folder, message.uid, &message.message_id, false);
                     } else {
                         self.open(message.uid);
                     }

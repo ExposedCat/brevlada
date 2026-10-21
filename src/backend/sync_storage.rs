@@ -43,6 +43,7 @@ impl Storage {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    #[cfg(test)]
     pub fn sender_page(
         &self,
         account: &str,
@@ -75,6 +76,94 @@ impl Storage {
             },
         )?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    #[cfg(test)]
+    pub fn recipient_page(
+        &self,
+        account: &str,
+        folder: &str,
+        recipient: &str,
+        before: Option<(i64, u32)>,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        self.correspondent_page(
+            account,
+            folder,
+            recipient,
+            before,
+            limit,
+            &crate::models::senders::Correspondence {
+                outgoing: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn correspondent_page(
+        &self,
+        account: &str,
+        folder: &str,
+        recipient: &str,
+        before: Option<(i64, u32)>,
+        limit: usize,
+        scope: &crate::models::senders::Correspondence,
+    ) -> Result<Vec<Message>> {
+        let mut candidates = self.0.prepare(
+            "SELECT uid, sender, recipients FROM rust_headers
+             WHERE account_id=?1 AND folder=?2
+             AND (?3 IS NULL OR (timestamp, uid) < (?3, ?4))
+             AND (?5 OR sender_key=?6 OR sender_key IN (SELECT value FROM json_each(?7)))
+             ORDER BY timestamp DESC, uid DESC",
+        )?;
+        let rows = candidates.query_map(
+            params![
+                account,
+                folder,
+                before.map(|b| b.0),
+                before.map(|b| b.1),
+                scope.outgoing,
+                recipient,
+                serde_json::to_string(&scope.own)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        let mut selected = Vec::new();
+        for row in rows {
+            if selected.len() == limit {
+                break;
+            }
+            let (uid, sender, recipients) = row?;
+            if scope.matches(
+                &Message {
+                    sender,
+                    recipients,
+                    ..Default::default()
+                },
+                recipient,
+            ) {
+                selected.push(uid);
+            }
+        }
+        let mut statement = self.0.prepare(concat!(
+            messages::select!("coalesce(b.body_text, ''), coalesce(b.body_html, ''), '[]'"),
+            " WHERE h.account_id=?1 AND h.folder=?2 AND h.uid=?3"
+        ))?;
+        let mut page = Vec::new();
+        for uid in selected {
+            let mut message =
+                statement.query_row(params![account, folder, uid], messages::decode)?;
+            message.inline_media_loaded = false;
+            message.prepare_display();
+            page.push(message);
+        }
+        Ok(page)
     }
 
     pub fn pending_bodies(

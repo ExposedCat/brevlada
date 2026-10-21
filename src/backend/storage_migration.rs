@@ -21,6 +21,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS rust_mailboxes (
     ON rust_headers (account_id, folder, timestamp DESC, uid DESC, sender_key);
     CREATE UNIQUE INDEX IF NOT EXISTS rust_headers_sent
     ON rust_headers (account_id, message_id) WHERE folder IS NULL;
+    CREATE INDEX IF NOT EXISTS rust_headers_body_copy
+    ON rust_headers (account_id, trim(message_id, '<> ' || char(9) || char(10) || char(13)))
+    WHERE body_loaded AND NOT is_draft;
     -- List rows read the leading columns without walking the overflow pages of HTML bodies.
     CREATE TABLE IF NOT EXISTS rust_bodies (
     id INTEGER PRIMARY KEY, html_tickets TEXT NOT NULL, body_text TEXT NOT NULL,
@@ -183,6 +186,7 @@ fn import_legacy(transaction: &Transaction<'_>) -> Result<()> {
                 calendar_events: Vec::new(),
                 tickets: Vec::new(),
                 search_match: false,
+                list_recipient: None,
                 list_preview: None,
                 display_prepared: false,
                 remote_media: None,

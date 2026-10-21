@@ -73,6 +73,7 @@ pub enum Command {
     RelatedSent {
         account: Account,
         folder: String,
+        outgoing: bool,
         messages: Vec<Message>,
         generation: u64,
         selection: u64,
@@ -83,6 +84,8 @@ pub enum Command {
         uid: u32,
         generation: u64,
         selection: u64,
+        mark_read: bool,
+        load_inline: bool,
     },
     UndoSpam {
         account: Account,
@@ -98,6 +101,10 @@ pub enum Command {
     Discover,
     Sync,
     Folders(Account),
+    SentFolder {
+        account: Account,
+        generation: u64,
+    },
     Load {
         account: Account,
         folder: String,
@@ -107,6 +114,8 @@ pub enum Command {
         account: Account,
         folder: String,
         sender: String,
+        outgoing: bool,
+        own: std::collections::HashSet<String>,
         generation: u64,
         sender_generation: u64,
         before: Option<(i64, u32)>,
@@ -156,6 +165,7 @@ pub enum Event {
     DraftDeleted(u64, Result<(), String>),
     SentCacheChanged(String),
     RelatedSent(u64, u64, Vec<SentMessage>),
+    RelatedSentError(u64, u64, String),
     SentBody(u64, u64, String, u32, Result<Message, String>),
     SpamUndoFinished {
         account: String,
@@ -176,6 +186,7 @@ pub enum Event {
     Accounts(Vec<Account>),
     SidebarReady,
     Folders(String, Vec<String>),
+    SentFolder(u64, Account, String),
     Unread(String, Vec<(String, bool)>),
     UnreadSnapshot(String, Vec<(String, bool)>),
     Messages(u64, Vec<Message>, bool),
@@ -188,6 +199,7 @@ pub enum Event {
     CacheList(String, String, Vec<Message>),
     CacheBody(String, String, Message),
     Avatar(String, Option<Vec<u8>>),
+    AvatarError(String),
     Error(Option<u64>, String),
 }
 
@@ -199,9 +211,19 @@ pub struct BodyRequest {
     pub generation: u64,
     pub selection: u64,
     pub mark_read: bool,
+    pub load_inline: bool,
+    pub related: bool,
+}
+
+impl BodyRequest {
+    pub fn opened(&self) -> bool {
+        self.mark_read || self.related
+    }
 }
 
 pub struct Worker {
+    #[cfg(test)]
+    record_commands: bool,
     request: AtomicU64,
     commands: mpsc::Sender<Command>,
     cache_commands: mpsc::Sender<Command>,
@@ -222,6 +244,7 @@ impl Worker {
         let (commands, receiver) = mpsc::channel();
         (
             Self {
+                record_commands: true,
                 request: AtomicU64::default(),
                 background: super::sync_queue::SyncQueue::default(),
                 cache_commands: commands.clone(),
@@ -235,6 +258,35 @@ impl Worker {
     }
 
     pub fn send(&self, command: Command) -> Result<()> {
+        #[cfg(test)]
+        if self.record_commands && matches!(command, Command::SentBody { .. }) {
+            return self
+                .commands
+                .send(command)
+                .map_err(|_| anyhow::anyhow!("Mail service stopped"));
+        }
+        if let Command::SentBody {
+            account,
+            folder,
+            uid,
+            generation,
+            selection,
+            mark_read,
+            load_inline,
+        } = command
+        {
+            self.bodies.push(BodyRequest {
+                account,
+                folder,
+                uid,
+                generation,
+                selection,
+                mark_read,
+                load_inline,
+                related: true,
+            });
+            return Ok(());
+        }
         let channel = if matches!(command, Command::ParcelHistory { .. }) {
             &self.parcel_commands
         } else if matches!(
@@ -278,11 +330,26 @@ impl Worker {
     pub fn focus(&self, account: &str, folder: &str) {
         self.background.focus(account, folder);
     }
+    pub fn sent_folder(&self, account: &str) -> Option<String> {
+        self.background.sent_folder(account)
+    }
+    pub fn sent_folders(&self) -> std::collections::HashMap<String, String> {
+        self.background.sent_folders()
+    }
     pub fn select(&self, selection: u64) {
         self.bodies.select(selection);
     }
     pub fn body(&self, request: BodyRequest) {
         self.bodies.push(request);
+    }
+    pub fn order_bodies(&self, order: &[(String, u32)]) {
+        self.bodies.order(order);
+    }
+    pub fn conversation_pending(&self, selection: u64, pending: bool) {
+        self.bodies.conversation(selection, pending);
+    }
+    pub fn body_handled(&self, selection: u64, folder: &str, uid: u32, related: bool) {
+        self.bodies.handled(selection, folder, uid, related);
     }
 }
 
@@ -305,15 +372,11 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     let (cache_sender, cache_receiver) = mpsc::channel();
     let (parcel_sender, parcel_receiver) = mpsc::channel();
     let (events, results) = async_channel::unbounded();
-    let bodies = super::body_queue::BodyQueue::default();
-    for _ in 0..2 {
-        super::body_worker::start(path.clone(), bodies.clone(), events.clone());
-    }
-    let avatars = AvatarQueue::default();
-    for _ in 0..2 {
-        super::avatar_worker::start(path.clone(), avatars.clone(), events.clone());
-    }
     let background = super::sync_queue::SyncQueue::default();
+    let bodies = super::body_queue::BodyQueue::with_background(background.clone());
+    super::body_worker::start(path.clone(), bodies.clone(), events.clone());
+    let avatars = AvatarQueue::default();
+    super::avatar_worker::start(path.clone(), avatars.clone(), events.clone());
     super::sync_worker::start(path.clone(), background.clone(), events.clone());
     start_commands(path.clone(), receiver, events.clone(), background.clone());
     super::parcel_worker::start(
@@ -325,6 +388,8 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     start_cache_reads(path, cache_receiver, events);
     (
         Worker {
+            #[cfg(test)]
+            record_commands: false,
             request: AtomicU64::default(),
             commands: sender,
             cache_commands: cache_sender,
@@ -355,17 +420,23 @@ fn start_cache_reads(
                         account,
                         folder,
                         sender,
+                        outgoing,
+                        own,
                         generation,
                         sender_generation,
                         before,
                         limit,
                     } => {
-                        let mut messages = storage.sender_page(
+                        let mut messages = storage.correspondent_page(
                             &account.email,
                             folder,
                             sender,
                             *before,
                             *limit + 1,
+                            &crate::models::senders::Correspondence {
+                                outgoing: *outgoing,
+                                own: own.clone(),
+                            },
                         )?;
                         let has_more = messages.len() > *limit;
                         messages.truncate(*limit);
@@ -385,6 +456,7 @@ fn start_cache_reads(
                     Command::RelatedSent {
                         account,
                         folder,
+                        outgoing,
                         messages,
                         generation,
                         selection,
@@ -392,7 +464,7 @@ fn start_cache_reads(
                         *generation,
                         *selection,
                         storage
-                            .related_sent(&account.email, folder, messages)?
+                            .related_messages(&account.email, folder, messages, *outgoing)?
                             .into_iter()
                             .map(|mut item| {
                                 item.message.prepare_display();
@@ -411,9 +483,11 @@ fn start_cache_reads(
                         sender_generation,
                         ..
                     } => Event::SenderPageError(generation, sender_generation, error.to_string()),
-                    Command::RelatedSent { .. } => {
-                        Event::Error(None, format!("Could not load outgoing messages: {error}"))
-                    }
+                    Command::RelatedSent {
+                        generation,
+                        selection,
+                        ..
+                    } => Event::RelatedSentError(generation, selection, error.to_string()),
                     _ => continue,
                 },
             };
@@ -444,7 +518,9 @@ fn start_commands(
         let mut connections = Connections::default();
         while let Ok(command) = receiver.recv() {
             let generation = match &command {
-                Command::Load { generation, .. } => Some(*generation),
+                Command::Load { generation, .. } | Command::SentFolder { generation, .. } => {
+                    Some(*generation)
+                }
                 _ => None,
             };
             if let Err(error) = execute(
@@ -659,40 +735,7 @@ fn execute(
                 events.send_blocking(Event::SentCacheChanged(account.email))?;
             }
         }
-        Command::SentBody {
-            account,
-            folder,
-            uid,
-            generation,
-            selection,
-        } => {
-            let result = (|| {
-                let validity = storage.validity(&account.email, &folder)?;
-                let mut cached = storage
-                    .message(&account.email, &folder, uid)?
-                    .ok_or_else(|| anyhow::anyhow!("Outgoing message is no longer cached"))?;
-                super::mail_sync::ensure_draft_id(&mut cached, &folder);
-                if cached.body_loaded {
-                    return Ok(cached);
-                }
-                let mut message = connections.execute(&account, |mail| {
-                    mail.body_with_validity(&folder, uid, validity, true)
-                })?;
-                message.is_draft |= cached.is_draft;
-                if message.is_draft && message.message_id.is_empty() {
-                    message.message_id = cached.message_id.clone();
-                }
-                storage
-                    .store_body(&account.email, &folder, validity, &message)?
-                    .ok_or_else(|| anyhow::anyhow!("Outgoing mailbox changed while loading"))
-            })()
-            .map(|mut message| {
-                message.prepare_display();
-                message
-            })
-            .map_err(|error: anyhow::Error| error.to_string());
-            events.send_blocking(Event::SentBody(generation, selection, folder, uid, result))?;
-        }
+        Command::SentBody { .. } => unreachable!("opened conversation bodies use the body queue"),
         Command::UndoSpam {
             account,
             folder,
@@ -777,6 +820,22 @@ fn execute(
             let folders = connections.execute(&account, |mail| mail.folders())?;
             storage.store_folders(&account.email, &folders)?;
             events.send_blocking(Event::Folders(account.email, folders))?;
+        }
+        Command::SentFolder {
+            account,
+            generation,
+        } => {
+            let folder = if let Some(folder) = background.sent_folder(&account.email) {
+                folder
+            } else {
+                let discovered = connections.execute(&account, |mail| mail.sync_folders())?;
+                storage.store_folders(&account.email, &discovered.all)?;
+                discovered.sent.ok_or_else(|| {
+                    anyhow::anyhow!("No sent mail folder found for {}", account.email)
+                })?
+            };
+            background.set_sent_folder(&account.email, &folder);
+            events.send_blocking(Event::SentFolder(generation, account, folder))?;
         }
         Command::Load {
             account,
@@ -926,6 +985,7 @@ mod tests {
         let (events, results) = async_channel::unbounded();
         start_cache_reads(path.clone(), cache_receiver, events);
         let worker = Worker {
+            record_commands: true,
             request: AtomicU64::default(),
             parcel_commands: commands.clone(),
             commands,
@@ -950,6 +1010,7 @@ mod tests {
                     smtp: None,
                 },
                 folder: "INBOX".into(),
+                outgoing: false,
                 messages: vec![received],
                 generation: 3,
                 selection: 9,

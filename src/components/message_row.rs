@@ -52,9 +52,18 @@ pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::Box {
     let message = senders::preview(group).expect("Sender has a message");
     let container = horizontal("message-row-container", theme::SPACING);
     container.add_css_class("message-row");
-    let name = display::sender_name(message);
+    let (name, email) = senders::list_identity(message);
+    let name = if name.is_empty() {
+        if email.is_empty() {
+            "Unknown Sender".into()
+        } else {
+            email.clone()
+        }
+    } else {
+        name
+    };
     let avatar = adw::Avatar::new(theme::SENDER_AVATAR_SIZE, Some(&name), true);
-    avatars.attach(&avatar, &senders::key(message));
+    avatars.attach(&avatar, &email);
     container.append(&avatar);
     let content = column("message-row-content");
     content.set_hexpand(true);
@@ -89,7 +98,7 @@ pub fn sender_row(group: &[Message], avatars: &Avatars) -> gtk::Box {
         group.iter().any(|message| message.is_flagged),
         false,
     ));
-    container.set_tooltip_text(Some(&display::sender(message).1));
+    container.set_tooltip_text(Some(&email));
     container
 }
 
