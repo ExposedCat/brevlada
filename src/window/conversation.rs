@@ -41,6 +41,7 @@ impl State {
     }
 
     pub(super) fn render_conversation(self: &Rc<Self>) {
+        self.refresh_composers();
         // Sort borrowed metadata first. Opening a long conversation must not copy
         // or create widgets for every cached body before the first card appears.
         let (mut messages, total) = {
@@ -155,6 +156,9 @@ impl State {
                     continue;
                 }
                 let editor = self.draft_editor(&folder, message);
+                if editor.compose.is_pinned() {
+                    continue;
+                }
                 widgets.push(editor.widget.clone().upcast());
                 if !message.body_loaded && !editor.loaded.get() {
                     if *sent {

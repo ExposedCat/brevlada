@@ -58,20 +58,22 @@ impl Compose {
 
     pub fn connect_autosave(self: &Rc<Self>, callback: impl Fn() -> Complete + 'static) {
         let weak = Rc::downgrade(self);
+        let callback = Rc::new(callback);
         self.autosave.connect(move || {
             let Some(compose) = weak.upgrade() else {
                 return;
             };
-            if !compose.widget.get_visible() || !compose.receiver.is_sensitive() {
+            if !compose.receiver.is_sensitive() {
                 compose.autosave.complete(Ok(()));
                 return;
             }
-            let complete = callback();
+            let callback = callback.clone();
             gtk::glib::MainContext::default().spawn_local(async move {
                 while compose.attachments.loading() {
                     gtk::glib::timeout_future(std::time::Duration::from_millis(50)).await;
                 }
                 compose.autosave.capture();
+                let complete = callback();
                 complete(compose.snapshot().await);
             });
         });

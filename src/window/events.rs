@@ -446,6 +446,7 @@ impl State {
                         .borrow_mut()
                         .insert(account.email.clone(), (account, row.folders));
                 }
+                self.refresh_composer_accounts();
             }
             Event::SidebarReady => {
                 self.sender.sync();

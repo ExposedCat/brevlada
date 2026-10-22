@@ -8,7 +8,9 @@ pub(super) type Key = (String, String, String);
 
 pub(super) struct OpenComposer {
     pub compose: Rc<ui::compose::Compose>,
-    account: Account,
+    pub(super) account: Account,
+    pub(super) folder: String,
+    pub(super) sender: Option<String>,
     generation: u64,
     selection: u64,
 }
@@ -19,6 +21,8 @@ pub(super) struct Editor {
     pub(super) account: Account,
     pub(super) source: RefCell<SentMessage>,
     pub(super) loaded: Cell<bool>,
+    generation: u64,
+    selection: u64,
     confirming: Cell<bool>,
     status: gtk::Box,
     status_label: gtk::Label,
@@ -74,7 +78,12 @@ mod diagnostics {
             .unwrap()
             .last_child()
             .unwrap();
-        for _ in 0..index_from_end {
+        let offset = if index_from_end == 0 {
+            0
+        } else {
+            index_from_end + 1
+        };
+        for _ in 0..offset {
             widget = widget.prev_sibling().unwrap();
         }
         widget.downcast().unwrap()
@@ -137,6 +146,253 @@ mod diagnostics {
             child = widget.next_sibling();
         }
         None
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; fixture accounts and recording mail worker"]
+    fn pinned_drafts_follow_navigation_and_send_from_the_selected_account() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        gtk::gio::resources_register_include!("brevlada.gresource").unwrap();
+        let css = gtk::CssProvider::new();
+        css.load_from_string(theme::CSS);
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().unwrap(),
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        let app = adw::Application::builder()
+            .application_id("org.example.BrevladaPinnedDraftDiagnostic")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let shell = ui::shell::Shell::new(&app);
+        let window = shell.window.clone();
+        let (worker, commands) = worker::Worker::recording();
+        let state = State::new(
+            shell,
+            worker,
+            ui::expansion::Expansion::default(),
+            ui::avatars::Avatars::new(|_| {}),
+        );
+        let first = Account {
+            email: "alice@example.com".into(),
+            path: String::new(),
+            name: "Alice".into(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        };
+        let second = Account {
+            email: "work@example.com".into(),
+            ..first.clone()
+        };
+        state.event(Event::Accounts(vec![second.clone(), first.clone()]));
+        state.select(first.clone(), "INBOX".into());
+        let pinned = state.new_composer("friend@example.com", None).unwrap();
+        pinned.load_draft(&Draft::from(&Message {
+            recipients: "friend@example.com".into(),
+            subject: "Travel plans".into(),
+            body_text: "Keep editing while browsing mail.".into(),
+            body_loaded: true,
+            ..Default::default()
+        }));
+        let other = state.new_composer("", None).unwrap();
+        let header = pinned.widget.first_child().unwrap().next_sibling().unwrap();
+        let from = header
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::DropDown>()
+            .unwrap();
+        let pin = header
+            .last_child()
+            .unwrap()
+            .prev_sibling()
+            .unwrap()
+            .downcast::<gtk::ToggleButton>()
+            .unwrap();
+        assert_eq!(from.model().unwrap().n_items(), 2);
+        assert_eq!(pinned.account().unwrap().email, first.email);
+        from.set_selected(1);
+        assert_eq!(pinned.account().unwrap().email, second.email);
+        pin.set_active(true);
+        while commands.try_recv().is_ok() {}
+        let Command::SaveDraft {
+            account,
+            from,
+            request,
+            target: None,
+            ..
+        } = command(&commands)
+        else {
+            panic!("Expected draft save");
+        };
+        assert_eq!(account.email, first.email);
+        assert_eq!(from.email, second.email);
+        state.event(Event::DraftSaved(
+            request,
+            Ok(models::draft::Saved {
+                item: draft("saved-pinned", 40),
+                original_parts: Vec::new(),
+                cleanup_error: None,
+            }),
+        ));
+        state.event(Event::Accounts(vec![first.clone(), second.clone()]));
+        assert!(!pinned.autosave.needs_flush());
+        assert_eq!(pinned.account().unwrap().email, second.email);
+        subject(&other).set_text("Hidden draft");
+        state.select(second.clone(), "INBOX".into());
+        assert!(pinned.widget.get_visible());
+        assert!(!other.widget.get_visible());
+        assert_eq!(subject(&pinned).text(), "Travel plans");
+        while commands.try_recv().is_ok() {}
+        let Command::SaveDraft {
+            account,
+            draft: hidden_draft,
+            request,
+            ..
+        } = command(&commands)
+        else {
+            panic!("Expected hidden draft autosave");
+        };
+        assert_eq!(account.email, first.email);
+        assert_eq!(hidden_draft.subject, "Hidden draft");
+        state.event(Event::DraftSaved(
+            request,
+            Ok(models::draft::Saved {
+                item: draft("hidden", 42),
+                original_parts: Vec::new(),
+                cleanup_error: None,
+            }),
+        ));
+        assert!(!other.widget.get_visible());
+        let incoming = Message {
+            uid: 1,
+            message_id: "incoming".into(),
+            sender: "sender@example.com".into(),
+            subject: "Topic".into(),
+            body_loaded: true,
+            is_read: true,
+            ..Default::default()
+        };
+        state.filter_sender(Some(incoming.clone()));
+        state.show_thread(vec![incoming.clone()]);
+        assert!(pinned.widget.get_visible());
+        pin.set_active(false);
+        assert!(!pinned.widget.get_visible());
+        state.select(first.clone(), "INBOX".into());
+        assert!(pinned.widget.get_visible());
+        assert!(other.widget.get_visible());
+        *state.messages.borrow_mut() = vec![incoming.clone()];
+        state.show_thread(vec![incoming]);
+        let saved = draft("existing", 41);
+        state.event(Event::RelatedSent(
+            state.generation.get(),
+            state.selection.get(),
+            vec![saved],
+        ));
+        let editor = state.draft_editors.borrow()[&state.draft_key("Drafts", "existing")].clone();
+        let editor_pin = editor
+            .compose
+            .widget
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .last_child()
+            .unwrap()
+            .prev_sibling()
+            .unwrap()
+            .downcast::<gtk::ToggleButton>()
+            .unwrap();
+        editor_pin.set_active(true);
+        assert_eq!(
+            editor.widget.parent().as_ref(),
+            Some(state.composers.upcast_ref())
+        );
+        state.render_conversation();
+        assert_eq!(
+            editor.widget.parent().as_ref(),
+            Some(state.composers.upcast_ref())
+        );
+        state.select(second.clone(), "Archive".into());
+        assert_eq!(
+            editor.widget.parent().as_ref(),
+            Some(state.composers.upcast_ref())
+        );
+        editor_pin.set_active(false);
+        assert!(editor.widget.parent().is_none());
+        pin.set_active(true);
+        window.present();
+        glib::MainContext::default().block_on(glib::timeout_future(Duration::from_millis(300)));
+        if let Ok(path) = std::env::var("BREVLADA_COMPOSE_SCREENSHOT") {
+            let paintable = gtk::WidgetPaintable::new(Some(&window));
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
+            window
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None)
+                .save_to_png(path)
+                .unwrap();
+        }
+        if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+            glib::MainContext::default().block_on(glib::timeout_future(Duration::from_secs(15)));
+        }
+        while commands.try_recv().is_ok() {}
+        action(&pinned, 1).emit_clicked();
+        let Command::Compose {
+            account,
+            source_account,
+            target: Some(target),
+            request,
+            draft,
+            ..
+        } = command(&commands)
+        else {
+            panic!("Expected selected account send");
+        };
+        assert_eq!(account.email, second.email);
+        assert_eq!(source_account.email, first.email);
+        assert_eq!(target.message_id, "saved-pinned");
+        assert_eq!(draft.subject, "Travel plans");
+        state.event(Event::Composed(request, Err("Offline".into())));
+        assert!(pinned.widget.is_sensitive());
+        assert!(pinned.is_pinned());
+        assert!(pinned.widget.get_visible());
+        action(&pinned, 1).emit_clicked();
+        let Command::Compose { request, .. } = command(&commands) else {
+            panic!("Expected retry");
+        };
+        state.event(Event::Composed(
+            request,
+            Ok(Outcome {
+                message: Message {
+                    message_id: "sent".into(),
+                    body_loaded: true,
+                    is_read: true,
+                    ..Default::default()
+                },
+                cleanup_error: None,
+            }),
+        ));
+        assert!(pinned.widget.parent().is_none());
+        assert!(state.draft_removed.borrow().contains(&(
+            first.email,
+            "Drafts".into(),
+            "saved-pinned".into()
+        )));
+        assert!(!state.draft_removed.borrow().contains(&(
+            second.email,
+            "Drafts".into(),
+            "saved-pinned".into()
+        )));
+        assert!(state.related_sent.borrow().is_empty());
+        window.destroy();
     }
 
     #[test]
@@ -254,6 +510,7 @@ mod diagnostics {
             account,
             draft: first_draft,
             target: None,
+            ..
         } = command(&commands)
         else {
             panic!("Expected first send")
@@ -268,6 +525,7 @@ mod diagnostics {
             account,
             draft: reply_draft,
             target: None,
+            ..
         } = command(&commands)
         else {
             panic!("Expected reply send")
@@ -308,7 +566,7 @@ mod diagnostics {
         assert!(second.widget.parent().is_none());
         assert_eq!(state.open_composers.borrow().len(), 3);
         for compose in [&first_reply, &second_reply, &newest] {
-            assert!(compose.widget.get_visible());
+            assert_eq!(compose.widget.get_visible(), Rc::ptr_eq(compose, &newest));
             assert!(compose.widget.parent().is_some());
         }
         subject(&newest).set_text("New message");
@@ -473,7 +731,13 @@ mod diagnostics {
             .widget
             .first_child()
             .unwrap()
+            .next_sibling()
+            .unwrap()
             .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .next_sibling()
             .unwrap()
             .next_sibling()
             .unwrap()
@@ -634,6 +898,7 @@ pub(super) struct Pending {
     pub(super) compose: Rc<ui::compose::Compose>,
     pub(super) editor: Option<Rc<Editor>>,
     pub(super) account: String,
+    pub(super) source_account: String,
     pub(super) generation: u64,
     pub(super) selection: u64,
 }
@@ -641,6 +906,7 @@ pub(super) struct Pending {
 pub(super) struct Submission {
     pub(super) request: u64,
     pub(super) account: Account,
+    pub(super) from: Account,
     pub(super) target: Option<Target>,
 }
 
@@ -681,9 +947,12 @@ impl State {
         self.open_composers.borrow_mut().push(OpenComposer {
             compose: compose.clone(),
             account: account.clone(),
+            folder: self.folder.borrow().clone(),
+            sender: self.sender_pane.borrow().sender().map(str::to_owned),
             generation: self.generation.get(),
             selection: self.selection.get(),
         });
+        self.configure_composer(&compose, &account.email);
         self.connect_composer(&compose, None);
         let weak = Rc::downgrade(self);
         let composer = Rc::downgrade(&compose);
@@ -761,11 +1030,20 @@ impl State {
                     message: message.clone(),
                 }),
                 loaded: Cell::new(false),
+                generation: self.generation.get(),
+                selection: self.selection.get(),
                 confirming: Cell::new(false),
                 status,
                 status_label,
                 retry,
             });
+            let from = models::senders::address(&message.sender);
+            let from = if self.folder_boxes.borrow().contains_key(&from) {
+                from
+            } else {
+                editor.account.email.clone()
+            };
+            self.configure_composer(&editor.compose, &from);
             self.connect_composer(&editor.compose, Some(&editor));
             let weak = Rc::downgrade(self);
             let target = Rc::downgrade(&editor);
@@ -856,6 +1134,9 @@ impl State {
                     continue;
                 }
                 let editor = self.draft_editor(folder, message);
+                if editor.compose.is_pinned() {
+                    continue;
+                }
                 desired.push((true, editor.widget.clone().upcast::<gtk::Widget>()));
                 if !message.body_loaded && !editor.loaded.get() {
                     if *sent {
@@ -913,10 +1194,17 @@ impl State {
         compose: &Rc<ui::compose::Compose>,
         editor: Option<&Rc<Editor>>,
     ) {
-        let weak = Rc::downgrade(self);
         let composer = Rc::downgrade(compose);
         let target = editor.map(Rc::downgrade);
         self.connect_autosave(compose, editor);
+        let weak = Rc::downgrade(self);
+        compose.connect_pin(move || {
+            if let Some(state) = weak.upgrade() {
+                state.refresh_composers();
+                state.render_conversation();
+            }
+        });
+        let weak = Rc::downgrade(self);
         compose.connect_send(move || -> ui::compose::Complete {
             let (Some(state), Some(compose)) = (weak.upgrade(), composer.upgrade()) else {
                 return Box::new(|_| {});
@@ -954,18 +1242,29 @@ impl State {
             compose.send_failed("Select an account first");
             return None;
         };
+        let Some(from) = compose.account() else {
+            compose.send_failed("Select a From account first");
+            return None;
+        };
         let request = self.next_composer_request();
         let target = compose
             .draft_target()
             .or_else(|| editor.as_ref().map(|editor| editor.target()));
-        let generation = origin.map_or(self.generation.get(), |open| open.generation);
-        let selection = origin.map_or(self.selection.get(), |open| open.selection);
+        let (generation, selection) = origin
+            .map(|open| (open.generation, open.selection))
+            .or_else(|| {
+                editor
+                    .as_ref()
+                    .map(|editor| (editor.generation, editor.selection))
+            })
+            .unwrap_or((self.generation.get(), self.selection.get()));
         self.composer_pending.borrow_mut().insert(
             request,
             Pending {
                 compose,
                 editor,
                 account: account.email.clone(),
+                source_account: account.email.clone(),
                 generation,
                 selection,
             },
@@ -973,6 +1272,7 @@ impl State {
         Some(Submission {
             request,
             account,
+            from,
             target,
         })
     }
@@ -981,12 +1281,17 @@ impl State {
         let Submission {
             request,
             account,
+            from,
             target,
         } = submission;
         let result = draft.and_then(|draft| {
+            if let Some(pending) = self.composer_pending.borrow_mut().get_mut(&request) {
+                pending.account = from.email.clone();
+            }
             self.sender
                 .send(Command::Compose {
-                    account,
+                    account: from,
+                    source_account: account,
                     draft,
                     target,
                     request,
@@ -1030,12 +1335,22 @@ impl State {
 
     fn remove_draft(&self, editor: &Editor) {
         let key = editor.key();
+        if editor.widget.parent().as_ref() == Some(self.composers.upcast_ref()) {
+            self.composers.remove(&editor.widget);
+        }
         self.draft_removed.borrow_mut().insert(key.clone());
         self.draft_local.borrow_mut().remove(&key);
         self.draft_editors.borrow_mut().remove(&key);
-        self.related_sent
-            .borrow_mut()
-            .retain(|item| item.folder != key.1 || item.message.message_id != key.2);
+        if self
+            .account
+            .borrow()
+            .as_ref()
+            .is_some_and(|account| account.email == key.0)
+        {
+            self.related_sent
+                .borrow_mut()
+                .retain(|item| item.folder != key.1 || item.message.message_id != key.2);
+        }
     }
 
     fn delete_draft(self: &Rc<Self>, editor: Rc<Editor>) {
@@ -1052,6 +1367,7 @@ impl State {
                 compose: editor.compose.clone(),
                 editor: Some(editor.clone()),
                 account: account.email.clone(),
+                source_account: account.email.clone(),
                 generation: self.generation.get(),
                 selection: self.selection.get(),
             },
@@ -1092,7 +1408,7 @@ impl State {
             }
             Ok(outcome) => {
                 if let Some(target) = pending.compose.draft_target() {
-                    self.forget_saved_draft(&pending.account, &target);
+                    self.forget_saved_draft(&pending.source_account, &target);
                 }
                 let item = SentMessage {
                     folder: String::new(),
@@ -1155,6 +1471,7 @@ impl State {
                         .push(editor.source.borrow().clone());
                     self.update_draft_widgets();
                 }
+                self.refresh_composers();
             }
             self.toast
                 .add_toast(adw::Toast::new(&format!("Could not delete draft: {error}")));

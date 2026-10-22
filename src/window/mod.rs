@@ -1,6 +1,7 @@
 mod actions;
 mod autosave;
 mod calendar;
+mod compose_controls;
 mod conversation;
 mod drafts;
 mod events;
@@ -1061,6 +1062,8 @@ mod diagnostics {
             .unwrap()
             .prev_sibling()
             .unwrap()
+            .prev_sibling()
+            .unwrap()
             .downcast::<gtk::Button>()
             .unwrap();
         assert!(!send.is_sensitive());
@@ -1097,6 +1100,10 @@ mod diagnostics {
         assert_eq!(
             header
                 .first_child()
+                .unwrap()
+                .next_sibling()
+                .unwrap()
+                .next_sibling()
                 .unwrap()
                 .downcast::<gtk::Entry>()
                 .unwrap()
@@ -2981,6 +2988,10 @@ mod diagnostics {
         let receiver = header
             .first_child()
             .unwrap()
+            .next_sibling()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
             .downcast::<gtk::Entry>()
             .unwrap();
         assert_eq!(receiver.text(), "ada@example.com");
@@ -3002,6 +3013,8 @@ mod diagnostics {
             .downcast::<gtk::Button>()
             .unwrap();
         let send = cancel
+            .prev_sibling()
+            .unwrap()
             .prev_sibling()
             .unwrap()
             .downcast::<gtk::Button>()
@@ -3077,7 +3090,13 @@ mod diagnostics {
                 .widget
                 .first_child()
                 .unwrap()
+                .next_sibling()
+                .unwrap()
                 .first_child()
+                .unwrap()
+                .next_sibling()
+                .unwrap()
+                .next_sibling()
                 .unwrap()
                 .downcast::<gtk::Entry>()
                 .unwrap()

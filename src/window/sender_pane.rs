@@ -68,6 +68,7 @@ impl State {
         self.refresh_open_styles();
         ui::virtual_list::selection(&self.list).set_selected(gtk::INVALID_LIST_POSITION);
         self.thread_scroll.vadjustment().set_value(0.0);
+        self.refresh_composers();
     }
 
     pub(super) fn load_sender_page(&self) {

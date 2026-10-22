@@ -39,6 +39,7 @@ impl State {
         let drafts::Submission {
             request,
             account,
+            from,
             target,
         } = submission;
         let result = draft.and_then(|draft| {
@@ -64,6 +65,7 @@ impl State {
             self.sender
                 .send(Command::SaveDraft {
                     account,
+                    from,
                     draft,
                     target,
                     request,
@@ -83,16 +85,28 @@ impl State {
         );
         self.draft_removed.borrow_mut().insert(key.clone());
         self.draft_local.borrow_mut().remove(&key);
-        self.related_sent.borrow_mut().retain(|item| {
-            item.folder != target.folder || item.message.message_id != target.message_id
-        });
+        if self
+            .account
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| current.email == account)
+        {
+            self.related_sent.borrow_mut().retain(|item| {
+                item.folder != target.folder || item.message.message_id != target.message_id
+            });
+        }
     }
 
     pub(super) fn draft_in_composer(&self, folder: &str, id: &str) -> bool {
+        let account = self.account.borrow();
         self.open_composers.borrow().iter().any(|open| {
-            open.compose
-                .draft_target()
-                .is_some_and(|target| target.folder == folder && target.message_id == id)
+            account
+                .as_ref()
+                .is_some_and(|account| account.email == open.account.email)
+                && open
+                    .compose
+                    .draft_target()
+                    .is_some_and(|target| target.folder == folder && target.message_id == id)
         })
     }
 
@@ -248,6 +262,7 @@ mod diagnostics {
             draft,
             target: None,
             account,
+            ..
         } = command(&commands)
         else {
             panic!("Expected debounced save");
@@ -258,6 +273,8 @@ mod diagnostics {
         subject.set_text("Latest");
         let send = header
             .last_child()
+            .unwrap()
+            .prev_sibling()
             .unwrap()
             .prev_sibling()
             .unwrap()

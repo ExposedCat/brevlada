@@ -8,8 +8,22 @@ fn entry(compose: &ui::compose::Compose, field: &str) -> gtk::Entry {
         .next_sibling()
         .unwrap();
     match field {
-        "to" => header.first_child().unwrap(),
-        "cc" => header.first_child().unwrap().next_sibling().unwrap(),
+        "to" => header
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .next_sibling()
+            .unwrap(),
+        "cc" => header
+            .last_child()
+            .unwrap()
+            .prev_sibling()
+            .unwrap()
+            .prev_sibling()
+            .unwrap()
+            .prev_sibling()
+            .unwrap(),
         "subject" => header.next_sibling().unwrap(),
         _ => unreachable!(),
     }

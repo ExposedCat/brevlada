@@ -1,3 +1,4 @@
+mod sender;
 mod submission;
 
 use super::{button, column, horizontal};
@@ -23,6 +24,8 @@ use std::rc::Rc;
 
 pub struct Compose {
     pub widget: gtk::Box,
+    from: sender::Sender,
+    pin: gtk::ToggleButton,
     receiver: gtk::Entry,
     cc: gtk::Entry,
     subject: gtk::Entry,
@@ -51,6 +54,11 @@ impl Compose {
         let send_error = super::error_label();
         widget.append(&send_error);
         let header = horizontal("compose-header", theme::SMALL_SPACING);
+        let from = sender::Sender::new();
+        header.append(&from.widget);
+        let arrow = gtk::Image::from_icon_name("go-next-symbolic");
+        arrow.add_css_class("dim-label");
+        header.append(&arrow);
         let receiver = entry("Receiver");
         let cc = entry("CC");
         header.append(&receiver);
@@ -67,6 +75,19 @@ impl Compose {
         send.add_css_class("suggested-action");
         send.add_css_class("compose-send");
         header.append(&send);
+        let pin = gtk::ToggleButton::builder()
+            .icon_name("view-pin-symbolic")
+            .tooltip_text("Pin draft across all views")
+            .valign(gtk::Align::Center)
+            .build();
+        pin.connect_toggled(|pin| {
+            pin.set_tooltip_text(Some(if pin.is_active() {
+                "Unpin draft"
+            } else {
+                "Pin draft across all views"
+            }));
+        });
+        header.append(&pin);
         let cancel = button("window-close-symbolic", "Close");
         header.append(&cancel);
         widget.append(&header);
@@ -283,8 +304,13 @@ impl Compose {
         let changed = autosave.clone();
         attachments.connect_changed(move || changed.changed());
 
+        let changed = autosave.clone();
+        from.connect_changed(move || changed.changed());
+
         Self {
             widget,
+            from,
+            pin,
             receiver,
             cc,
             subject,
@@ -302,6 +328,22 @@ impl Compose {
             autosave,
             draft_target: RefCell::default(),
         }
+    }
+
+    pub fn set_accounts(&self, accounts: &[crate::models::Account], selected: &str) {
+        self.from.set_accounts(accounts, selected);
+    }
+
+    pub fn account(&self) -> Option<crate::models::Account> {
+        self.from.account()
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.pin.is_active()
+    }
+
+    pub fn connect_pin(&self, callback: impl Fn() + 'static) {
+        self.pin.connect_toggled(move |_| callback());
     }
 
     pub fn discard_on_close(&self) {
@@ -335,6 +377,8 @@ impl Compose {
     }
 
     pub fn set_ready(&self, ready: bool) {
+        self.from.widget.set_sensitive(ready);
+        self.pin.set_sensitive(ready);
         self.receiver.set_sensitive(ready);
         self.cc.set_sensitive(ready);
         self.subject.set_sensitive(ready);

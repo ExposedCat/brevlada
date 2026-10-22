@@ -160,6 +160,7 @@ impl State {
             self.render_list();
         }
         ui::states::select_message(&self.viewer);
+        self.refresh_composers();
         self.load();
     }
 

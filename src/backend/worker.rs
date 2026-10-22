@@ -55,12 +55,14 @@ pub enum Command {
     },
     SaveDraft {
         account: Account,
+        from: Account,
         draft: Draft,
         target: Option<crate::models::draft::Target>,
         request: u64,
     },
     Compose {
         account: Account,
+        source_account: Account,
         draft: Draft,
         target: Option<crate::models::draft::Target>,
         request: u64,
@@ -685,28 +687,30 @@ fn execute(
         }
         Command::SaveDraft {
             account,
+            from,
             draft,
             target,
             request,
         } => {
-            let result = super::draft_save::save(&account, &draft, target.as_ref(), storage)
+            let result = super::draft_save::save(&account, &from, &draft, target.as_ref(), storage)
                 .map_err(|error| error.to_string());
             events.send_blocking(Event::DraftSaved(request, result))?;
         }
         Command::Compose {
             account,
+            source_account,
             draft,
             target,
             request,
         } => {
-            let result = super::drafts::prepare_send(&account, &draft, target.as_ref())
+            let result = super::drafts::prepare_send(&source_account, &draft, target.as_ref())
                 .and_then(|draft| super::smtp::send(&account, &draft))
                 .map(|message| {
                     if let Err(error) = storage.store_sent(&account.email, &message) {
                         eprintln!("Could not cache sent message: {error}");
                     }
                     let cleanup_error = target.as_ref().and_then(|target| {
-                        super::drafts::delete(&account, target, storage)
+                        super::drafts::delete(&source_account, target, storage)
                             .err()
                             .map(|error| error.to_string())
                     });

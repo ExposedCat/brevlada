@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 
 pub fn save(
     account: &Account,
+    from: &Account,
     draft: &Draft,
     target: Option<&Target>,
     storage: &mut Storage,
@@ -56,7 +57,7 @@ pub fn save(
             Ok(location)
         })
         .transpose()?;
-    let raw = smtp::draft_message(account, &hydrated)?;
+    let raw = smtp::draft_message(from, &hydrated)?;
     let mut message = parser::parse(0, raw.as_bytes(), true, true)?;
     message.is_draft = true;
     append(&mut mail.session, &folder, raw.as_bytes())?;
