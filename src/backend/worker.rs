@@ -10,6 +10,18 @@ use std::{
 };
 
 pub enum Command {
+    AccountSettings {
+        account: Account,
+        path: PathBuf,
+        reply: async_channel::Sender<Result<crate::models::settings::AccountFolders, String>>,
+    },
+    SetAccountArchive {
+        account: Account,
+        path: PathBuf,
+        folder: Option<String>,
+        share: bool,
+        reply: async_channel::Sender<Result<crate::models::settings::AccountFolders, String>>,
+    },
     FlushNotifications,
     NotificationsHandled {
         account: String,
@@ -199,6 +211,7 @@ pub enum Event {
     Preview(u64, u64, Message),
     PreviewError(u64, u64, u32),
     CacheList(String, String, Vec<Message>),
+    CacheChanged(String, String),
     CacheBody(String, String, Message),
     Avatar(String, Option<Vec<u8>>),
     AvatarError(String),
@@ -549,6 +562,26 @@ fn execute(
     background: &super::sync_queue::SyncQueue,
 ) -> Result<()> {
     match command {
+        Command::AccountSettings {
+            account,
+            path,
+            reply,
+        } => {
+            let result = super::account_settings::load(&account, &path)
+                .map_err(|error| format!("{error:#}"));
+            let _ = reply.send_blocking(result);
+        }
+        Command::SetAccountArchive {
+            account,
+            path,
+            folder,
+            share,
+            reply,
+        } => {
+            let result = super::account_settings::save(&account, &path, folder, share)
+                .map_err(|error| format!("{error:#}"));
+            let _ = reply.send_blocking(result);
+        }
         Command::FlushNotifications => {
             for (account, folder, validity) in storage.notification_folders()? {
                 let messages = storage.pending_notifications(&account, &folder, validity)?;
@@ -620,6 +653,7 @@ fn execute(
                     events,
                     Some(validity),
                 )?;
+                outcome.refresh_destination(&account, background);
                 Ok((sender, outcome))
             })();
             let error = match result {
@@ -777,8 +811,10 @@ fn execute(
                     messages: None,
                     error: Some(error.to_string()),
                     removed: Vec::new(),
+                    destination: None,
                 },
             };
+            outcome.refresh_destination(&account, background);
             events.send_blocking(Event::SenderActionFinished {
                 account: account.email,
                 folder,

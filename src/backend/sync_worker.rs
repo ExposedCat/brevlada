@@ -224,6 +224,10 @@ fn publish_list(
     job: &Job,
 ) -> Result<()> {
     if !queue.visible(&job.account.email, &job.folder) {
+        events.send_blocking(Event::CacheChanged(
+            job.account.email.clone(),
+            job.folder.clone(),
+        ))?;
         return Ok(());
     }
     events.send_blocking(Event::CacheList(
@@ -351,6 +355,29 @@ mod tests {
         assert!(message.body_loaded && !message.is_read);
         assert!(storage.uncached_uids("a", "INBOX").unwrap().is_empty());
         assert_eq!(queue.status().unwrap().failed, 0);
+        queue.close();
+    }
+
+    #[test]
+    fn background_destination_cache_changes_refresh_search_without_loading_the_folder() {
+        let storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        let queue = SyncQueue::default();
+        queue.focus("a", "INBOX");
+        let job = Job {
+            account: fixture_account(),
+            folder: "All Mail".into(),
+            task: Task::Scan,
+        };
+        let (events, received) = async_channel::unbounded();
+        publish_list(&storage, &queue, &events, &job).unwrap();
+        assert!(
+            matches!(received.try_recv().unwrap(), Event::CacheChanged(account, folder) if account == "a" && folder == "All Mail")
+        );
+        queue.focus("a", "All Mail");
+        publish_list(&storage, &queue, &events, &job).unwrap();
+        assert!(
+            matches!(received.try_recv().unwrap(), Event::CacheList(account, folder, messages) if account == "a" && folder == "All Mail" && messages.is_empty())
+        );
         queue.close();
     }
 

@@ -279,19 +279,22 @@ impl Search {
                 let index = thread_index.as_ref().unwrap();
                 if let Some(mut groups) = search(index, &request, || current(&worker, &request)) {
                     groups.sort_by_key(|(location, group)| {
-                        std::cmp::Reverse((
-                            request.unread_first
-                                && group.iter().any(|message| {
-                                    !message.is_read
-                                        || (location.as_ref().is_none_or(|location| {
-                                            request.scope.as_ref().is_some_and(|scope| {
-                                                Some(location) == scope.current.as_ref()
-                                            })
-                                        }) && request.deferred_read.contains(&message.uid))
-                                }),
-                            group[0].timestamp,
-                            group[0].uid,
-                        ))
+                        (
+                            group.iter().map(|message| message.search_rank).min(),
+                            std::cmp::Reverse((
+                                request.unread_first
+                                    && group.iter().any(|message| {
+                                        !message.is_read
+                                            || (location.as_ref().is_none_or(|location| {
+                                                request.scope.as_ref().is_some_and(|scope| {
+                                                    Some(location) == scope.current.as_ref()
+                                                })
+                                            }) && request.deferred_read.contains(&message.uid))
+                                    }),
+                                group[0].timestamp,
+                                group[0].uid,
+                            )),
+                        )
                     });
                     let (locations, groups) = groups.into_iter().unzip();
                     if current(&worker, &request)
@@ -370,11 +373,12 @@ fn search(
         let sender = &index.senders[position];
         if (request.sender.as_ref() == Some(sender) || request.own.as_ref() == Some(sender))
             && request.filters.includes_date(message.timestamp)
-            && request
+            && let Some(rank) = request
                 .filters
-                .matches_fields(&index.fields[position], &request.query)
+                .rank_fields(&index.fields[position], &request.query)
         {
             let mut message = message.clone();
+            message.search_rank = rank;
             message.prepare_display();
             messages.push(message.list_header(true));
         }
@@ -400,6 +404,47 @@ fn search(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_search_ranks_subject_matches_before_newer_unread_body_matches() {
+        let messages = Arc::new(vec![
+            Message {
+                uid: 1,
+                message_id: "subject".into(),
+                timestamp: 1,
+                sender: "sender@example.com".into(),
+                subject: "POP appointment".into(),
+                is_read: true,
+                ..Default::default()
+            },
+            Message {
+                uid: 2,
+                message_id: "body".into(),
+                timestamp: 100,
+                sender: "sender@example.com".into(),
+                subject: "Other topic".into(),
+                body_text: "pop in the body".into(),
+                ..Default::default()
+            },
+        ]);
+        let (worker, results) = Search::start();
+        worker.submit(Request::new(
+            true,
+            "pop".into(),
+            Some("sender@example.com".into()),
+            None,
+            messages,
+        ));
+        let result = finished(&results);
+        assert_eq!(
+            result
+                .groups
+                .iter()
+                .map(|group| group[0].uid)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
 
     #[test]
     fn inbox_search_groups_own_replies_with_their_correspondent() {

@@ -605,6 +605,9 @@ impl State {
                     "Could not load sender messages: {error}"
                 )));
             }
+            Event::CacheChanged(email, folder) => {
+                self.refresh_search_cache(&email, &folder);
+            }
             Event::CacheList(email, folder, mut messages) => {
                 self.refresh_search_cache(&email, &folder);
                 let refresh_conversation = self.recipient_mode()

@@ -186,6 +186,7 @@ fn import_legacy(transaction: &Transaction<'_>) -> Result<()> {
                 calendar_events: Vec::new(),
                 tickets: Vec::new(),
                 search_match: false,
+                search_rank: 0,
                 list_recipient: None,
                 list_preview: None,
                 display_prepared: false,

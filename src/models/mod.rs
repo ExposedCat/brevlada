@@ -125,6 +125,8 @@ pub struct Message {
     pub remote_media: Option<bool>,
     #[serde(skip)]
     pub search_match: bool,
+    #[serde(skip)]
+    pub search_rank: u8,
     /// The recipient represented by a Sent Mail list row; never changes From.
     #[serde(skip)]
     pub list_recipient: Option<(String, String)>,
@@ -201,6 +203,7 @@ impl Message {
             tickets: self.tickets.clone(),
             display_prepared: true,
             search_match: self.search_match,
+            search_rank: self.search_rank,
             ..Default::default()
         }
     }

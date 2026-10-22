@@ -155,8 +155,8 @@ pub fn settings() -> anyhow::Result<Settings> {
 
 pub fn save_background(keep_checking: bool, start_at_login: bool) -> anyhow::Result<()> {
     let path = glib::user_config_dir().join("brevlada/settings.json");
-    let mut settings = Settings::load(&path)?;
-    settings.background_service = keep_checking;
-    settings.start_at_login = start_at_login;
-    settings.save(&path)
+    Settings::update(&path, |settings| {
+        settings.background_service = keep_checking;
+        settings.start_at_login = start_at_login;
+    })
 }

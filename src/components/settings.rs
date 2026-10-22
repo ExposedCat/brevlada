@@ -24,6 +24,8 @@ pub fn menu() -> (gtk::MenuButton, gio::SimpleAction) {
 pub struct SettingsWindow {
     pub window: adw::PreferencesWindow,
     pub trust_all_senders: adw::SwitchRow,
+    pub accounts: std::rc::Rc<super::account_settings::Accounts>,
+    pub accounts_section: adw::ActionRow,
 }
 
 impl SettingsWindow {
@@ -83,10 +85,15 @@ impl SettingsWindow {
             "preferences-system-symbolic",
             &general,
         ));
+        let accounts = super::account_settings::Accounts::new();
+        let accounts_section = section(&window, "Accounts", "mail-unread-symbolic", &accounts.page);
+        sections.add(&accounts_section);
         window.add(&overview);
         Self {
             window,
             trust_all_senders,
+            accounts,
+            accounts_section,
         }
     }
 }

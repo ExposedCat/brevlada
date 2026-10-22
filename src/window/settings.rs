@@ -29,6 +29,7 @@ impl State {
                 &parent,
                 state.settings.borrow().trust_all_senders,
             );
+            state.connect_account_settings(&settings, path.clone());
             let weak = Rc::downgrade(&state);
             let path = path.clone();
             settings
@@ -36,9 +37,8 @@ impl State {
                 .connect_active_notify(move |row| {
                     if let Some(state) = weak.upgrade() {
                         state.settings.borrow_mut().trust_all_senders = row.is_active();
-                        let saved = Settings::load(&path).and_then(|mut settings| {
+                        let saved = Settings::update(&path, |settings| {
                             settings.trust_all_senders = row.is_active();
-                            settings.save(&path)
                         });
                         if let Err(error) = saved {
                             eprintln!("Could not save settings: {error}");

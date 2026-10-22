@@ -40,12 +40,22 @@ impl Filters {
         self.from.is_none_or(|from| date >= from) && self.to.is_none_or(|to| date <= to)
     }
 
-    pub fn matches_fields(&self, fields: &[String], query: &str) -> bool {
-        query.is_empty()
-            || fields
-                .iter()
-                .enumerate()
-                .any(|(index, field)| self.sources[index.min(5)] && field.contains(query))
+    pub fn rank_fields(&self, fields: &[String], query: &str) -> Option<u8> {
+        self.rank(query, |index| fields[index].contains(query))
+    }
+
+    pub fn rank(&self, query: &str, mut matches: impl FnMut(usize) -> bool) -> Option<u8> {
+        if query.is_empty() {
+            return Some(0);
+        }
+        [1, 2, 3, 4, 0, 5, 6]
+            .into_iter()
+            .find(|&index| self.sources[index.min(5)] && matches(index))
+            .map(|index| match index {
+                1..=4 => 0,
+                0 => 1,
+                _ => 2,
+            })
     }
 
     pub fn dates(
@@ -163,13 +173,13 @@ mod tests {
             sources: [false; 6],
             ..Default::default()
         };
-        assert!(!filters.matches_fields(&fields, "needle"));
+        assert_eq!(filters.rank_fields(&fields, "needle"), None);
         filters.sources[0] = true;
-        assert!(filters.matches_fields(&fields, "subject needle"));
-        assert!(!filters.matches_fields(&fields, "html needle"));
+        assert_eq!(filters.rank_fields(&fields, "subject needle"), Some(1));
+        assert_eq!(filters.rank_fields(&fields, "html needle"), None);
         filters.sources[5] = true;
-        assert!(filters.matches_fields(&fields, "plain needle"));
-        assert!(filters.matches_fields(&fields, "html needle"));
+        assert_eq!(filters.rank_fields(&fields, "plain needle"), Some(2));
+        assert_eq!(filters.rank_fields(&fields, "html needle"), Some(2));
     }
 
     #[test]

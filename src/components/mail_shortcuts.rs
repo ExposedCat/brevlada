@@ -88,6 +88,7 @@ pub fn attach_open_message(
             if widget.is::<gtk::Editable>()
                 || widget.is::<gtk::TextView>()
                 || widget.is::<gtk::Popover>()
+                || widget.has_css_class("compose-card")
                 || compose.as_ref() == Some(&widget)
                 || list.as_ref().is_some_and(|list| widget == *list.as_ref())
             {
@@ -133,12 +134,19 @@ mod tests {
         let compose = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let draft_control = gtk::Button::with_label("Draft control");
         compose.append(&draft_control);
+        let inline_compose = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        inline_compose.add_css_class("compose-card");
+        let inline_control = gtk::Button::with_label("Inline draft control");
+        let inline_html = webkit6::WebView::new();
+        inline_compose.append(&inline_control);
+        inline_compose.append(&inline_html);
         for widget in [
             list.upcast_ref::<gtk::Widget>(),
             reader.upcast_ref(),
             entry.upcast_ref(),
             text.upcast_ref(),
             compose.upcast_ref(),
+            inline_compose.upcast_ref(),
         ] {
             content.append(widget);
         }
@@ -170,9 +178,11 @@ mod tests {
                 entry.upcast_ref::<gtk::Widget>(),
                 text.upcast_ref(),
                 draft_control.upcast_ref(),
+                inline_control.upcast_ref(),
+                inline_html.upcast_ref(),
                 list.row_at_index(0).unwrap().upcast_ref(),
             ] {
-                widget.grab_focus();
+                assert!(widget.grab_focus());
                 assert!(!press(key, gtk::gdk::ModifierType::empty()));
             }
         }

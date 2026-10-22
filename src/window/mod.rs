@@ -1,3 +1,4 @@
+mod account_settings;
 mod actions;
 mod autosave;
 mod calendar;
@@ -1260,6 +1261,44 @@ mod diagnostics {
             1
         );
         assert_eq!(ui::virtual_list::groups(&state.thread_list)[0][0].uid, 1);
+    }
+
+    #[test]
+    #[ignore = "Requires a graphical session for search pane navigation"]
+    fn search_relevance_takes_priority_over_preserved_account_order() {
+        let state = unread_test_state("org.example.BrevladaSearchRankDiagnostic");
+        let bar = state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap();
+        bar.set_search_mode(true);
+        state.search.set_text("pop");
+        state.cancel_search(false);
+        *state.search_account_order.borrow_mut() =
+            Some(vec!["ibkr@example.com".into(), "pop@trichomania.cz".into()]);
+        state.publish_search_groups(
+            false,
+            "pop",
+            vec![
+                vec![Message {
+                    uid: 2,
+                    sender: "IBKR Newsletter <ibkr@example.com>".into(),
+                    search_match: true,
+                    search_rank: 2,
+                    ..Default::default()
+                }],
+                vec![Message {
+                    uid: 1,
+                    sender: "POP Salon & Shop <pop@trichomania.cz>".into(),
+                    search_match: true,
+                    search_rank: 0,
+                    ..Default::default()
+                }],
+            ],
+            vec![None, None],
+        );
+        assert_eq!(ui::virtual_list::groups(&state.list)[0][0].uid, 1);
     }
 
     #[test]

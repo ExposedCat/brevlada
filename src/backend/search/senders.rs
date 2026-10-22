@@ -42,28 +42,22 @@ impl Entry {
         }
     }
 
-    fn matches(&self, request: &Request, query: &Pairs) -> bool {
+    fn rank(&self, request: &Request, query: &Pairs) -> Option<u8> {
         if !request.filters.includes_date(self.message.timestamp) {
-            return false;
-        }
-        if request.query.is_empty() {
-            return true;
+            return None;
         }
         if self.pairs.get().is_some_and(|pairs| !pairs.covers(query)) {
-            return false;
+            return None;
         }
-        let sources = &request.filters.sources;
-        let found = |index| self.field(index).contains(&request.query);
-        // Short headers often match first; the long body is summarized before its first scan,
-        // except HTML bodies, which would all have to be decoded.
-        (0..5).any(|index| sources[index] && found(index))
-            || (sources[5]
-                && (!self.message.body_html.is_empty()
-                    || self
-                        .pairs
-                        .get_or_init(|| Pairs::of((0..6).map(|index| self.field(index))))
-                        .covers(query))
-                && (found(5) || found(6)))
+        request.filters.rank(&request.query, |index| {
+            (index < 5
+                || !self.message.body_html.is_empty()
+                || self
+                    .pairs
+                    .get_or_init(|| Pairs::of((0..6).map(|index| self.field(index))))
+                    .covers(query))
+                && self.field(index).contains(&request.query)
+        })
     }
 
     fn field(&self, index: usize) -> &str {
@@ -87,9 +81,10 @@ impl Entry {
     }
 
     // Sender rows and actions need identities and flags, not copies of every body.
-    fn header(&self) -> Message {
+    fn header(&self, rank: u8) -> Message {
         Message {
             search_match: true,
+            search_rank: rank,
             ..self.message.list_header(false)
         }
     }
@@ -100,7 +95,7 @@ struct Progress<'a> {
     query: Pairs,
     worker: &'a Shared,
     output: &'a async_channel::Sender<Response>,
-    groups: Vec<(Option<Location>, Vec<Rc<Entry>>)>,
+    groups: Vec<(Option<Location>, Vec<Rc<Entry>>, u8)>,
     location: Option<Location>,
     /// Positions in `groups` of the senders matched in `location`.
     senders: HashMap<String, usize>,
@@ -119,9 +114,9 @@ impl Progress<'_> {
         if !current(self.worker, self.request) {
             return false;
         }
-        if !entry.matches(self.request, &self.query) {
+        let Some(rank) = entry.rank(self.request, &self.query) else {
             return true;
-        }
+        };
         let outgoing = self
             .location
             .as_ref()
@@ -146,11 +141,12 @@ impl Progress<'_> {
                     if let Some(recipient) = recipient {
                         self.recipients.insert(self.groups.len(), recipient);
                     }
-                    self.groups.push((self.location.clone(), Vec::new()));
+                    self.groups.push((self.location.clone(), Vec::new(), rank));
                     self.groups.len() - 1
                 }
             };
             self.groups[position].1.push(entry.clone());
+            self.groups[position].2 = self.groups[position].2.min(rank);
         }
         if self
             .last_sent
@@ -169,38 +165,40 @@ impl Progress<'_> {
             .groups
             .iter_mut()
             .enumerate()
-            .map(|(position, (location, group))| {
+            .map(|(position, (location, group, rank))| {
                 group.sort_by_key(|entry| {
                     std::cmp::Reverse((entry.message.timestamp, entry.message.uid))
                 });
-                (&*location, &*group, self.recipients.get(&position))
+                (&*location, &*group, self.recipients.get(&position), *rank)
             })
             .collect();
-        groups.sort_by_cached_key(|(location, group, _)| {
-            std::cmp::Reverse((
-                self.request.unread_first
-                    && group.iter().any(|entry| {
-                        !entry.message.is_read
-                            || (location.as_ref().is_none_or(|location| {
-                                self.request
-                                    .scope
-                                    .as_ref()
-                                    .is_some_and(|scope| Some(location) == scope.current.as_ref())
-                            }) && self.request.deferred_read.contains(&entry.message.uid))
-                    }),
-                group[0].message.timestamp,
-                group[0].message.uid,
-            ))
+        groups.sort_by_cached_key(|(location, group, _, rank)| {
+            (
+                *rank,
+                std::cmp::Reverse((
+                    self.request.unread_first
+                        && group.iter().any(|entry| {
+                            !entry.message.is_read
+                                || (location.as_ref().is_none_or(|location| {
+                                    self.request.scope.as_ref().is_some_and(|scope| {
+                                        Some(location) == scope.current.as_ref()
+                                    })
+                                }) && self.request.deferred_read.contains(&entry.message.uid))
+                        }),
+                    group[0].message.timestamp,
+                    group[0].message.uid,
+                )),
+            )
         });
         let (locations, groups) = groups
             .into_iter()
-            .map(|(location, group, recipient)| {
+            .map(|(location, group, recipient, rank)| {
                 (
                     location.clone(),
                     group
                         .iter()
                         .map(|entry| {
-                            let mut header = entry.header();
+                            let mut header = entry.header(rank);
                             header.list_recipient = recipient.cloned();
                             header
                         })
@@ -399,6 +397,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sender_matches_outrank_subjects_and_bodies_before_unread_and_date() {
+        let messages = Arc::new(vec![
+            Message {
+                uid: 1,
+                timestamp: 1,
+                sender: "POP Salon & Shop <pop@trichomania.cz>".into(),
+                subject: "Appointment".into(),
+                is_read: true,
+                ..Default::default()
+            },
+            Message {
+                uid: 2,
+                timestamp: 50,
+                sender: "Subject Newsletter <subject@example.com>".into(),
+                subject: "POP news".into(),
+                ..Default::default()
+            },
+            Message {
+                uid: 3,
+                timestamp: 100,
+                sender: "IBKR Newsletter <ibkr@example.com>".into(),
+                body_text: "pop in the markets".into(),
+                ..Default::default()
+            },
+            Message {
+                uid: 4,
+                timestamp: 90,
+                sender: "HTML Newsletter <html@example.com>".into(),
+                body_html: "<p>pop in HTML</p>".into(),
+                ..Default::default()
+            },
+        ]);
+        let (worker, results) = Search::start();
+        for unread_first in [true, false] {
+            let mut request = Request::new(false, "pop".into(), None, None, messages.clone());
+            request.unread_first = unread_first;
+            worker.submit(request);
+            loop {
+                let response = results.recv_blocking().unwrap();
+                let ranks: Vec<_> = response
+                    .groups
+                    .iter()
+                    .map(|group| group[0].search_rank)
+                    .collect();
+                assert!(ranks.is_sorted());
+                if response.complete {
+                    assert_eq!(
+                        response
+                            .groups
+                            .iter()
+                            .map(|group| group[0].uid)
+                            .collect::<Vec<_>>(),
+                        vec![1, 2, 3, 4]
+                    );
+                    break;
+                }
+            }
+        }
+        let mut request = Request::new(false, "pop".into(), None, None, messages);
+        request.filters.sources[1] = false;
+        worker.submit(request);
+        let response = super::super::tests::finished(&results);
+        assert_eq!(
+            response
+                .groups
+                .iter()
+                .map(|group| group[0].uid)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
     fn previews_the_newest_matching_message_even_when_nonmatches_are_unread() {
         let messages = Arc::new(vec![
             Message {
@@ -453,7 +524,8 @@ mod tests {
             body_html: "<style>hidden</style><p>Visible &amp; searchable</p>".into(),
             ..Default::default()
         });
-        let matches = |request: &Request| entry.matches(request, &Pairs::of([&*request.query]));
+        let matches =
+            |request: &Request| entry.rank(request, &Pairs::of([&*request.query])).is_some();
         let mut request = Request::new(false, "delivery".into(), None, None, Arc::default());
         assert!(matches(&request));
         assert!(entry.fields[6].get().is_none());

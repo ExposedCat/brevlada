@@ -8,6 +8,21 @@ pub struct Outcome {
     pub messages: Option<Vec<Message>>,
     pub error: Option<String>,
     pub removed: Vec<Message>,
+    pub destination: Option<String>,
+}
+
+impl Outcome {
+    pub fn refresh_destination(&self, account: &Account, queue: &super::sync_queue::SyncQueue) {
+        if let Some(folder) = &self.destination {
+            queue.refresh_folder(account, folder);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Change {
+    applied: bool,
+    destination: Option<String>,
 }
 
 pub fn execute(
@@ -19,6 +34,15 @@ pub fn execute(
     events: &async_channel::Sender<Event>,
     expected_validity: Option<u32>,
 ) -> Result<Outcome> {
+    let action = if action == SenderAction::Archive {
+        super::account_settings::archive_action(
+            &crate::application::settings()?,
+            &account.email,
+            action,
+        )
+    } else {
+        action
+    };
     let mut mail = Mail::connect(account)?;
     let result = match target {
         crate::models::action_target::ActionTarget::Sender(sender) => {
@@ -34,9 +58,11 @@ pub fn execute(
     };
     let mut removed = Vec::new();
     let mut error = None;
+    let mut destination = None;
     let applied = result.is_ok();
     match result {
-        Ok(messages) => {
+        Ok((messages, moved_to)) => {
+            destination = moved_to;
             if action.removes_messages() {
                 removed = messages.clone();
             }
@@ -76,6 +102,7 @@ pub fn execute(
         messages,
         error,
         removed,
+        destination,
     })
 }
 
@@ -200,7 +227,8 @@ fn undo_message<T: Read + Write>(
             validity,
             &[message.uid],
             &SenderAction::MoveTo(destination.into())
-        )?,
+        )?
+        .applied,
         "Message is already in the destination folder"
     );
     Ok(message)
@@ -211,7 +239,7 @@ fn apply<T: Read + Write>(
     folder: &str,
     sender: &str,
     action: SenderAction,
-) -> Result<Vec<Message>> {
+) -> Result<(Vec<Message>, Option<String>)> {
     ensure!(!sender.is_empty(), "Sender has no email address");
     ensure!(
         !sender.chars().any(char::is_control),
@@ -235,10 +263,11 @@ fn apply<T: Read + Write>(
         );
     }
     let uids: Vec<_> = messages.iter().map(|message| message.uid).collect();
-    if !apply_uids(session, folder, validity, &uids, &action)? {
+    let change = apply_uids(session, folder, validity, &uids, &action)?;
+    if !change.applied {
         messages.clear();
     }
-    Ok(messages)
+    Ok((messages, change.destination))
 }
 
 fn apply_messages(
@@ -247,7 +276,7 @@ fn apply_messages(
     validity: Option<u32>,
     messages: &[(u32, String)],
     action: SenderAction,
-) -> Result<Vec<Message>> {
+) -> Result<(Vec<Message>, Option<String>)> {
     let validity = validity.context("Mailbox is not ready; refresh and retry")?;
     let uids: Vec<_> = messages.iter().map(|(uid, _)| *uid).collect();
     let mut verified = Vec::new();
@@ -263,10 +292,11 @@ fn apply_messages(
         }
     }
     let uids: Vec<_> = verified.iter().map(|message| message.uid).collect();
-    if !apply_uids(&mut mail.session, folder, validity, &uids, &action)? {
+    let change = apply_uids(&mut mail.session, folder, validity, &uids, &action)?;
+    if !change.applied {
         verified.clear();
     }
-    Ok(verified)
+    Ok((verified, change.destination))
 }
 
 fn apply_uids<T: Read + Write>(
@@ -275,9 +305,9 @@ fn apply_uids<T: Read + Write>(
     validity: u32,
     uids: &[u32],
     action: &SenderAction,
-) -> Result<bool> {
+) -> Result<Change> {
     if uids.is_empty() {
-        return Ok(false);
+        return Ok(Change::default());
     }
     let destination = if !action.removes_messages() {
         None
@@ -295,7 +325,7 @@ fn apply_uids<T: Read + Write>(
     };
     if let Some(destination) = &destination {
         if destination == folder && !matches!(action, SenderAction::Delete) {
-            return Ok(false);
+            return Ok(Change::default());
         }
         ensure!(
             (can_move && destination != folder) || can_expunge,
@@ -349,7 +379,10 @@ fn apply_uids<T: Read + Write>(
             session.uid_expunge(&sequence)?;
         }
     }
-    Ok(true)
+    Ok(Change {
+        applied: true,
+        destination: destination.filter(|destination| destination != folder),
+    })
 }
 
 fn quoted(value: &str) -> Result<String> {
@@ -383,6 +416,22 @@ fn destination<T: Read + Write>(session: &mut Session<T>, action: &SenderAction)
         );
         return Ok(destination.clone());
     }
+    listed_destination(&folders, action).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not find the account's {} folder",
+            match action {
+                SenderAction::Archive => "Archive",
+                SenderAction::Spam => "Spam",
+                _ => "Trash",
+            }
+        )
+    })
+}
+
+pub(super) fn listed_destination(
+    folders: &[imap::types::Name],
+    action: &SenderAction,
+) -> Option<String> {
     let special = match action {
         SenderAction::Archive => "\\Archive",
         SenderAction::Spam => "\\Junk",
@@ -403,12 +452,12 @@ fn destination<T: Read + Write>(session: &mut Session<T>, action: &SenderAction)
             .map(|folder| folder.name().to_owned())
     };
     if let Some(name) = marked(special) {
-        return Ok(name);
+        return Some(name);
     }
     if *action == SenderAction::Archive
         && let Some(name) = marked("\\All")
     {
-        return Ok(name);
+        return Some(name);
     }
     for folder in selectable {
         let leaf = folder
@@ -416,17 +465,10 @@ fn destination<T: Read + Write>(session: &mut Session<T>, action: &SenderAction)
             .and_then(|delimiter| folder.name().rsplit(delimiter).next())
             .unwrap_or(folder.name());
         if fallback_folder(leaf, action.clone()) {
-            return Ok(folder.name().to_owned());
+            return Some(folder.name().to_owned());
         }
     }
-    anyhow::bail!(
-        "Could not find the account's {} folder",
-        match action {
-            SenderAction::Archive => "Archive",
-            SenderAction::Spam => "Spam",
-            _ => "Trash",
-        }
-    )
+    None
 }
 
 fn fallback_folder(name: &str, action: SenderAction) -> bool {
@@ -538,7 +580,9 @@ mod tests {
             })
             .login("test", "test")
             .unwrap();
-            apply(&mut session, "INBOX", "alice@example.com", action.clone()).unwrap();
+            let (_, destination) =
+                apply(&mut session, "INBOX", "alice@example.com", action.clone()).unwrap();
+            assert_eq!(destination.as_deref(), Some("Localized"));
             let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
             assert!(sent.contains("UID MOVE 1 \"Localized\""), "{sent}");
             assert!(!sent.contains("EXPUNGE"));
@@ -579,7 +623,11 @@ mod tests {
                 "a1 OK login\r\n* OK [UIDVALIDITY 7] valid\r\na2 OK select\r\na3 OK store\r\n"
                     .into(),
             );
-            assert!(apply_uids(&mut session, "INBOX", 7, &[1, 2], &action).unwrap());
+            assert!(
+                apply_uids(&mut session, "INBOX", 7, &[1, 2], &action)
+                    .unwrap()
+                    .applied
+            );
             let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
             assert!(sent.contains(&format!("UID STORE 1,2 {flag}")), "{sent}");
             assert!(
@@ -596,7 +644,9 @@ mod tests {
                 "a1 OK login\r\n* CAPABILITY IMAP4rev1 MOVE\r\na2 OK capabilities\r\n\
                  * OK [UIDVALIDITY 7] valid\r\na3 OK select\r\na4 OK mutation\r\na5 OK mutation\r\na6 OK mutation\r\n".into()
             );
-            assert!(apply_uids(&mut session, "Trash", 7, &[8], &action).unwrap());
+            let change = apply_uids(&mut session, "Trash", 7, &[8], &action).unwrap();
+            assert!(change.applied);
+            assert_eq!(change.destination.as_deref(), Some("INBOX"));
             let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
             assert!(sent.contains("UID MOVE 8 \"INBOX\""), "{sent}");
             if action == SenderAction::Unspam {
@@ -620,16 +670,16 @@ mod tests {
              * CAPABILITY IMAP4rev1 UIDPLUS\r\na3 OK capabilities\r\n\
              * OK [UIDVALIDITY 7] valid\r\na4 OK select\r\na5 OK copy\r\na6 OK store\r\na7 OK expunge\r\n".into()
         );
-        assert!(
-            apply_uids(
-                &mut session,
-                "INBOX",
-                7,
-                &[2],
-                &SenderAction::MoveTo("Work".into())
-            )
-            .unwrap()
-        );
+        let change = apply_uids(
+            &mut session,
+            "INBOX",
+            7,
+            &[2],
+            &SenderAction::MoveTo("Work".into()),
+        )
+        .unwrap();
+        assert!(change.applied);
+        assert_eq!(change.destination.as_deref(), Some("Work"));
         let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         assert!(sent.contains("UID COPY 2 \"Work\""), "{sent}");
         assert!(
@@ -731,7 +781,11 @@ mod tests {
              * CAPABILITY IMAP4rev1 MOVE UIDPLUS\r\na3 OK capabilities\r\n"
                 .into(),
         );
-        assert!(!apply_uids(&mut session, "Spam", 7, &[1], &SenderAction::Spam).unwrap());
+        assert!(
+            !apply_uids(&mut session, "Spam", 7, &[1], &SenderAction::Spam)
+                .unwrap()
+                .applied
+        );
         let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         assert!(!sent.contains("UID STORE") && !sent.contains("EXPUNGE"));
     }

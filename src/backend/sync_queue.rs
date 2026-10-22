@@ -100,6 +100,7 @@ struct Pending {
     interrupted: HashSet<Key>,
     visible: Option<(String, String)>,
     running: HashMap<Key, Job>,
+    rescan: HashSet<(String, String)>,
     failed: usize,
     last_started: Option<SystemTime>,
     progress: Tracker,
@@ -286,15 +287,10 @@ impl SyncQueue {
 
     pub fn headers_only(&self, account: &str, folder: &str) -> bool {
         let state = self.state.0.lock().unwrap();
-        (state.sent.get(account).is_some_and(|sent| sent == folder)
-            || state
-                .drafts
-                .get(account)
-                .is_some_and(|drafts| drafts == folder))
-            && !state
-                .folders
-                .get(account)
-                .is_some_and(|selected| selected.iter().any(|item| item == folder))
+        !state
+            .folders
+            .get(account)
+            .is_some_and(|selected| selected.iter().any(|item| item == folder))
     }
 
     pub fn is_outgoing(&self, account: &str, folder: &str) -> bool {
@@ -380,6 +376,9 @@ impl SyncQueue {
             .drafts
             .retain(|email, _| live.contains(email.as_str()));
         state
+            .rescan
+            .retain(|(email, _)| live.contains(email.as_str()));
+        state
             .jobs
             .retain(|job| live.contains(job.account.email.as_str()));
         let running: HashSet<_> = state.running.keys().cloned().collect();
@@ -432,6 +431,27 @@ impl SyncQueue {
         self.state.1.notify_all();
     }
 
+    pub fn refresh_folder(&self, account: &Account, folder: &str) {
+        let mut state = self.state.0.lock().unwrap();
+        if state.closed || state.removed_accounts.contains(&account.email) {
+            return;
+        }
+        if state
+            .known
+            .iter()
+            .any(|key| key.0 == account.email && key.1 == folder && matches!(key.2, 1 | 2))
+        {
+            state.rescan.insert((account.email.clone(), folder.into()));
+        } else {
+            state.enqueue(Job {
+                account: account.clone(),
+                folder: folder.into(),
+                task: Task::Scan,
+            });
+        }
+        self.state.1.notify_all();
+    }
+
     pub fn pop(&self) -> Option<Job> {
         let mut state = self.state.0.lock().unwrap();
         loop {
@@ -463,6 +483,19 @@ impl SyncQueue {
         {
             state.known.insert(job.key());
             state.jobs.push(job.clone());
+        }
+        if !state
+            .known
+            .iter()
+            .any(|key| key.0 == job.account.email && key.1 == job.folder && matches!(key.2, 1 | 2))
+            && state
+                .rescan
+                .remove(&(job.account.email.clone(), job.folder.clone()))
+        {
+            state.enqueue(Job {
+                task: Task::Scan,
+                ..job.clone()
+            });
         }
         self.state.1.notify_all();
     }
@@ -582,6 +615,62 @@ mod tests {
         assert!(!queue.headers_only("account", "INBOX"));
         queue.restore_folders("account", vec!["INBOX".into(), "Sent".into()]);
         assert!(!queue.headers_only("account", "Sent"));
+        queue.close();
+    }
+
+    #[test]
+    fn moved_mail_refreshes_unselected_destination_headers_without_changing_sync_settings() {
+        let queue = SyncQueue::default();
+        let selected = vec!["INBOX".into()];
+        queue.restore_folders("account", selected.clone());
+        let account = job("account", "INBOX", Task::Scan).account;
+        let mut outcome = crate::backend::sender_actions::Outcome {
+            messages: None,
+            removed: Vec::new(),
+            error: None,
+            destination: Some("All Mail".into()),
+        };
+        outcome.refresh_destination(&account, &queue);
+        assert_eq!(queue.queued_len(), 1);
+        assert!(queue.headers_only("account", "All Mail"));
+        let next = queue.pop().unwrap();
+        assert_eq!(next.folder, "All Mail");
+        assert!(matches!(next.task, Task::Scan));
+        queue.finish(&next, true);
+        assert_eq!(queue.state.0.lock().unwrap().folders["account"], selected);
+        outcome.destination = None;
+        outcome.refresh_destination(&account, &queue);
+        assert_eq!(queue.queued_len(), 0);
+        queue.close();
+    }
+
+    #[test]
+    fn moves_during_destination_sync_rescan_after_the_last_header_batch() {
+        let queue = SyncQueue::default();
+        let account = job("account", "All Mail", Task::Scan).account;
+        queue.refresh_folder(&account, "All Mail");
+        let scan = queue.pop().unwrap();
+        queue.refresh_folder(&account, "All Mail");
+        queue.refresh_folder(&account, "All Mail");
+        queue.push(job(
+            "account",
+            "All Mail",
+            Task::Headers {
+                validity: 7,
+                uids: Arc::new(vec![1]),
+                offset: 0,
+            },
+        ));
+        queue.finish(&scan, true);
+        assert_eq!(queue.queued_len(), 1);
+        let headers = queue.pop().unwrap();
+        assert!(matches!(headers.task, Task::Headers { .. }));
+        queue.finish(&headers, true);
+        assert_eq!(queue.queued_len(), 1);
+        let rescan = queue.pop().unwrap();
+        assert!(matches!(rescan.task, Task::Scan));
+        queue.finish(&rescan, true);
+        assert_eq!(queue.queued_len(), 0);
         queue.close();
     }
 

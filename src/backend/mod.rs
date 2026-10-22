@@ -1,3 +1,4 @@
+mod account_settings;
 pub mod accounts;
 pub mod attachment_cache;
 pub mod attachments;
@@ -22,6 +23,7 @@ pub mod search;
 mod sender_actions;
 mod sender_domains;
 mod smtp;
+mod special_use;
 pub mod storage;
 mod sync_progress;
 mod sync_queue;

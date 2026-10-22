@@ -1,7 +1,7 @@
 pub const WINDOW_WIDTH: i32 = 1400;
 pub const WINDOW_HEIGHT: i32 = 900;
 pub const SETTINGS_WIDTH: i32 = 560;
-pub const SETTINGS_HEIGHT: i32 = 360;
+pub const SETTINGS_HEIGHT: i32 = 600;
 pub const SIDEBAR_WIDTH: i32 = 300;
 pub const LIST_WIDTH: i32 = 400;
 pub const SPACING: i32 = 12;

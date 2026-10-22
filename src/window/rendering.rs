@@ -329,7 +329,10 @@ impl State {
                 let key = location
                     .as_ref()
                     .map_or(sender.clone(), |location| location.key(&sender));
-                positions.get(key.as_str()).copied().unwrap_or(usize::MAX)
+                (
+                    group.iter().map(|message| message.search_rank).min(),
+                    positions.get(key.as_str()).copied().unwrap_or(usize::MAX),
+                )
             });
             (groups, locations) = located.into_iter().unzip();
         }
