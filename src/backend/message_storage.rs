@@ -162,7 +162,7 @@ fn insert(
     folder: Option<&str>,
     message: &Message,
 ) -> Result<bool> {
-    Ok(connection.prepare_cached(sql)?.execute(params![
+    let inserted = connection.prepare_cached(sql)?.execute(params![
         id,
         account,
         folder,
@@ -193,7 +193,11 @@ fn insert(
         serde_json::to_string(&message.calendar_events)?,
         serde_json::to_string(&message.tickets)?,
         message.body_loaded,
-    ])? > 0)
+    ])? > 0;
+    if inserted {
+        super::conversation::index(connection, id, account, message)?;
+    }
+    Ok(inserted)
 }
 
 fn store_body(connection: &Connection, id: i64, message: &Message) -> Result<()> {
@@ -250,15 +254,13 @@ pub(super) fn add(
     Ok(())
 }
 
-/// Stores a fetched body and the header fields fetched with it. Unlike `put`,
-/// this leaves the indexed columns, and so the index pages, untouched.
 pub(super) fn store_fetched(connection: &Connection, id: i64, message: &Message) -> Result<()> {
     connection
         .prepare_cached(
             "UPDATE rust_headers SET uid_validity=?2, message_id=?3, reply_to=?4, cc=?5,
              in_reply_to=?6, attachments=?7, attachment_details=?8, inline_media_loaded=?9,
-             unsubscribe=?10, parcels=?11, calendar_events=?12, tickets=?13, body_loaded=?14
-             WHERE id=?1",
+             unsubscribe=?10, parcels=?11, calendar_events=?12, tickets=?13, body_loaded=?14,
+             \"references\"=?15 WHERE id=?1",
         )?
         .execute(params![
             id,
@@ -275,7 +277,9 @@ pub(super) fn store_fetched(connection: &Connection, id: i64, message: &Message)
             serde_json::to_string(&message.calendar_events)?,
             serde_json::to_string(&message.tickets)?,
             message.body_loaded,
+            serde_json::to_string(&message.references)?,
         ])?;
+    super::conversation::reindex(connection, id, message)?;
     store_body(connection, id, message)
 }
 
@@ -311,5 +315,6 @@ pub(super) fn refresh(connection: &Connection, id: i64, message: &Message) -> Re
             message.flag_revision,
             serde_json::to_string(&message.unsubscribe)?,
         ])?;
+    super::conversation::reindex(connection, id, message)?;
     Ok(())
 }

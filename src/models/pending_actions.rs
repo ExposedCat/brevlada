@@ -223,6 +223,18 @@ impl PendingActions {
         }
     }
 
+    pub fn is_removed(&self, account: &str, folder: &str, message: &Message) -> bool {
+        self.removed
+            .get(&(account.into(), folder.into()))
+            .is_some_and(|removed| {
+                removed
+                    .get(&(message.uid, message.message_id.clone()))
+                    .is_some_and(|validities| {
+                        message.uid_validity.is_none() || validities.contains(&message.uid_validity)
+                    })
+            })
+    }
+
     pub fn project(&self, account: &str, folder: &str, message: &Message) -> Option<Message> {
         let retained = self.spam.get(&(
             account.into(),
@@ -236,19 +248,7 @@ impl PendingActions {
                 || retained.message.uid_validity == message.uid_validity
         });
         let keep = retained.is_some();
-        if !keep
-            && self
-                .removed
-                .get(&(account.into(), folder.into()))
-                .is_some_and(|removed| {
-                    removed
-                        .get(&(message.uid, message.message_id.clone()))
-                        .is_some_and(|validities| {
-                            message.uid_validity.is_none()
-                                || validities.contains(&message.uid_validity)
-                        })
-                })
-        {
+        if !keep && self.is_removed(account, folder, message) {
             return None;
         }
         let mut visible = message.clone();

@@ -1,4 +1,4 @@
-use crate::models::{Message, SentMessage};
+use crate::models::Message;
 use anyhow::{Context, Result};
 use messages::Mailbox;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
@@ -17,6 +17,8 @@ mod calendar;
 #[cfg(test)]
 #[path = "storage_concurrency.rs"]
 mod concurrency_tests;
+#[path = "conversation_storage.rs"]
+mod conversation;
 #[path = "sync_history.rs"]
 mod history;
 #[path = "message_storage.rs"]
@@ -27,6 +29,8 @@ mod migration;
 mod notifications;
 #[path = "read_storage.rs"]
 mod reads;
+#[path = "conversation_reconciliation.rs"]
+pub(super) mod reconciliation;
 #[path = "sender_storage.rs"]
 mod senders;
 #[path = "sync_settings.rs"]
@@ -202,69 +206,6 @@ impl Storage {
             let id = messages::sent_id(transaction, account, &message.message_id)?;
             messages::put(transaction, id, account, None, message)
         })
-    }
-
-    #[cfg(test)]
-    pub fn related_sent(
-        &self,
-        account: &str,
-        folder: &str,
-        received: &[Message],
-    ) -> Result<Vec<SentMessage>> {
-        self.related_messages(account, folder, received, false)
-    }
-
-    pub fn related_messages(
-        &self,
-        account: &str,
-        folder: &str,
-        received: &[Message],
-        outgoing: bool,
-    ) -> Result<Vec<SentMessage>> {
-        let mut candidates = Vec::new();
-        let mut local = self.0.prepare(concat!(
-            messages::select!(),
-            " WHERE h.account_id=?1 AND h.folder IS NULL ORDER BY h.message_id"
-        ))?;
-        for message in local.query_map([account], messages::decode)? {
-            candidates.push(SentMessage {
-                folder: String::new(),
-                message: message?,
-            });
-        }
-        let mut cached = self.0.prepare(concat!(
-            messages::select!("'', '', '[]', h.folder, (SELECT f.uid_validity FROM rust_folders f WHERE f.account_id=h.account_id AND f.folder=h.folder)"),
-            " WHERE h.account_id=?1 AND h.folder<>?2 AND (?3 OR h.is_draft OR h.sender_key=lower(?1))
-             ORDER BY h.timestamp DESC, h.folder, h.uid DESC"
-        ))?;
-        for row in cached.query_map(params![account, folder, outgoing], |row| {
-            Ok((
-                messages::decode(row)?,
-                row.get::<_, String>(29)?,
-                row.get::<_, Option<u32>>(30)?,
-            ))
-        })? {
-            let (mut message, folder, validity) = row?;
-            message.uid_validity = message.uid_validity.or(validity);
-            message.body_loaded = false;
-            super::mail_sync::ensure_draft_id(&mut message, &folder);
-            candidates.push(SentMessage { folder, message });
-        }
-        let mut related =
-            crate::models::conversation::related_direction(received, &candidates, outgoing);
-        for item in related
-            .iter_mut()
-            .filter(|item| !item.folder.is_empty())
-            .take(25)
-        {
-            if let Some(mut message) = self.message(account, &item.folder, item.message.uid)? {
-                message.is_draft |= item.message.is_draft;
-                message.uid_validity = message.uid_validity.or(item.message.uid_validity);
-                super::mail_sync::ensure_draft_id(&mut message, &item.folder);
-                item.message = message;
-            }
-        }
-        Ok(related)
     }
 
     #[cfg(test)]

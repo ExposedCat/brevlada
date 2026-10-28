@@ -378,6 +378,7 @@ impl Storage {
             message.reply_to = fetched.reply_to.clone();
             message.cc = fetched.cc.clone();
             message.in_reply_to = fetched.in_reply_to.clone();
+            message.references = fetched.references.clone();
             message.body_text = fetched.body_text.clone();
             message.body_html = fetched.body_html.clone();
             message.attachments = fetched.attachments.clone();

@@ -165,7 +165,7 @@ impl Mail {
     }
 }
 
-fn excluded_folder(name: &str, attributes: &[NameAttribute<'_>]) -> bool {
+pub(super) fn excluded_folder(name: &str, attributes: &[NameAttribute<'_>]) -> bool {
     attributes.iter().any(|attribute| {
         matches!(attribute, NameAttribute::Custom(value)
         if value.eq_ignore_ascii_case("\\Trash") || value.eq_ignore_ascii_case("\\Junk"))

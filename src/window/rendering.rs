@@ -316,6 +316,7 @@ impl State {
         }
         if !threads
             && searching
+            && !self.search_running[0].get()
             && let Some(order) = self.search_account_order.borrow().as_ref()
         {
             let positions: HashMap<_, _> = order

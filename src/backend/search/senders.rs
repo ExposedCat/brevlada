@@ -172,24 +172,29 @@ impl Progress<'_> {
                 (&*location, &*group, self.recipients.get(&position), *rank)
             })
             .collect();
-        groups.sort_by_cached_key(|(location, group, _, rank)| {
-            (
-                *rank,
-                std::cmp::Reverse((
-                    self.request.unread_first
-                        && group.iter().any(|entry| {
-                            !entry.message.is_read
-                                || (location.as_ref().is_none_or(|location| {
-                                    self.request.scope.as_ref().is_some_and(|scope| {
-                                        Some(location) == scope.current.as_ref()
-                                    })
-                                }) && self.request.deferred_read.contains(&entry.message.uid))
-                        }),
-                    group[0].message.timestamp,
-                    group[0].message.uid,
-                )),
-            )
-        });
+        if complete {
+            groups.sort_by_cached_key(|(location, group, _, rank)| {
+                (
+                    *rank,
+                    std::cmp::Reverse((
+                        self.request.unread_first
+                            && group.iter().any(|entry| {
+                                !entry.message.is_read
+                                    || (location.as_ref().is_none_or(|location| {
+                                        self.request.scope.as_ref().is_some_and(|scope| {
+                                            Some(location) == scope.current.as_ref()
+                                        })
+                                    }) && self
+                                        .request
+                                        .deferred_read
+                                        .contains(&entry.message.uid))
+                            }),
+                        group[0].message.timestamp,
+                        group[0].message.uid,
+                    )),
+                )
+            });
+        }
         let (locations, groups) = groups
             .into_iter()
             .map(|(location, group, recipient, rank)| {
@@ -466,6 +471,67 @@ mod tests {
                 .map(|group| group[0].uid)
                 .collect::<Vec<_>>(),
             vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn streamed_snapshots_stay_in_discovery_order_until_the_final_sort() {
+        let entries: Vec<_> = [
+            Message {
+                uid: 2,
+                timestamp: 2,
+                sender: "body@example.com".into(),
+                body_text: "pop".into(),
+                ..Default::default()
+            },
+            Message {
+                uid: 1,
+                timestamp: 1,
+                sender: "pop@example.com".into(),
+                ..Default::default()
+            },
+        ]
+        .into_iter()
+        .map(|message| Rc::new(Entry::new(message)))
+        .collect();
+        let request = Request::new(false, "pop".into(), None, None, Arc::default());
+        let worker = Shared::default();
+        let (output, responses) = async_channel::bounded(4);
+        let mut progress = Progress {
+            request: &request,
+            query: Pairs::of(["pop"]),
+            worker: &worker,
+            output: &output,
+            groups: vec![
+                (None, vec![entries[0].clone()], 2),
+                (None, vec![entries[1].clone()], 0),
+            ],
+            location: None,
+            senders: HashMap::new(),
+            recipients: HashMap::new(),
+            last_sent: None,
+        };
+        assert!(progress.publish(false));
+        let partial = responses.recv_blocking().unwrap();
+        assert!(!partial.complete);
+        assert_eq!(
+            partial
+                .groups
+                .iter()
+                .map(|group| group[0].uid)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert!(progress.publish(true));
+        let complete = responses.recv_blocking().unwrap();
+        assert!(complete.complete);
+        assert_eq!(
+            complete
+                .groups
+                .iter()
+                .map(|group| group[0].uid)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
         );
     }
 

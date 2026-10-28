@@ -1,6 +1,48 @@
 use super::*;
 
 impl State {
+    pub(super) fn conversation_loaded(self: &Rc<Self>, mut messages: Vec<models::SentMessage>) {
+        self.reconcile_drafts(&mut messages);
+        if let Some(account) = self.account.borrow().as_ref() {
+            messages.retain(|item| {
+                !self.sender_actions.borrow().is_removed(
+                    &account.email,
+                    &item.folder,
+                    &item.message,
+                )
+            });
+        }
+        for item in &mut messages {
+            if !item.message.body_loaded
+                && let Some(loaded) = self.related_sent.borrow().iter().find(|old| {
+                    old.folder == item.folder
+                        && old.message.uid == item.message.uid
+                        && old.message.message_id == item.message.message_id
+                        && old.message.uid_validity == item.message.uid_validity
+                        && old.message.body_loaded
+                })
+            {
+                item.message = loaded.message.clone();
+            }
+        }
+        if *self.related_sent.borrow() != messages || self.cards.borrow().is_empty() {
+            let only_drafts_changed = self
+                .related_sent
+                .borrow()
+                .iter()
+                .filter(|item| !item.message.is_draft)
+                .eq(messages.iter().filter(|item| !item.message.is_draft));
+            *self.related_sent.borrow_mut() = messages;
+            ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
+                if only_drafts_changed {
+                    self.update_draft_widgets();
+                } else {
+                    self.render_conversation();
+                }
+            });
+        }
+    }
+
     pub(super) fn refresh_open_thread(self: &Rc<Self>) {
         let group = ui::virtual_list::selected(&self.thread_list)
             .and_then(|position| ui::virtual_list::item(&self.thread_list, position))
@@ -84,6 +126,13 @@ impl State {
                 } else {
                     self.folder.borrow().clone()
                 };
+                if self.account.borrow().as_ref().is_some_and(|account| {
+                    self.sender_actions
+                        .borrow()
+                        .is_removed(&account.email, &folder, message)
+                }) {
+                    return false;
+                }
                 !self
                     .draft_removed
                     .borrow()

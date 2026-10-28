@@ -24,6 +24,13 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS rust_mailboxes (
     CREATE INDEX IF NOT EXISTS rust_headers_body_copy
     ON rust_headers (account_id, trim(message_id, '<> ' || char(9) || char(10) || char(13)))
     WHERE body_loaded AND NOT is_draft;
+    CREATE TABLE IF NOT EXISTS rust_conversation_keys (
+    header_id INTEGER NOT NULL, account_id TEXT NOT NULL, kind INTEGER NOT NULL, value TEXT NOT NULL,
+    PRIMARY KEY(header_id, kind, value));
+    CREATE INDEX IF NOT EXISTS rust_conversation_lookup
+    ON rust_conversation_keys (account_id, kind, value, header_id);
+    CREATE TRIGGER IF NOT EXISTS rust_conversation_deleted AFTER DELETE ON rust_headers
+    BEGIN DELETE FROM rust_conversation_keys WHERE header_id=old.id; END;
     -- List rows read the leading columns without walking the overflow pages of HTML bodies.
     CREATE TABLE IF NOT EXISTS rust_bodies (
     id INTEGER PRIMARY KEY, html_tickets TEXT NOT NULL, body_text TEXT NOT NULL,
@@ -67,6 +74,7 @@ pub(super) fn run(transaction: &Transaction<'_>) -> Result<()> {
     if exists(transaction, "messages")? && !legacy_imported(transaction)? {
         import_legacy(transaction)?;
     }
+    super::conversation::migrate(transaction)?;
     Ok(())
 }
 

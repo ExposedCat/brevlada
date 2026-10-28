@@ -179,6 +179,7 @@ pub enum Event {
     DraftDeleted(u64, Result<(), String>),
     SentCacheChanged(String),
     RelatedSent(u64, u64, Vec<SentMessage>),
+    ConversationHistory(u64, u64, Vec<SentMessage>),
     RelatedSentError(u64, u64, String),
     SentBody(u64, u64, String, u32, Result<Message, String>),
     SpamUndoFinished {
@@ -212,6 +213,7 @@ pub enum Event {
     PreviewError(u64, u64, u32),
     CacheList(String, String, Vec<Message>),
     CacheChanged(String, String),
+    CachePruned(String, String, Vec<Message>),
     CacheBody(String, String, Message),
     Avatar(String, Option<Vec<u8>>),
     AvatarError(String),
@@ -400,7 +402,14 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
         bodies.clone(),
         events.clone(),
     );
-    start_cache_reads(path, cache_receiver, events);
+    let (history_sender, history_receiver) = mpsc::channel();
+    super::conversation_worker::start(
+        path.clone(),
+        history_receiver,
+        bodies.clone(),
+        events.clone(),
+    );
+    start_cache_reads(path, cache_receiver, events, history_sender);
     (
         Worker {
             #[cfg(test)]
@@ -421,6 +430,7 @@ fn start_cache_reads(
     path: PathBuf,
     receiver: mpsc::Receiver<Command>,
     events: async_channel::Sender<Event>,
+    history: mpsc::Sender<Command>,
 ) {
     std::thread::spawn(move || {
         let mut storage = None;
@@ -492,22 +502,25 @@ fn start_cache_reads(
             })();
             let event = match result {
                 Ok(event) => event,
-                Err(error) => match command {
+                Err(error) => match &command {
                     Command::LoadSenderPage {
                         generation,
                         sender_generation,
                         ..
-                    } => Event::SenderPageError(generation, sender_generation, error.to_string()),
+                    } => Event::SenderPageError(*generation, *sender_generation, error.to_string()),
                     Command::RelatedSent {
                         generation,
                         selection,
                         ..
-                    } => Event::RelatedSentError(generation, selection, error.to_string()),
+                    } => Event::RelatedSentError(*generation, *selection, error.to_string()),
                     _ => continue,
                 },
             };
             if events.send_blocking(event).is_err() {
                 break;
+            }
+            if matches!(command, Command::RelatedSent { .. }) {
+                let _ = history.send(command);
             }
         }
     });
@@ -1023,7 +1036,8 @@ mod tests {
         let (commands, network_commands) = mpsc::channel();
         let (cache_commands, cache_receiver) = mpsc::channel();
         let (events, results) = async_channel::unbounded();
-        start_cache_reads(path.clone(), cache_receiver, events);
+        let (history_sender, _history_receiver) = mpsc::channel();
+        start_cache_reads(path.clone(), cache_receiver, events, history_sender);
         let worker = Worker {
             record_commands: true,
             request: AtomicU64::default(),

@@ -123,39 +123,16 @@ impl State {
                     "Could not load conversation messages: {error}"
                 )));
             }
-            Event::RelatedSent(generation, selection, mut messages)
+            Event::RelatedSent(generation, selection, messages)
                 if generation == self.generation.get() && selection == self.selection.get() =>
             {
-                self.reconcile_drafts(&mut messages);
-                for item in &mut messages {
-                    if !item.message.body_loaded
-                        && let Some(loaded) = self.related_sent.borrow().iter().find(|old| {
-                            old.folder == item.folder
-                                && old.message.uid == item.message.uid
-                                && old.message.message_id == item.message.message_id
-                                && old.message.body_loaded
-                        })
-                    {
-                        item.message = loaded.message.clone();
-                    }
-                }
-                if *self.related_sent.borrow() != messages || self.cards.borrow().is_empty() {
-                    let only_drafts_changed = self
-                        .related_sent
-                        .borrow()
-                        .iter()
-                        .filter(|item| !item.message.is_draft)
-                        .eq(messages.iter().filter(|item| !item.message.is_draft));
-                    *self.related_sent.borrow_mut() = messages;
-                    ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
-                        if only_drafts_changed {
-                            self.update_draft_widgets();
-                        } else {
-                            self.render_conversation();
-                        }
-                    });
-                }
+                self.conversation_loaded(messages);
                 self.sender.conversation_pending(selection, false);
+            }
+            Event::ConversationHistory(generation, selection, messages)
+                if generation == self.generation.get() && selection == self.selection.get() =>
+            {
+                self.conversation_loaded(messages);
             }
             Event::SentBody(generation, selection, folder, uid, result)
                 if generation == self.generation.get() && selection == self.selection.get() =>
@@ -604,6 +581,9 @@ impl State {
                 self.toast.add_toast(adw::Toast::new(&format!(
                     "Could not load sender messages: {error}"
                 )));
+            }
+            Event::CachePruned(email, folder, removed) => {
+                self.cache_pruned(&email, &folder, &removed);
             }
             Event::CacheChanged(email, folder) => {
                 self.refresh_search_cache(&email, &folder);

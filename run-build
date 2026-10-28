@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+cargo build --bin brevlada --target-dir "$PWD/target"
+
+flatpak kill com.chipichapa.Brevlada 2>/dev/null || true
+pkill -KILL -u "$(id -u)" -x brevlada 2>/dev/null || true
+
+while pgrep -u "$(id -u)" -x brevlada >/dev/null; do
+    sleep 0.1
+done
+
+exec "$PWD/target/debug/brevlada" "$@"

@@ -64,6 +64,10 @@ pub fn related_direction(
                                 }))
                     } else {
                         same_conversation(incoming, message)
+                            || (!senders::key(incoming).is_empty()
+                                && senders::key(incoming) == senders::key(message)
+                                && !subject_key(&incoming.subject).is_empty()
+                                && subject_key(&incoming.subject) == subject_key(&message.subject))
                     }
                 })
             {

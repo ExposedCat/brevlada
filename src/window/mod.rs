@@ -1,6 +1,7 @@
 mod account_settings;
 mod actions;
 mod autosave;
+mod cache_reconciliation;
 mod calendar;
 mod compose_controls;
 mod conversation;
@@ -1190,11 +1191,16 @@ mod diagnostics {
         };
         *state.messages.borrow_mut() = vec![first.clone(), older.clone()];
         state.show_thread(vec![first, older]);
+        state.event(Event::RelatedSent(
+            state.generation.get(),
+            state.selection.get(),
+            vec![],
+        ));
         let card = state.cards.borrow()[&1].widget.clone();
         let parent_changes = Rc::new(Cell::new(0));
         let changed = parent_changes.clone();
         card.connect_parent_notify(move |_| changed.set(changed.get() + 1));
-        state.event(Event::RelatedSent(
+        state.event(Event::ConversationHistory(
             state.generation.get(),
             state.selection.get(),
             vec![models::SentMessage {
@@ -1212,6 +1218,139 @@ mod diagnostics {
         assert_eq!(parent_changes.get(), 0);
         assert_eq!(card.parent(), Some(state.viewer.clone().upcast()));
         assert_eq!(state.sent_cards.borrow().len(), 1);
+        state.event(Event::ConversationHistory(
+            state.generation.get(),
+            state.selection.get() + 1,
+            vec![],
+        ));
+        assert_eq!(state.sent_cards.borrow().len(), 1);
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; uses cached message fixtures and a recording worker"]
+    fn cache_reconciliation_removes_stale_cards_and_rejects_late_results() {
+        let state = unread_test_state("org.example.BrevladaReconciliationDiagnostic");
+        let live = Message {
+            uid: 1,
+            uid_validity: Some(7),
+            message_id: "received".into(),
+            timestamp: 3,
+            sender: "salon@example.com".into(),
+            subject: "Appointment".into(),
+            is_read: true,
+            body_loaded: true,
+            body_text: "Reserved for you.".into(),
+            ..Default::default()
+        };
+        let sent = models::SentMessage {
+            folder: "Sent".into(),
+            message: Message {
+                uid: 344,
+                message_id: "sent".into(),
+                timestamp: 2,
+                sender: "account@example.com".into(),
+                recipients: "salon@example.com".into(),
+                body_text: "That works for us.".into(),
+                ..live.clone()
+            },
+        };
+        let ghost = models::SentMessage {
+            folder: "All Mail".into(),
+            message: Message {
+                uid: 7418,
+                message_id: "old-draft".into(),
+                timestamp: 1,
+                ..sent.message.clone()
+            },
+        };
+        *state.messages.borrow_mut() = vec![live.clone()];
+        state.show_thread(vec![live.clone()]);
+        state.event(Event::RelatedSent(
+            state.generation.get(),
+            state.selection.get(),
+            vec![sent.clone(), ghost.clone()],
+        ));
+        let received_card = state.cards.borrow()[&1].widget.clone();
+        let sent_card = state.sent_cards.borrow()["sent"].widget.clone();
+        state.folder_cache.borrow_mut().insert(
+            ("account@example.com".into(), "All Mail".into()),
+            vec![ghost.message.clone()],
+        );
+        state.event(Event::CachePruned(
+            "other@example.com".into(),
+            "All Mail".into(),
+            vec![ghost.message.clone()],
+        ));
+        assert!(state.sent_cards.borrow().contains_key("old-draft"));
+        state.event(Event::CachePruned(
+            "account@example.com".into(),
+            "All Mail".into(),
+            vec![ghost.message.clone()],
+        ));
+        assert!(!state.sent_cards.borrow().contains_key("old-draft"));
+        assert!(
+            state.folder_cache.borrow()[&("account@example.com".into(), "All Mail".into())]
+                .is_empty()
+        );
+        assert_eq!(state.cards.borrow()[&1].widget, received_card);
+        assert_eq!(state.sent_cards.borrow()["sent"].widget, sent_card);
+        state.event(Event::ConversationHistory(
+            state.generation.get(),
+            state.selection.get(),
+            vec![sent.clone(), ghost.clone()],
+        ));
+        state.event(Event::RelatedSent(
+            state.generation.get(),
+            state.selection.get(),
+            vec![sent.clone(), ghost.clone()],
+        ));
+        assert!(!state.sent_cards.borrow().contains_key("old-draft"));
+        let restored = models::SentMessage {
+            message: Message {
+                uid_validity: Some(8),
+                ..ghost.message.clone()
+            },
+            ..ghost.clone()
+        };
+        state.event(Event::ConversationHistory(
+            state.generation.get(),
+            state.selection.get(),
+            vec![sent, restored],
+        ));
+        assert!(state.sent_cards.borrow().contains_key("old-draft"));
+        state.event(Event::CachePruned(
+            "account@example.com".into(),
+            "All Mail".into(),
+            vec![ghost.message],
+        ));
+        assert!(state.sent_cards.borrow().contains_key("old-draft"));
+        let stale = Message {
+            uid: 2,
+            message_id: "stale-inbox-source".into(),
+            timestamp: 0,
+            ..live.clone()
+        };
+        *state.messages.borrow_mut() = vec![live.clone(), stale.clone()];
+        state
+            .sender_pane
+            .borrow_mut()
+            .select(Some("salon@example.com".into()));
+        state
+            .sender_pane
+            .borrow_mut()
+            .seed(vec![live.clone(), stale.clone()]);
+        state.show_thread(vec![live, stale.clone()]);
+        state.event(Event::CachePruned(
+            "account@example.com".into(),
+            "INBOX".into(),
+            vec![stale.clone()],
+        ));
+        assert_eq!(*state.selected.borrow(), [1]);
+        assert_eq!(state.open_group.borrow().len(), 1);
+        assert_eq!(state.sender_pane.borrow().messages().len(), 1);
+        assert_eq!(state.messages.borrow().len(), 1);
+        assert!(!state.cards.borrow().contains_key(&2));
+        assert!(state.visible_group(&[stale]).is_empty());
     }
 
     #[test]

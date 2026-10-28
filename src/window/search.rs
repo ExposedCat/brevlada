@@ -330,7 +330,9 @@ impl State {
                         state
                             .toast
                             .add_toast(adw::Toast::new(&format!("Search: {error}")));
-                    } else {
+                    } else if response.complete
+                        || !state.search_preserve_results[usize::from(response.threads)].get()
+                    {
                         state.publish_search_groups(
                             response.threads,
                             &response.query,
