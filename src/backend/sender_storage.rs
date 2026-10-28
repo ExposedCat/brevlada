@@ -89,7 +89,8 @@ impl Storage {
         let mut statement = self.0.prepare(concat!(
             messages::select!(
                 "coalesce(b.body_text, ''), '', '[]', coalesce(b.html_text, ''), \
-                 coalesce(b.html_tickets, '[]')"
+                 coalesce(b.html_tickets, '[]'), \
+                 CASE WHEN b.html_text='' THEN b.body_html<>'' ELSE 0 END"
             ),
             " WHERE h.account_id=?1 AND h.folder=?2 ORDER BY h.timestamp DESC, h.uid DESC"
         ))?;
@@ -105,7 +106,7 @@ impl Storage {
                 message.tickets = messages::json(row, 30)?;
             }
             let html = row.get_ref(29)?.as_str()?;
-            if !html.is_empty() {
+            if !html.is_empty() || row.get::<_, bool>(31)? {
                 message.list_preview = Some(if crate::models::calendar::is_reply(&message) {
                     String::new()
                 } else {
@@ -296,6 +297,7 @@ mod tests {
             uid: 1,
             sender: "sender@example.com".into(),
             body_loaded: true,
+            body_text: "p { margin:10px 0; padding:0; }".into(),
             body_html: "<p>Cached HTML preview</p>".into(),
             inline_media_loaded: true,
             inline_media: vec![crate::models::InlineMedia {
@@ -310,9 +312,62 @@ mod tests {
             .sender_page("a", "INBOX", "sender@example.com", None, 25)
             .unwrap();
         assert_eq!(page[0].list_preview.as_deref(), Some("Cached HTML preview"));
+        assert_eq!(
+            storage.sender_headers("a", "INBOX").unwrap()[0]
+                .list_preview
+                .as_deref(),
+            Some("Cached HTML preview")
+        );
         assert!(page[0].display_prepared && page[0].body_loaded);
         assert!(page[0].inline_media.is_empty());
         assert_eq!(storage.message("a", "INBOX", 1).unwrap().unwrap(), original);
+    }
+
+    #[test]
+    fn cached_headers_and_pages_agree_on_html_and_plain_only_previews() {
+        let storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        for (uid, html, expected) in [
+            (1, "<p>Hello &amp; welcome</p>", "Hello & welcome"),
+            (
+                2,
+                "<style>p { color: red }</style><img src='cid:photo'>",
+                "",
+            ),
+            (3, "", "Plain text"),
+        ] {
+            storage
+                .store(
+                    "a",
+                    "INBOX",
+                    &Message {
+                        uid,
+                        sender: "sender@example.com".into(),
+                        body_loaded: true,
+                        body_text: if html.is_empty() {
+                            "Plain text"
+                        } else {
+                            "p { margin:10px 0; padding:0; }"
+                        }
+                        .into(),
+                        body_html: html.into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            for messages in [
+                storage.sender_headers("a", "INBOX").unwrap(),
+                storage
+                    .sender_page("a", "INBOX", "sender@example.com", None, 25)
+                    .unwrap(),
+            ] {
+                let message = messages.iter().find(|message| message.uid == uid).unwrap();
+                assert_eq!(message.list_preview.as_deref(), Some(expected));
+                assert_eq!(
+                    crate::components::preview::thread(&[message.list_header(true)]),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 mod dates;
 mod export;
 mod ical;
+mod merge;
 mod participation;
 mod reply;
 mod responses;
@@ -106,7 +107,7 @@ pub fn events_in(message: &super::Message, html: &Html) -> Vec<Event> {
     }
     let mut events = Vec::new();
     for cached in &message.calendar_events {
-        let hydrated = cached
+        let mut hydrated = cached
             .calendar
             .as_deref()
             .and_then(|calendar| {
@@ -116,20 +117,11 @@ pub fn events_in(message: &super::Message, html: &Html) -> Vec<Event> {
                     .or_else(|| parse_ical(calendar).into_iter().next())
             })
             .unwrap_or_else(|| cached.clone());
-        if !events.iter().any(|old: &Event| old.same_event(&hydrated)) {
-            events.push(hydrated);
-        }
+        merge::enrich(&mut hydrated, cached);
+        merge::insert(&mut events, hydrated);
     }
     for event in parse_html(html) {
-        if let Some(old) = events.iter_mut().find(|old| old.same_event(&event)) {
-            for action in event.rsvp {
-                if !old.rsvp.contains(&action) {
-                    old.rsvp.push(action);
-                }
-            }
-        } else {
-            events.push(event);
-        }
+        merge::insert(&mut events, event);
     }
     events
 }
@@ -144,14 +136,8 @@ impl Event {
             (Some(left), Some(right)) => left == right && self.recurrence_id == other.recurrence_id,
             _ => {
                 self.name == other.name
-                    && (self.start == other.start
-                        || match (
-                            chrono::DateTime::parse_from_rfc3339(&self.start),
-                            chrono::DateTime::parse_from_rfc3339(&other.start),
-                        ) {
-                            (Ok(left), Ok(right)) => left == right,
-                            _ => false,
-                        })
+                    && self.recurrence_id == other.recurrence_id
+                    && merge::same_start(self, other)
             }
         }
     }

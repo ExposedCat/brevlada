@@ -1,6 +1,8 @@
 use super::{Event, ical::fold};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 
+mod details;
+
 fn escape(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -27,8 +29,9 @@ fn date_property(key: &str, value: &str) -> Option<String> {
 
 pub fn serialize(event: &Event) -> Option<String> {
     if let Some(calendar) = &event.calendar {
+        let calendar = details::enrich(event, calendar)?;
         return Some(super::participation::calendar_with_statuses(
-            event, calendar,
+            event, &calendar,
         ));
     }
     let start = date_property("DTSTART", &event.start)?;

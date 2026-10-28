@@ -119,15 +119,7 @@ fn collect(value: &Value, events: &mut Vec<Event>) {
                 if kind(value, "RsvpAction") {
                     actions(value, &mut event.rsvp);
                 }
-                if let Some(old) = events.iter_mut().find(|old| old.same_event(&event)) {
-                    for action in event.rsvp {
-                        if !old.rsvp.contains(&action) {
-                            old.rsvp.push(action);
-                        }
-                    }
-                } else {
-                    events.push(event);
-                }
+                super::merge::insert(events, event);
             } else {
                 for child in map.values() {
                     collect(child, events);

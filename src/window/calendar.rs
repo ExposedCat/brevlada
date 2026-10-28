@@ -115,6 +115,11 @@ impl State {
             }
             events.push(event);
         }
+        for events in &mut widgets.before {
+            if events.len() > 1 {
+                *events = vec![ui::calendar::flow(events).upcast()];
+            }
+        }
         widgets.compact = messages
             .iter()
             .enumerate()

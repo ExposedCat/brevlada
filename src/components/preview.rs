@@ -1,6 +1,6 @@
 use crate::models::{
     Message, calendar,
-    html::{Html, layout_text},
+    html::{Html, text_chunks},
 };
 
 pub fn message(message: &Message, html: &Html) -> String {
@@ -10,58 +10,77 @@ pub fn message(message: &Message, html: &Html) -> String {
     if calendar::is_reply_in(message, html) {
         return String::new();
     }
-    let text = if message.body_text.trim().is_empty() {
-        layout_text(
-            html.document().root_element(),
-            |name| matches!(name, "head" | "script" | "style" | "template"),
-            |name| {
-                matches!(
-                    name,
-                    "address"
-                        | "article"
-                        | "aside"
-                        | "blockquote"
-                        | "br"
-                        | "div"
-                        | "dl"
-                        | "dt"
-                        | "dd"
-                        | "footer"
-                        | "h1"
-                        | "h2"
-                        | "h3"
-                        | "h4"
-                        | "h5"
-                        | "h6"
-                        | "header"
-                        | "hr"
-                        | "li"
-                        | "main"
-                        | "ol"
-                        | "p"
-                        | "pre"
-                        | "section"
-                        | "table"
-                        | "td"
-                        | "th"
-                        | "tr"
-                        | "ul"
-                )
-            },
-        )
+    if message.body_html.is_empty() {
+        short_text(&message.body_text)
     } else {
-        message.body_text.chars().take(4096).collect()
-    };
-    short_text(&text)
+        short_characters(
+            text_chunks(
+                html.document().root_element(),
+                |name| matches!(name, "head" | "script" | "style" | "template"),
+                |name| {
+                    matches!(
+                        name,
+                        "address"
+                            | "article"
+                            | "aside"
+                            | "blockquote"
+                            | "br"
+                            | "div"
+                            | "dl"
+                            | "dt"
+                            | "dd"
+                            | "footer"
+                            | "h1"
+                            | "h2"
+                            | "h3"
+                            | "h4"
+                            | "h5"
+                            | "h6"
+                            | "header"
+                            | "hr"
+                            | "li"
+                            | "main"
+                            | "ol"
+                            | "p"
+                            | "pre"
+                            | "section"
+                            | "table"
+                            | "td"
+                            | "th"
+                            | "tr"
+                            | "ul"
+                    )
+                },
+            )
+            .flat_map(str::chars),
+        )
+    }
 }
 
 pub(crate) fn short_text(text: &str) -> String {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut characters = text.chars();
-    let mut preview: String = characters.by_ref().take(160).collect();
-    if characters.next().is_some() {
-        preview.truncate(preview.trim_end().len());
-        preview.push('…');
+    short_characters(text.chars())
+}
+
+fn short_characters(characters: impl Iterator<Item = char>) -> String {
+    let mut preview = String::new();
+    let mut length = 0;
+    let mut space = false;
+    for character in characters {
+        if character.is_whitespace() {
+            space = length > 0;
+            continue;
+        }
+        if length + usize::from(space) >= 160 {
+            preview.push('…');
+            break;
+        }
+        if space {
+            preview.push(' ');
+            length += 1;
+            space = false;
+        }
+        preview.push(character);
+        length += 1;
     }
     preview
 }
@@ -120,14 +139,33 @@ mod tests {
     }
 
     #[test]
-    fn prefers_plain_text_and_collapses_whitespace() {
+    fn prefers_cleaned_html_over_the_plain_text_alternative() {
+        assert_eq!(
+            preview(&Message {
+                body_text: "p { margin:10px 0; padding:0; } table { border-collapse:collapse; }".into(),
+                body_html: "<head><style>p { margin:10px 0; padding:0; }</style></head><body><p>Hello <b>world</b> &amp; friends</p></body>".into(),
+                ..Default::default()
+            }),
+            "Hello world & friends"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_plain_text_only_without_html() {
         assert_eq!(
             preview(&Message {
                 body_text: "  Hello\n\tworld <3  ".into(),
-                body_html: "<p>Different text</p>".into(),
                 ..Default::default()
             }),
             "Hello world <3"
+        );
+        assert_eq!(
+            preview(&Message {
+                body_text: "p { color: red }".into(),
+                body_html: "<style>p { color: red }</style><img src='cid:photo'>".into(),
+                ..Default::default()
+            }),
+            ""
         );
     }
 
@@ -150,5 +188,32 @@ mod tests {
             }),
             format!("{}…", "é".repeat(160))
         );
+    }
+
+    #[test]
+    fn shortening_stops_after_the_first_extra_non_whitespace_character() {
+        let mut read = 0;
+        assert_eq!(
+            short_characters("é".repeat(100_000).chars().inspect(|_| read += 1)),
+            format!("{}…", "é".repeat(160))
+        );
+        assert_eq!(read, 161);
+        for text in [
+            "",
+            " \n\t ",
+            "Hello\nworld\u{a0}!",
+            &"é".repeat(160),
+            &format!("{}  \n ", "é".repeat(160)),
+            &format!("{}  z", "é".repeat(159)),
+            &format!("{}  zz", "é".repeat(158)),
+        ] {
+            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let mut expected: String = normalized.chars().take(160).collect();
+            if normalized.chars().count() > 160 {
+                expected.truncate(expected.trim_end().len());
+                expected.push('…');
+            }
+            assert_eq!(short_text(text), expected);
+        }
     }
 }

@@ -45,27 +45,38 @@ pub fn layout_text(
     skip: impl Fn(&str) -> bool,
     block: impl Fn(&str) -> bool,
 ) -> String {
-    let mut text = String::new();
+    text_chunks(element, skip, block).collect()
+}
+
+pub fn text_chunks<'a>(
+    element: ElementRef<'a>,
+    skip: impl Fn(&str) -> bool,
+    block: impl Fn(&str) -> bool,
+) -> impl Iterator<Item = &'a str> {
     // `None` closes a block element; walking without recursion handles any nesting depth.
     let mut pending = vec![Some(*element)];
-    while let Some(node) = pending.pop() {
-        let Some(node) = node else {
-            text.push(' ');
-            continue;
-        };
-        if let Some(value) = node.value().as_text() {
-            text.push_str(value);
-        } else if let Some(element) = ElementRef::wrap(node)
-            && !skip(element.value().name())
-        {
-            if block(element.value().name()) {
-                text.push(' ');
-                pending.push(None);
+    std::iter::from_fn(move || {
+        while let Some(node) = pending.pop() {
+            let Some(node) = node else {
+                return Some(" ");
+            };
+            if let Some(value) = node.value().as_text() {
+                return Some(value.as_ref());
+            } else if let Some(element) = ElementRef::wrap(node)
+                && !skip(element.value().name())
+            {
+                let separated = block(element.value().name());
+                if separated {
+                    pending.push(None);
+                }
+                pending.extend(node.children().rev().map(Some));
+                if separated {
+                    return Some(" ");
+                }
             }
-            pending.extend(node.children().rev().map(Some));
         }
-    }
-    text
+        None
+    })
 }
 
 /// Whether lol_html puts every element of `source` in the namespace html5ever

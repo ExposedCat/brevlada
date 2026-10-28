@@ -5,10 +5,16 @@ use crate::{
 use adw::prelude::*;
 
 mod actions;
+mod flow;
 mod participants;
 
 pub(super) use actions::save;
+pub use flow::Flow;
 pub use participants::rows as participants;
+
+pub fn flow(events: &[gtk::Widget]) -> Flow {
+    Flow::new(events)
+}
 
 pub fn with_participants(card: &gtk::Box, participants: &gtk::Widget) -> gtk::Box {
     let event = super::column("calendar-event");
@@ -19,9 +25,13 @@ pub fn with_participants(card: &gtk::Box, participants: &gtk::Widget) -> gtk::Bo
 
 fn detail(icon: &str, text: &str) -> gtk::Box {
     let row = super::horizontal("calendar-detail", theme::SMALL_SPACING);
-    row.append(&gtk::Image::from_icon_name(icon));
+    let icon = gtk::Image::from_icon_name(icon);
+    icon.set_valign(gtk::Align::Start);
+    row.append(&icon);
     let label = super::label(text, "");
+    label.set_halign(gtk::Align::Fill);
     label.set_wrap(true);
+    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     label.set_ellipsize(gtk::pango::EllipsizeMode::None);
     row.append(&label);
     row

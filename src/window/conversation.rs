@@ -542,8 +542,15 @@ mod diagnostics {
             cards[&30].widget.prev_sibling().as_ref(),
             Some(cards[&50].widget.upcast_ref())
         );
-        let second_event = cards[&20].widget.prev_sibling().unwrap();
-        let first_event = second_event.prev_sibling().unwrap();
+        let event_flow = cards[&20]
+            .widget
+            .prev_sibling()
+            .unwrap()
+            .downcast::<ui::calendar::Flow>()
+            .unwrap();
+        let first_event = event_flow.first_child().unwrap();
+        let second_event = first_event.next_sibling().unwrap();
+        assert!(second_event.next_sibling().is_none());
         assert!(first_event.has_css_class("calendar-event"));
         assert!(second_event.has_css_class("calendar-event"));
         assert!(
@@ -559,7 +566,7 @@ mod diagnostics {
                 .has_css_class("calendar-card")
         );
         assert_eq!(
-            first_event.prev_sibling().as_ref(),
+            event_flow.prev_sibling().as_ref(),
             Some(cards[&30].widget.upcast_ref())
         );
         let responses = first_event.last_child().unwrap();
@@ -593,7 +600,7 @@ mod diagnostics {
         let widgets = state.calendar_widgets(&messages);
         assert_eq!(
             widgets.before.iter().map(Vec::len).collect::<Vec<_>>(),
-            [0, 0, 2, 0]
+            [0, 0, 1, 0]
         );
         drop(cards);
         drop(sent);
@@ -611,7 +618,7 @@ mod diagnostics {
             .widget
             .prev_sibling()
             .unwrap()
-            .prev_sibling()
+            .first_child()
             .unwrap()
             .last_child()
             .unwrap();
