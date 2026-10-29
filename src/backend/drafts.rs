@@ -225,14 +225,40 @@ pub(super) fn remove_uid<T: Read + Write>(
     validity: u32,
     uid: u32,
 ) -> Result<()> {
+    let capabilities = session.capabilities()?;
     ensure!(
-        session.capabilities()?.has_str("UIDPLUS"),
+        capabilities.has_str("UIDPLUS"),
         "Mail server needs UIDPLUS support to delete a draft safely"
     );
+    let trash = if capabilities.has_str("X-GM-EXT-1") {
+        let folders = session.list(None, Some("*"))?;
+        Some(
+            folders
+                .iter()
+                .find(|folder| {
+                    !folder
+                        .attributes()
+                        .contains(&imap::types::NameAttribute::NoSelect)
+                        && super::special_use::marked(folder.attributes(), "\\Trash")
+                })
+                .context("Gmail Trash folder is unavailable; could not remove the draft")?
+                .name()
+                .to_owned(),
+        )
+    } else {
+        None
+    };
     ensure!(
         session.select(folder)?.uid_validity == Some(validity),
         "Draft mailbox changed during deletion"
     );
+    if let Some(trash) = trash {
+        if capabilities.has_str("MOVE") {
+            session.uid_mv(uid.to_string(), &trash)?;
+            return Ok(());
+        }
+        session.uid_copy(uid.to_string(), super::special_use::quoted(&trash)?)?;
+    }
     session.uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")?;
     session.uid_expunge(uid.to_string())?;
     Ok(())
@@ -337,6 +363,55 @@ mod tests {
             let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
             assert!(written.contains("EXAMINE \"INBOX\""));
             assert!(!written.contains("STORE"));
+        }
+    }
+
+    #[test]
+    fn gmail_draft_cleanup_moves_to_trash_instead_of_archiving() {
+        for can_move in [true, false] {
+            let capabilities = if can_move { " MOVE" } else { "" };
+            let completed = if can_move {
+                "a5 OK moved\r\n"
+            } else {
+                "a5 OK copied\r\na6 OK deleted\r\na7 OK expunged\r\n"
+            };
+            let (mut session, commands) = super::super::special_use::tests::session(&format!(
+                "* CAPABILITY IMAP4rev1 UIDPLUS X-GM-EXT-1{capabilities}\r\na2 OK capabilities\r\n\
+                 * LIST (\\Trash) \"/\" \"[Gmail]/Deleted Mail\"\r\na3 OK list\r\n\
+                 * OK [UIDVALIDITY 7] valid\r\na4 OK select\r\n{completed}"
+            ));
+            remove_uid(&mut session, "[Gmail]/Drafts", 7, 42).unwrap();
+            let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+            if can_move {
+                assert!(written.contains("UID MOVE 42 \"[Gmail]/Deleted Mail\""));
+                assert!(!written.contains("STORE") && !written.contains("EXPUNGE"));
+            } else {
+                let copied = written
+                    .find("UID COPY 42 \"[Gmail]/Deleted Mail\"")
+                    .unwrap();
+                let deleted = written
+                    .find("UID STORE 42 +FLAGS.SILENT (\\Deleted)")
+                    .unwrap();
+                assert!(copied < deleted);
+                assert!(written.contains("UID EXPUNGE 42"));
+            }
+            assert!(!written.contains("1:*"));
+        }
+    }
+
+    #[test]
+    fn gmail_cleanup_does_not_archive_on_trash_failure_or_changed_validity() {
+        for responses in [
+            "a3 OK no trash\r\n",
+            "* LIST (\\Trash) \"/\" Trash\r\na3 OK list\r\n* OK [UIDVALIDITY 8] changed\r\na4 OK select\r\n",
+            "* LIST (\\Trash) \"/\" Trash\r\na3 OK list\r\n* OK [UIDVALIDITY 7] valid\r\na4 OK select\r\na5 NO cannot copy\r\n",
+        ] {
+            let (mut session, commands) = super::super::special_use::tests::session(&format!(
+                "* CAPABILITY IMAP4rev1 UIDPLUS X-GM-EXT-1\r\na2 OK capabilities\r\n{responses}"
+            ));
+            assert!(remove_uid(&mut session, "Drafts", 7, 42).is_err());
+            let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+            assert!(!written.contains("STORE") && !written.contains("EXPUNGE"));
         }
     }
 

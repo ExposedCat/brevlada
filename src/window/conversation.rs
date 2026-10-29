@@ -133,10 +133,7 @@ impl State {
                 }) {
                     return false;
                 }
-                !self
-                    .draft_removed
-                    .borrow()
-                    .contains(&self.draft_key(&folder, &message.message_id))
+                !self.draft_was_removed(&message.message_id)
             });
             sources
                 .sort_by_key(|(_, _, message)| std::cmp::Reverse((message.timestamp, message.uid)));

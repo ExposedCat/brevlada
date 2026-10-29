@@ -106,6 +106,47 @@ pub fn attach_open_message(
     window.add_controller(keys);
 }
 
+pub fn attach_undo(
+    window: &impl IsA<gtk::Widget>,
+    compose: &impl IsA<gtk::Widget>,
+    undo: impl Fn() -> bool + 'static,
+) {
+    let keys = gtk::EventControllerKey::new();
+    keys.set_name(Some("mail-undo-shortcut"));
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let compose = compose.as_ref().downgrade();
+    keys.connect_key_pressed(move |controller, key, _, modifiers| {
+        if !matches!(key, gtk::gdk::Key::z | gtk::gdk::Key::Z)
+            || modifiers & gtk::accelerator_get_default_mod_mask()
+                != gtk::gdk::ModifierType::CONTROL_MASK
+        {
+            return gtk::glib::Propagation::Proceed;
+        }
+        let compose = compose.upgrade();
+        let mut focus = controller
+            .widget()
+            .and_then(|widget| widget.root())
+            .and_then(|root| root.focus());
+        while let Some(widget) = focus {
+            if widget.is::<gtk::Editable>()
+                || widget.is::<gtk::TextView>()
+                || widget.is::<gtk::Popover>()
+                || widget.has_css_class("compose-card")
+                || compose.as_ref() == Some(&widget)
+            {
+                return gtk::glib::Propagation::Proceed;
+            }
+            focus = widget.parent();
+        }
+        if undo() {
+            gtk::glib::Propagation::Stop
+        } else {
+            gtk::glib::Propagation::Proceed
+        }
+    });
+    window.add_controller(keys);
+}
+
 fn action(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> Option<SenderAction> {
     if modifiers.intersects(gtk::accelerator_get_default_mod_mask()) {
         return None;
@@ -188,6 +229,47 @@ mod tests {
             }
         }
         assert_eq!(called.get(), 3);
+        let undone = Rc::new(Cell::new(0));
+        let recorder = undone.clone();
+        attach_undo(&window, &compose, move || {
+            recorder.set(recorder.get() + 1);
+            true
+        });
+        let keys = window
+            .observe_controllers()
+            .iter::<gtk::glib::Object>()
+            .filter_map(Result::ok)
+            .filter_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+            .find(|controller| controller.name().as_deref() == Some("mail-undo-shortcut"))
+            .unwrap();
+        let undo = || {
+            keys.emit_by_name::<bool>(
+                "key-pressed",
+                &[
+                    &gtk::gdk::Key::z,
+                    &0u32,
+                    &gtk::gdk::ModifierType::CONTROL_MASK,
+                ],
+            )
+        };
+        for widget in [
+            entry.upcast_ref::<gtk::Widget>(),
+            text.upcast_ref(),
+            draft_control.upcast_ref(),
+            inline_control.upcast_ref(),
+            inline_html.upcast_ref(),
+        ] {
+            assert!(widget.grab_focus());
+            assert!(!undo());
+        }
+        for widget in [
+            reader.upcast_ref::<gtk::Widget>(),
+            list.row_at_index(0).unwrap().upcast_ref(),
+        ] {
+            assert!(widget.grab_focus());
+            assert!(undo());
+        }
+        assert_eq!(undone.get(), 2);
         window.close();
     }
 }

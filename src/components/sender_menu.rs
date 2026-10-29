@@ -1,6 +1,6 @@
 use crate::models::sender_action::SenderAction;
 use adw::prelude::*;
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 pub fn container(child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let host = gtk::Box::builder()
@@ -88,7 +88,11 @@ pub fn attach_view<T: Clone + 'static>(
     );
 }
 
-fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static, S: Clone + 'static>(
+fn attach_inner<
+    W: IsA<gtk::Widget> + Clone + 'static,
+    T: Clone + 'static,
+    S: Clone + PartialEq + 'static,
+>(
     list: &W,
     scroll: &gtk::ScrolledWindow,
     sender_at: impl Fn(i32) -> Option<(T, bool)> + 'static,
@@ -124,6 +128,7 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static, S: Cl
         let menu = gtk::gio::Menu::new();
         let actions = gtk::gio::SimpleActionGroup::new();
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        let activated = Rc::new(Cell::new(false));
         popover.insert_action_group("sender", Some(&actions));
         let shortcuts = gtk::ShortcutController::new();
         shortcuts.set_name(Some("message-menu-shortcuts"));
@@ -142,7 +147,9 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static, S: Cl
             let activate = activate.clone();
             let sender = sender.clone();
             let weak = popover.downgrade();
+            let activated = activated.clone();
             item.connect_activate(move |_, _| {
+                activated.set(true);
                 if let Some(popover) = weak.upgrade() {
                     popover.popdown();
                 }
@@ -172,7 +179,9 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static, S: Cl
             let action = gtk::gio::SimpleAction::new(name, None);
             let toggle_trust = toggle_trust.clone();
             let weak = popover.downgrade();
+            let activated = activated.clone();
             action.connect_activate(move |_, _| {
+                activated.set(true);
                 if let Some(popover) = weak.upgrade() {
                     popover.popdown();
                 }
@@ -214,8 +223,15 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static, S: Cl
         let restore_list = list.downgrade();
         let restore_host = host.downgrade();
         let restore_scroll = scroll.downgrade();
+        let selected = selected.clone();
         popover.connect_closed(move |popover| {
-            if let Some(host) = restore_host.upgrade() {
+            let menu_focused = popover
+                .root()
+                .and_then(|root| root.focus())
+                .is_none_or(|focus| {
+                    focus == *popover.upcast_ref::<gtk::Widget>() || focus.is_ancestor(popover)
+                });
+            if menu_focused && let Some(host) = restore_host.upgrade() {
                 host.grab_focus();
             }
             let popover = popover.clone();
@@ -223,9 +239,17 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static, S: Cl
             let scroll = restore_scroll.clone();
             let select = select.clone();
             let selected_index = selected_index.clone();
+            let activated = activated.clone();
+            let selected = selected.clone();
             gtk::glib::idle_add_local_once(move || {
                 popover.unparent();
+                if activated.get() {
+                    return;
+                }
                 if let Some(list) = list.upgrade() {
+                    if selected(&list) != selected_index {
+                        return;
+                    }
                     select(&list, selected_index.clone());
                 }
                 if let Some(scroll) = scroll.upgrade() {
@@ -279,6 +303,120 @@ mod diagnostics {
             .filter_map(Result::ok)
             .filter_map(|controller| controller.downcast::<gtk::ShortcutController>().ok())
             .find(|controller| controller.name().as_deref() == Some("message-menu-shortcuts"))
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; exercises deferred menu cleanup"]
+    fn closing_menus_does_not_override_newer_selection_or_focus() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Multiple);
+        for label in ["GNOME", "Other", "Another"] {
+            list.append(&gtk::Label::new(Some(label)));
+        }
+        let scroll = gtk::ScrolledWindow::builder().child(&list).build();
+        let host = container(&scroll);
+        let window = gtk::Window::builder()
+            .default_width(400)
+            .default_height(200)
+            .child(&host)
+            .build();
+        let selected = list.clone();
+        attach_inner(
+            &list,
+            &scroll,
+            |index| Some((index, false)),
+            move |_, _| {
+                selected.unselect_all();
+                selected.select_row(selected.row_at_index(0).as_ref());
+                selected.row_at_index(0).unwrap().grab_focus();
+            },
+            |_| false,
+            |_| {},
+            |_| vec![SenderAction::Archive],
+            |list, _, y| list.row_at_y(y as i32).map(|row| row.index()),
+            |list| {
+                list.selected_rows()
+                    .iter()
+                    .map(|row| row.index())
+                    .collect::<Vec<_>>()
+            },
+            |list, positions| {
+                list.unselect_all();
+                for index in positions {
+                    list.select_row(list.row_at_index(index).as_ref());
+                }
+            },
+        );
+        window.present();
+        settle();
+        list.select_row(list.row_at_index(0).as_ref());
+        list.select_row(list.row_at_index(1).as_ref());
+        let row = list.row_at_index(0).unwrap();
+        let point = row
+            .compute_point(&list, &gtk::graphene::Point::new(4.0, 4.0))
+            .unwrap();
+        let click = list
+            .observe_controllers()
+            .iter::<gtk::glib::Object>()
+            .filter_map(Result::ok)
+            .find_map(|controller| controller.downcast::<gtk::GestureClick>().ok())
+            .unwrap();
+        click.emit_by_name::<()>(
+            "pressed",
+            &[&1i32, &f64::from(point.x()), &f64::from(point.y())],
+        );
+        settle();
+        let popover = host
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::PopoverMenu>()
+            .unwrap();
+        action_button(popover.upcast_ref(), "Archive")
+            .unwrap()
+            .emit_by_name::<()>("clicked", &[]);
+        settle();
+        assert_eq!(
+            list.selected_rows()
+                .iter()
+                .map(|row| row.index())
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert!(popover.parent().is_none());
+        assert_eq!(
+            gtk::prelude::RootExt::focus(&window),
+            Some(list.row_at_index(0).unwrap().upcast())
+        );
+        click.emit_by_name::<()>(
+            "pressed",
+            &[&1i32, &f64::from(point.x()), &f64::from(point.y())],
+        );
+        settle();
+        let popover = host
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::PopoverMenu>()
+            .unwrap();
+        list.unselect_all();
+        list.select_row(list.row_at_index(1).as_ref());
+        list.row_at_index(1).unwrap().grab_focus();
+        popover.set_visible(false);
+        settle();
+        assert_eq!(
+            list.selected_rows()
+                .iter()
+                .map(|row| row.index())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(
+            gtk::prelude::RootExt::focus(&window),
+            Some(list.row_at_index(1).unwrap().upcast())
+        );
+        window.close();
+        settle();
     }
 
     #[test]

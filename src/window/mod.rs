@@ -1,4 +1,5 @@
 mod account_settings;
+mod action_queue;
 mod actions;
 mod autosave;
 mod cache_reconciliation;
@@ -25,6 +26,8 @@ mod sender_pane;
 mod settings;
 mod sorting;
 mod tickets;
+mod undo;
+mod undo_focus;
 use crate::{
     backend::worker::{self, BodyRequest, Command, Event},
     components as ui,
@@ -43,6 +46,10 @@ use std::{
 struct State {
     sender: Rc<worker::Worker>,
     sender_actions: RefCell<models::pending_actions::PendingActions>,
+    undo_history: RefCell<models::undo::History>,
+    undo_group: Cell<Option<u64>>,
+    deferred_actions: RefCell<Vec<action_queue::DeferredAction>>,
+    undo_toast: RefCell<Option<(u64, adw::Toast)>>,
     notification_actions: RefCell<HashMap<(String, u32, u32), models::action_target::ActionTarget>>,
     account: RefCell<Option<Account>>,
     folder: RefCell<String>,
@@ -424,6 +431,10 @@ impl State {
             pending: RefCell::new(HashSet::new()),
             preview_pending: RefCell::new(HashSet::new()),
             sender_actions: RefCell::default(),
+            undo_history: RefCell::default(),
+            undo_group: Cell::new(None),
+            deferred_actions: RefCell::default(),
+            undo_toast: RefCell::default(),
             notification_actions: RefCell::default(),
             loading: Cell::new(false),
             rendering: Cell::new(false),
@@ -527,6 +538,10 @@ impl State {
             });
         }
         state.connect_lists();
+        let weak = Rc::downgrade(&state);
+        ui::mail_shortcuts::attach_undo(&window, &state.composers, move || {
+            weak.upgrade().is_some_and(|state| state.undo_action(None))
+        });
         let weak = Rc::downgrade(&state);
         ui::mail_shortcuts::attach_open_message(
             &window,

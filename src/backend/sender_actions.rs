@@ -121,21 +121,70 @@ pub fn undo_spam(
 ) -> Result<UndoOutcome> {
     let mut mail = Mail::connect(account)?;
     let spam = destination(&mut mail.session, &SenderAction::Spam)?;
+    undo_moves(
+        &mut mail.session,
+        account,
+        folder,
+        &spam,
+        originals,
+        storage,
+        events,
+        true,
+    )
+}
+
+pub fn undo_action(
+    batch: &crate::models::undo::Batch,
+    storage: &mut Storage,
+    events: &async_channel::Sender<Event>,
+) -> Result<UndoOutcome> {
+    let mut mail = Mail::connect(&batch.account)?;
+    undo_moves(
+        &mut mail.session,
+        &batch.account,
+        &batch.folder,
+        &batch.destination,
+        &batch.messages,
+        storage,
+        events,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn undo_moves<T: Read + Write>(
+    session: &mut Session<T>,
+    account: &Account,
+    folder: &str,
+    source: &str,
+    originals: &[Message],
+    storage: &mut Storage,
+    events: &async_channel::Sender<Event>,
+    spam: bool,
+) -> Result<UndoOutcome> {
+    storage.expect_restored_messages(&account.email, folder, originals)?;
     let mut restored = Vec::new();
     let mut error = None;
     for original in originals {
-        let result = undo_message(&mut mail.session, &spam, folder, original);
+        let result = restore_message(session, source, folder, original, spam);
         match result {
             Ok(moved) => {
                 restored.push(original.clone());
                 if let Err(failure) = storage.confirm_action(
                     &account.email,
-                    &spam,
+                    source,
                     &[moved],
                     SenderAction::MoveTo(folder.into()),
                 ) {
                     error = Some(format!(
                         "Message restored, but the mail cache could not update: {failure}"
+                    ));
+                }
+                let confirm = locate_message(session, folder, original)
+                    .and_then(|message| storage.confirm_restored(&account.email, folder, &message));
+                if let Err(failure) = confirm {
+                    error = Some(format!(
+                        "Message restored, but could not confirm it in its original folder: {failure}"
                     ));
                 }
             }
@@ -147,11 +196,15 @@ pub fn undo_spam(
     }
     let refresh = (|| -> Result<Vec<Message>> {
         let revision = storage.read_revision()?;
-        let (validity, flags) = mail.inventory(folder)?;
+        let (validity, flags) = super::mail_sync::inventory(session, folder, None)?;
         let missing =
             storage.inventory_since(&account.email, folder, validity, &flags, revision)?;
         for chunk in missing.chunks(200) {
-            let headers = mail.header_batch(folder, validity, chunk)?;
+            ensure!(
+                session.select(folder)?.uid_validity == Some(validity),
+                "Mailbox changed during undo"
+            );
+            let headers = super::mail_headers::fetch(session, folder, None, validity, chunk)?;
             storage.store_headers(&account.email, folder, validity, &headers)?;
         }
         events.send_blocking(Event::Unread(
@@ -174,10 +227,43 @@ pub fn undo_spam(
     })
 }
 
-fn undo_message<T: Read + Write>(
+fn restore_message<T: Read + Write>(
     session: &mut Session<T>,
-    spam: &str,
+    source: &str,
     destination: &str,
+    original: &Message,
+    spam: bool,
+) -> Result<Message> {
+    let message = locate_message(session, source, original)?;
+    let validity = message
+        .uid_validity
+        .context("Missing destination UIDVALIDITY")?;
+    let sequence = message.uid.to_string();
+    ensure!(
+        session.select(source)?.uid_validity == Some(validity),
+        "Destination mailbox changed; refresh and retry"
+    );
+    if spam {
+        session.uid_store(&sequence, "-FLAGS.SILENT ($Junk)")?;
+        session.uid_store(&sequence, "+FLAGS.SILENT ($NotJunk)")?;
+    }
+    ensure!(
+        apply_uids(
+            session,
+            source,
+            validity,
+            &[message.uid],
+            &SenderAction::MoveTo(destination.into())
+        )?
+        .applied,
+        "Message is already in the destination folder"
+    );
+    Ok(message)
+}
+
+fn locate_message<T: Read + Write>(
+    session: &mut Session<T>,
+    source: &str,
     original: &Message,
 ) -> Result<Message> {
     let query = if !original.message_id.is_empty() {
@@ -186,19 +272,19 @@ fn undo_message<T: Read + Write>(
         let sender = senders::key(original);
         ensure!(
             !sender.is_empty(),
-            "Could not identify this message in Spam"
+            "Could not identify this message in the destination folder"
         );
         format!("FROM {}", quoted(&sender)?)
     };
     let validity = session
-        .select(spam)?
+        .select(source)?
         .uid_validity
-        .context("Missing Spam UIDVALIDITY")?;
+        .context("Missing destination UIDVALIDITY")?;
     let uids: Vec<_> = session.uid_search(query)?.into_iter().collect();
     let mut matches = Vec::new();
     for chunk in uids.chunks(200) {
         matches.extend(
-            super::mail_headers::fetch(session, spam, None, validity, chunk)?
+            super::mail_headers::fetch(session, source, None, validity, chunk)?
                 .into_iter()
                 .filter(|message| {
                     message.message_id == original.message_id
@@ -210,28 +296,9 @@ fn undo_message<T: Read + Write>(
     }
     ensure!(
         matches.len() == 1,
-        "Could not uniquely identify this message in Spam; open the Spam folder to restore it"
+        "Could not uniquely identify this message; open the destination folder to restore it"
     );
-    let message = matches.pop().unwrap();
-    let sequence = message.uid.to_string();
-    ensure!(
-        session.select(spam)?.uid_validity == Some(validity),
-        "Spam mailbox changed; refresh and retry"
-    );
-    session.uid_store(&sequence, "-FLAGS.SILENT ($Junk)")?;
-    session.uid_store(&sequence, "+FLAGS.SILENT ($NotJunk)")?;
-    ensure!(
-        apply_uids(
-            session,
-            spam,
-            validity,
-            &[message.uid],
-            &SenderAction::MoveTo(destination.into())
-        )?
-        .applied,
-        "Message is already in the destination folder"
-    );
-    Ok(message)
+    Ok(matches.pop().unwrap())
 }
 
 fn apply<T: Read + Write>(
@@ -720,7 +787,7 @@ mod tests {
             header.len(),
             header
         ));
-        let moved = undo_message(&mut session, "Junk", "Work", &original).unwrap();
+        let moved = restore_message(&mut session, "Junk", "Work", &original, true).unwrap();
         assert_eq!(moved.uid, 91);
         let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         assert!(
@@ -740,6 +807,109 @@ mod tests {
     }
 
     #[test]
+    fn undo_archive_restores_cached_inbox_message_when_server_keeps_original_uid() {
+        for restored_uid in [1, 101] {
+            let header =
+                "From: Alice <alice@example.com>\r\nSubject: Plans\r\nMessage-ID: <one>\r\n\r\n";
+            let mut original =
+                super::super::parser::parse(1, header.as_bytes(), true, false).unwrap();
+            original.uid_validity = Some(7);
+            let mut storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+            storage
+                .reconcile("account", "INBOX", 7, vec![original.clone()], &[1])
+                .unwrap();
+            storage
+                .confirm_action(
+                    "account",
+                    "INBOX",
+                    std::slice::from_ref(&original),
+                    SenderAction::Archive,
+                )
+                .unwrap();
+            let (mut session, _) = session(format!(
+                "a1 OK login\r\n* OK [UIDVALIDITY 12] valid\r\na2 OK select\r\n\
+             * SEARCH 91\r\na3 OK search\r\n* 1 FETCH (UID 91 BODY[HEADER] {{{}}}\r\n{})\r\na4 OK fetch\r\n\
+             * OK [UIDVALIDITY 12] valid\r\na5 OK select\r\n\
+             * LIST () \"/\" \"INBOX\"\r\na6 OK list\r\n\
+             * CAPABILITY IMAP4rev1 MOVE\r\na7 OK capability\r\n\
+             * OK [UIDVALIDITY 12] valid\r\na8 OK select\r\na9 OK move\r\n\
+             * 1 EXISTS\r\n* OK [UIDVALIDITY 7] valid\r\na10 OK select\r\n\
+             * SEARCH {restored_uid}\r\na11 OK search\r\n* 1 FETCH (UID {restored_uid} FLAGS (\\Seen) BODY[HEADER] {{{}}}\r\n{})\r\na12 OK fetch\r\n\
+             * 1 EXISTS\r\n* OK [UIDVALIDITY 7] valid\r\na13 OK select\r\n\
+             * 1 FETCH (UID {restored_uid} FLAGS (\\Seen))\r\na14 OK fetch\r\n",
+                header.len(),
+                header,
+                header.len(),
+                header
+            ));
+            let account = Account {
+                email: "account".into(),
+                path: String::new(),
+                name: String::new(),
+                host: String::new(),
+                username: String::new(),
+                port: 993,
+                ssl: true,
+                tls: false,
+                oauth2: false,
+                smtp: None,
+            };
+            let (events, _receiver) = async_channel::unbounded();
+            let outcome = undo_moves(
+                &mut session,
+                &account,
+                "INBOX",
+                "All Mail",
+                std::slice::from_ref(&original),
+                &mut storage,
+                &events,
+                false,
+            )
+            .unwrap();
+            assert!(outcome.error.is_none(), "{:?}", outcome.error);
+            assert_eq!(outcome.restored, vec![original]);
+            assert_eq!(outcome.messages.unwrap().len(), 1);
+            assert!(
+                storage
+                    .message("account", "INBOX", restored_uid)
+                    .unwrap()
+                    .is_some()
+            );
+            if restored_uid != 1 {
+                assert!(storage.message("account", "INBOX", 1).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn undo_delete_and_archive_restore_from_the_recorded_folder_without_changing_spam_flags() {
+        for source in ["Trash", "Custom archive"] {
+            let header =
+                "From: Alice <alice@example.com>\r\nSubject: Plans\r\nMessage-ID: <one>\r\n\r\n";
+            let original = super::super::parser::parse(1, header.as_bytes(), true, false).unwrap();
+            let (mut session, commands) = session(format!(
+                "a1 OK login\r\n* OK [UIDVALIDITY 12] valid\r\na2 OK select\r\n\
+                 * SEARCH 91\r\na3 OK search\r\n* 1 FETCH (UID 91 BODY[HEADER] {{{}}}\r\n{})\r\na4 OK fetch\r\n\
+                 * OK [UIDVALIDITY 12] valid\r\na5 OK select\r\n\
+                 * LIST () \"/\" \"Work\"\r\na6 OK list\r\n\
+                 * CAPABILITY IMAP4rev1 MOVE\r\na7 OK capability\r\n\
+                 * OK [UIDVALIDITY 12] valid\r\na8 OK select\r\na9 OK move\r\n",
+                header.len(),
+                header
+            ));
+            let moved = restore_message(&mut session, source, "Work", &original, false).unwrap();
+            assert_eq!(moved.uid, 91);
+            let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+            assert!(sent.contains(&format!("SELECT \"{source}\"")), "{sent}");
+            assert!(sent.contains("UID MOVE 91 \"Work\""), "{sent}");
+            assert!(
+                !sent.contains("UID STORE") && !sent.contains("EXPUNGE"),
+                "{sent}"
+            );
+        }
+    }
+
+    #[test]
     fn undo_spam_refuses_ambiguous_matches_and_changed_mailboxes() {
         let header =
             "From: Alice <alice@example.com>\r\nSubject: Plans\r\nMessage-ID: <one>\r\n\r\n";
@@ -754,7 +924,7 @@ mod tests {
             header.len(),
             header
         ));
-        assert!(undo_message(&mut session, "Junk", "Work", &original).is_err());
+        assert!(restore_message(&mut session, "Junk", "Work", &original, true).is_err());
         let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         assert!(!sent.contains("UID STORE") && !sent.contains("UID MOVE"));
         let (mut session, commands) = self::session(format!(
@@ -764,7 +934,7 @@ mod tests {
             header.len(),
             header
         ));
-        assert!(undo_message(&mut session, "Junk", "Work", &original).is_err());
+        assert!(restore_message(&mut session, "Junk", "Work", &original, true).is_err());
         let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         assert!(!sent.contains("UID STORE") && !sent.contains("UID MOVE"));
     }

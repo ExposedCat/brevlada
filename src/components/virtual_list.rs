@@ -161,10 +161,14 @@ pub fn selected(list: &gtk::ListView) -> Option<u32> {
     (!selected.is_empty()).then(|| selected.minimum())
 }
 
+pub fn focus_position(list: &gtk::ListView, position: u32) {
+    list.grab_focus();
+    list.scroll_to(position, gtk::ListScrollFlags::FOCUS, None);
+}
+
 pub fn focus_selected(list: &gtk::ListView) {
     if let Some(position) = selected(list) {
-        list.grab_focus();
-        list.scroll_to(position, gtk::ListScrollFlags::FOCUS, None);
+        focus_position(list, position);
     }
 }
 
@@ -209,6 +213,7 @@ pub fn update_owned(
     selected: Option<usize>,
 ) {
     let selected_keys = selected_keys(list);
+    let previous_position = selected_positions(list).first().copied();
     let restore_focus = list
         .root()
         .and_then(|root| root.focus())
@@ -336,6 +341,10 @@ pub fn update_owned(
         select(
             list,
             selected
+                .or_else(|| {
+                    (restore_focus && selected_keys.len() == 1 && !keys.is_empty())
+                        .then(|| (previous_position.unwrap_or(0) as usize).min(keys.len() - 1))
+                })
                 .filter(|position| *position < keys.len())
                 .map_or(gtk::INVALID_LIST_POSITION, |position| position as u32),
         );

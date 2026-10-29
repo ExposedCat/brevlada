@@ -39,6 +39,7 @@ pub mod states;
 pub mod sync_status;
 #[allow(dead_code)]
 pub mod ticket;
+pub mod undo_toast;
 pub mod viewer;
 pub mod virtual_list;
 mod web_fonts;

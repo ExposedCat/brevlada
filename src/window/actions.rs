@@ -454,7 +454,7 @@ impl State {
         self.sender
             .avatars()
             .prioritize(models::senders::key(&message));
-        if self.retained_spam(&message) {
+        if self.retained_spam(&message) || self.restoring_message(&message) {
             return;
         }
         if message.body_loaded

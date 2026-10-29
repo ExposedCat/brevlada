@@ -10,6 +10,32 @@ pub struct Folders {
     pub drafts: Option<String>,
 }
 
+pub(super) fn inventory<T: std::io::Read + std::io::Write>(
+    session: &mut imap::Session<T>,
+    folder: &str,
+    drafts: Option<&str>,
+) -> Result<(u32, Vec<Flags>)> {
+    let mailbox = session.select(folder)?;
+    let validity = mailbox.uid_validity.context("Missing UIDVALIDITY")?;
+    if mailbox.exists == 0 {
+        return Ok((validity, Vec::new()));
+    }
+    let fetched = session.uid_fetch("1:*", "(UID FLAGS)")?;
+    let flags = fetched
+        .iter()
+        .filter(|item| item.uid.is_some())
+        .map(|item| {
+            Ok(Flags {
+                uid: item.uid.context("Missing message UID")?,
+                read: item.flags().contains(&Flag::Seen),
+                flagged: item.flags().contains(&Flag::Flagged),
+                draft: is_draft(folder, item.flags(), drafts),
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok((validity, flags))
+}
+
 fn named_folder(folder: &str, names: &[&str]) -> bool {
     names.contains(
         &folder
@@ -120,25 +146,7 @@ impl Mail {
     }
 
     pub fn inventory(&mut self, folder: &str) -> Result<(u32, Vec<Flags>)> {
-        let mailbox = self.session.select(folder)?;
-        let validity = mailbox.uid_validity.context("Missing UIDVALIDITY")?;
-        if mailbox.exists == 0 {
-            return Ok((validity, Vec::new()));
-        }
-        let fetched = self.session.uid_fetch("1:*", "(UID FLAGS)")?;
-        let flags = fetched
-            .iter()
-            .filter(|item| item.uid.is_some())
-            .map(|item| {
-                Ok(Flags {
-                    uid: item.uid.context("Missing message UID")?,
-                    read: item.flags().contains(&Flag::Seen),
-                    flagged: item.flags().contains(&Flag::Flagged),
-                    draft: is_draft(folder, item.flags(), self.drafts_folder.as_deref()),
-                })
-            })
-            .collect::<Result<_>>()?;
-        Ok((validity, flags))
+        inventory(&mut self.session, folder, self.drafts_folder.as_deref())
     }
 
     pub fn header_batch(

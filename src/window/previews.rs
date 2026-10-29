@@ -5,7 +5,8 @@ impl State {
         let Some(account) = self.account.borrow().clone() else {
             return;
         };
-        if message.body_loaded
+        if self.restoring_message(message)
+            || message.body_loaded
             || message.list_preview.is_some()
             || self.search_sender.borrow().as_ref().is_some_and(|search| {
                 search.messages.iter().any(|source| {

@@ -12,6 +12,7 @@ pub(super) fn available(directory: &Path, name: &str, index: &Index) -> Result<S
     let mut candidate = name.to_owned();
     let mut number = 2;
     while candidate == ".attachments.json"
+        || candidate == super::local::FILENAME
         || index.values().any(|name| *name == candidate)
         || directory.join(&candidate).try_exists()?
     {
@@ -49,7 +50,9 @@ pub(super) fn migrate(directory: &Path, index: &mut Index) -> Result<()> {
             }
         };
         anyhow::ensure!(
-            crate::models::attachment::safe_name(&name) == name && name != ".attachments.json",
+            crate::models::attachment::safe_name(&name) == name
+                && name != ".attachments.json"
+                && name != super::local::FILENAME,
             "Invalid saved attachment filename"
         );
         let destination = directory.join(name);

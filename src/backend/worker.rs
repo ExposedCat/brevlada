@@ -101,6 +101,7 @@ pub enum Command {
         mark_read: bool,
         load_inline: bool,
     },
+    UndoAction(crate::models::undo::Action),
     UndoSpam {
         account: Account,
         folder: String,
@@ -182,7 +183,15 @@ pub enum Event {
     ConversationHistory(u64, u64, Vec<SentMessage>),
     RelatedSentError(u64, u64, String),
     SentBody(u64, u64, String, u32, Result<Message, String>),
-    SpamUndoFinished {
+    UndoActionFinished(crate::models::undo::Action),
+    ActionUndoReady {
+        account: Account,
+        folder: String,
+        sender: crate::models::action_target::ActionTarget,
+        destination: Option<String>,
+        removed: Vec<Message>,
+    },
+    MessagesRestored {
         account: String,
         folder: String,
         originals: Vec<Message>,
@@ -787,6 +796,31 @@ fn execute(
             }
         }
         Command::SentBody { .. } => unreachable!("opened conversation bodies use the body queue"),
+        Command::UndoAction(mut action) => {
+            for batch in &mut action.batches {
+                let outcome = super::sender_actions::undo_action(batch, storage, events)
+                    .unwrap_or_else(|error| super::sender_actions::UndoOutcome {
+                        messages: None,
+                        restored: Vec::new(),
+                        error: Some(error.to_string()),
+                    });
+                events.send_blocking(Event::MessagesRestored {
+                    account: batch.account.email.clone(),
+                    folder: batch.folder.clone(),
+                    originals: batch.messages.clone(),
+                    restored: outcome.restored.clone(),
+                    messages: outcome.messages,
+                    error: outcome.error,
+                })?;
+                batch
+                    .messages
+                    .retain(|message| !outcome.restored.contains(message));
+                background.refresh_folder(&batch.account, &batch.destination);
+                background.refresh_folder(&batch.account, &batch.folder);
+            }
+            action.batches.retain(|batch| !batch.messages.is_empty());
+            events.send_blocking(Event::UndoActionFinished(action))?;
+        }
         Command::UndoSpam {
             account,
             folder,
@@ -799,7 +833,7 @@ fn execute(
                         restored: Vec::new(),
                         error: Some(error.to_string()),
                     });
-            events.send_blocking(Event::SpamUndoFinished {
+            events.send_blocking(Event::MessagesRestored {
                 account: account.email,
                 folder,
                 originals,
@@ -816,7 +850,13 @@ fn execute(
             action,
         } => {
             let outcome = super::sender_actions::execute(
-                &account, &folder, &sender, action, storage, events, None,
+                &account,
+                &folder,
+                &sender,
+                action.clone(),
+                storage,
+                events,
+                None,
             );
             let outcome = match outcome {
                 Ok(outcome) => outcome,
@@ -828,6 +868,13 @@ fn execute(
                 },
             };
             outcome.refresh_destination(&account, background);
+            let undo = action.undoable_move().then(|| Event::ActionUndoReady {
+                account: account.clone(),
+                folder: folder.clone(),
+                sender: sender.clone(),
+                destination: outcome.destination.clone(),
+                removed: outcome.removed.clone(),
+            });
             events.send_blocking(Event::SenderActionFinished {
                 account: account.email,
                 folder,
@@ -836,6 +883,9 @@ fn execute(
                 error: outcome.error,
                 removed: outcome.removed,
             })?;
+            if let Some(undo) = undo {
+                events.send_blocking(undo)?;
+            }
             background.refresh();
         }
         Command::Discover => {

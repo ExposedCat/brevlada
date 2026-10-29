@@ -16,6 +16,7 @@ pub mod senders;
 pub mod settings;
 pub mod sync;
 pub mod ticket;
+pub mod undo;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Borrow, collections::HashMap};
 

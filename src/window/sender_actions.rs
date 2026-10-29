@@ -7,7 +7,7 @@ impl State {
         sender: models::action_target::ActionTarget,
         action: SenderAction,
     ) {
-        self.sender_action_with_navigation(sender, action, true);
+        self.sender_action_with_navigation(sender, action, true, Vec::new());
     }
 
     pub(super) fn sender_action_with_navigation(
@@ -15,9 +15,10 @@ impl State {
         sender: models::action_target::ActionTarget,
         action: SenderAction,
         advance: bool,
+        known_messages: Vec<Message>,
     ) {
         if matches!(&action, SenderAction::MoveTo(folder) if folder.is_empty()) {
-            self.move_dialog(sender);
+            self.move_dialog(sender, known_messages);
             return;
         }
         let Some(account) = self.account.borrow().clone() else {
@@ -54,6 +55,46 @@ impl State {
                 return;
             }
         }
+        let undo_messages = if action.undoable_move() {
+            let opened = self.open_group.borrow();
+            let pane = self.sender_pane.borrow();
+            let cached = self.messages.borrow();
+            let mut messages: Vec<Message> = Vec::new();
+            let mut positions = HashMap::new();
+            for message in opened
+                .iter()
+                .chain(pane.messages())
+                .chain(cached.iter())
+                .chain(known_messages.iter())
+                .filter(|message| sender.matches(message))
+            {
+                let Some(mut message) = self.visible_message(message) else {
+                    continue;
+                };
+                let key = (message.uid, message.message_id.clone());
+                if let Some(index) = positions.get(&key).copied() {
+                    let existing: &mut Message = &mut messages[index];
+                    if message.body_loaded && !existing.body_loaded {
+                        models::read_state::merge(
+                            std::slice::from_mut(&mut message),
+                            std::iter::once(&*existing),
+                        );
+                        *existing = message;
+                    } else {
+                        models::read_state::merge(
+                            std::slice::from_mut(existing),
+                            std::iter::once(&message),
+                        );
+                    }
+                } else {
+                    positions.insert(key, messages.len());
+                    messages.push(message);
+                }
+            }
+            messages
+        } else {
+            Vec::new()
+        };
         let spam_messages = if action == SenderAction::Spam {
             let mut messages = self.messages.borrow().clone();
             messages.extend_from_slice(self.sender_pane.borrow().messages());
@@ -66,6 +107,18 @@ impl State {
         } else {
             Vec::new()
         };
+        if action.undoable_move()
+            && self.defer_restored_action(
+                &account,
+                &folder,
+                &sender,
+                &action,
+                &undo_messages,
+                advance,
+            )
+        {
+            return;
+        }
         if !self
             .sender_actions
             .borrow_mut()
@@ -95,6 +148,7 @@ impl State {
             self.toast.add_toast(adw::Toast::new(&error.to_string()));
             return;
         }
+        let _ = self.record_undo(&account, &folder, &sender, &action, undo_messages);
         self.show_pending_action_with_navigation(&sender, &action, advance);
     }
 
@@ -106,7 +160,7 @@ impl State {
         self.show_pending_action_with_navigation(sender, action, true);
     }
 
-    fn show_pending_action_with_navigation(
+    pub(super) fn show_pending_action_with_navigation(
         self: &Rc<Self>,
         sender: &models::action_target::ActionTarget,
         action: &SenderAction,
@@ -152,6 +206,35 @@ impl State {
         if replace_open_message && advance {
             self.advance_message();
         }
+        if advance
+            && action.removes_messages()
+            && matches!(sender, models::action_target::ActionTarget::Sender(_))
+        {
+            self.focus_sender_after_action();
+        }
+    }
+
+    fn focus_sender_after_action(&self) {
+        let sender = self.sender_pane.borrow().sender().map(str::to_owned);
+        let position = sender
+            .and_then(|sender| {
+                ui::virtual_list::groups(&self.list)
+                    .iter()
+                    .position(|group| {
+                        group
+                            .iter()
+                            .any(|message| models::senders::list_key(message) == sender)
+                    })
+            })
+            .map(|position| position as u32)
+            .or_else(|| ui::virtual_list::selected(&self.list));
+        let rendering = self.rendering.replace(true);
+        ui::virtual_list::selection(&self.thread_list).unselect_all();
+        if let Some(position) = position {
+            ui::virtual_list::select(&self.list, position);
+        }
+        self.rendering.set(rendering);
+        ui::virtual_list::focus_selected(&self.list);
     }
 
     pub(super) fn menu_actions(
@@ -175,6 +258,7 @@ impl State {
     fn move_dialog(
         self: &Rc<Self>,
         target: models::action_target::ActionTarget,
+        known_messages: Vec<Message>,
     ) -> Option<adw::MessageDialog> {
         let account = self.account.borrow().as_ref()?.email.clone();
         let folder = self.folder.borrow().clone();
@@ -214,7 +298,12 @@ impl State {
                 ));
                 return;
             }
-            state.sender_action(target.clone(), SenderAction::MoveTo(destination.into()));
+            state.sender_action_with_navigation(
+                target.clone(),
+                SenderAction::MoveTo(destination.into()),
+                true,
+                known_messages.clone(),
+            );
         });
         Some(dialog)
     }
@@ -261,6 +350,19 @@ impl State {
     pub(super) fn search_documents(&self, messages: &[Message]) -> Vec<Message> {
         let documents: Vec<_> = messages.iter().map(Message::search_document).collect();
         self.visible_group(&documents)
+    }
+
+    pub(super) fn restoring_message(&self, message: &Message) -> bool {
+        self.account.borrow().as_ref().is_some_and(|account| {
+            self.sender_actions.borrow().restoring(
+                &account.email,
+                &self.folder.borrow(),
+                &models::action_target::ActionTarget::Messages(vec![(
+                    message.uid,
+                    message.message_id.clone(),
+                )]),
+            )
+        })
     }
 
     pub(super) fn retained_spam(&self, message: &Message) -> bool {
@@ -586,7 +688,7 @@ mod diagnostics {
         assert_eq!(state.visible_messages().len(), 3);
         assert_eq!(*state.selected.borrow(), vec![1]);
         assert!(!icon.get_visible());
-        state.event(Event::SpamUndoFinished {
+        state.event(Event::MessagesRestored {
             account: "account".into(),
             folder: "INBOX".into(),
             originals: vec![first.clone()],
@@ -602,7 +704,7 @@ mod diagnostics {
             body_text: String::new(),
             ..first.clone()
         };
-        state.event(Event::SpamUndoFinished {
+        state.event(Event::MessagesRestored {
             account: "account".into(),
             folder: "INBOX".into(),
             originals: vec![first.clone()],
@@ -814,7 +916,7 @@ mod diagnostics {
         assert!(!state.menu_actions(&target).contains(&SenderAction::Spam));
         *state.folder.borrow_mut() = "INBOX".into();
         while commands.try_recv().is_ok() {}
-        let dialog = state.move_dialog(target.clone()).unwrap();
+        let dialog = state.move_dialog(target.clone(), Vec::new()).unwrap();
         let dropdown = dialog
             .extra_child()
             .unwrap()

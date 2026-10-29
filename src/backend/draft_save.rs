@@ -86,6 +86,14 @@ pub fn save(
     if let Err(error) = cached {
         eprintln!("Could not cache saved draft: {error}");
     }
+    if let Err(error) = super::attachment_cache::remember_parts(
+        &account.email,
+        &folder,
+        &message,
+        &hydrated.attachments,
+    ) {
+        eprintln!("Could not remember saved draft attachment paths: {error}");
+    }
     Ok(Saved {
         item: SentMessage { folder, message },
         original_parts,

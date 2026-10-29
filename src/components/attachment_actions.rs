@@ -128,6 +128,20 @@ impl Actions {
                 );
                 copy.await.map_err(|error| error.to_string())?;
             }
+            if let Some(path) = destination.path() {
+                let account = self.account.email.clone();
+                let folder = self.folder.clone();
+                let message = self.message.clone();
+                let index = self.index;
+                let _ = gtk::gio::spawn_blocking(move || {
+                    if let Err(error) =
+                        attachment_cache::remember_saved(&account, &folder, &message, index, &path)
+                    {
+                        eprintln!("Could not remember saved attachment path: {error}");
+                    }
+                })
+                .await;
+            }
             self.status("Saved");
         } else {
             self.spinning(false);

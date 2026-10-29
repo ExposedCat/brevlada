@@ -185,7 +185,46 @@ impl State {
                     self.sender.body_handled(selection, &folder, uid, true);
                 }
             }
-            Event::SpamUndoFinished {
+            Event::ActionUndoReady {
+                account,
+                folder,
+                sender,
+                destination,
+                removed,
+            } => {
+                let unchanged = self.undo_history.borrow_mut().complete(
+                    &account,
+                    &folder,
+                    &sender,
+                    destination,
+                    removed,
+                );
+                for snapshot in unchanged {
+                    self.sender_actions.borrow_mut().finish_optimistic_restore(
+                        &snapshot.account,
+                        &snapshot.folder,
+                        &snapshot.messages,
+                    );
+                }
+                self.refresh_sender_view();
+                let stale = self
+                    .undo_toast
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(id, _)| !self.undo_history.borrow().contains(*id));
+                if stale && let Some((_, toast)) = self.undo_toast.borrow_mut().take() {
+                    toast.dismiss();
+                }
+                self.dispatch_undo();
+                self.dispatch_deferred_actions();
+            }
+            Event::UndoActionFinished(action) => {
+                if !action.batches.is_empty() {
+                    self.show_undo_toast(action.id, &action.action);
+                    self.undo_history.borrow_mut().retry(action);
+                }
+            }
+            Event::MessagesRestored {
                 account,
                 folder,
                 originals,
@@ -193,6 +232,10 @@ impl State {
                 mut messages,
                 error,
             } => {
+                let mut selection = self.capture_undo_selection(&originals);
+                self.sender_actions
+                    .borrow_mut()
+                    .finish_optimistic_restore(&account, &folder, &originals);
                 if let Some(messages) = &mut messages {
                     for message in messages.iter_mut() {
                         if let Some(original) = restored.iter().find(|original| {
@@ -214,13 +257,24 @@ impl State {
                             message.read_revision = read_revision;
                             message.is_flagged = flagged;
                             message.flag_revision = flag_revision;
-                            message.is_spam = false;
+                            message.is_spam = original.is_spam
+                                && !self
+                                    .sender_actions
+                                    .borrow()
+                                    .is_retained_spam(&account, &folder, original);
                             self.sender_actions
                                 .borrow_mut()
                                 .hold_restored(&account, &folder, message);
                         }
                     }
                 }
+                self.rebind_deferred_actions(
+                    &account,
+                    &folder,
+                    &originals,
+                    &restored,
+                    messages.as_deref(),
+                );
                 self.sender_actions
                     .borrow_mut()
                     .finish_undo_spam(&account, &folder, &originals, &restored);
@@ -245,6 +299,7 @@ impl State {
                                     && original.subject == message.subject
                                     && original.timestamp == message.timestamp
                             }) {
+                                selection.rebind(original, message);
                                 self.sender_pane.borrow_mut().replace(original, message);
                                 for opened in self.open_group.borrow_mut().iter_mut() {
                                     if opened.uid == original.uid
@@ -272,20 +327,14 @@ impl State {
                     self.refresh_sender_view();
                     if !restored.is_empty() && !self.open_group.borrow().is_empty() {
                         self.render_conversation();
-                        if let Some(position) = ui::virtual_list::groups(&self.thread_list)
-                            .iter()
-                            .position(|group| {
-                                super::rendering::overlaps(group, &self.open_group.borrow())
-                            })
-                        {
-                            ui::virtual_list::select(&self.thread_list, position as u32);
-                        }
                     }
+                    selection.restore(self);
                 }
                 if let Some(error) = error {
                     self.toast
-                        .add_toast(adw::Toast::new(&format!("Could not undo spam: {error}")));
+                        .add_toast(adw::Toast::new(&format!("Could not undo action: {error}")));
                 }
+                self.dispatch_deferred_actions();
             }
             Event::SenderActionFinished {
                 account,
@@ -361,6 +410,7 @@ impl State {
                         sender.label()
                     )));
                 }
+                self.dispatch_deferred_actions();
             }
             Event::Accounts(accounts) => {
                 self.search_filters.set_accounts(&accounts);

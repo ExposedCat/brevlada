@@ -27,6 +27,11 @@ impl SenderAction {
         (Self::Unspam, "Not spam"),
     ];
 
+    pub fn undoable_move(&self) -> bool {
+        matches!(self, Self::Delete | Self::Archive)
+            || matches!(self, Self::MoveTo(folder) if !folder.is_empty())
+    }
+
     pub fn removes_messages(&self) -> bool {
         !matches!(
             self,

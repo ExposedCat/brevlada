@@ -115,6 +115,12 @@ impl SenderPane {
         true
     }
 
+    pub fn awaiting_first_page(&self) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session.cursor.is_none() && matches!(session.paging, Paging::Loading(_))
+        })
+    }
+
     pub fn loading(&self) -> bool {
         self.session
             .as_ref()

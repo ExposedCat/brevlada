@@ -857,6 +857,20 @@ mod diagnostics {
         ));
         assert!(first_editor.widget.parent().is_none());
         assert!(state.sent_cards.borrow().contains_key("sent"));
+        let archived_draft = SentMessage {
+            folder: "[Gmail]/All Mail".into(),
+            message: Message {
+                is_draft: false,
+                ..first.message.clone()
+            },
+        };
+        state.event(Event::ConversationHistory(
+            state.generation.get(),
+            state.selection.get(),
+            vec![archived_draft],
+        ));
+        assert!(!state.sent_cards.borrow().contains_key("first"));
+        assert!(state.sent_cards.borrow().contains_key("sent"));
         let mut late = draft("late", 20);
         late.message.body_html = "<p>Late formatted draft</p>".into();
         state.related_sent.borrow_mut().push(late);
@@ -1094,6 +1108,15 @@ impl State {
 
     // Draft changes leave existing message cards, WebViews, and expansion state untouched.
     pub(super) fn update_draft_widgets(self: &Rc<Self>) {
+        if self
+            .sent_cards
+            .borrow()
+            .keys()
+            .any(|id| self.draft_was_removed(id))
+        {
+            self.render_conversation();
+            return;
+        }
         let folder = self.folder.borrow().clone();
         let mut items: Vec<_> = self
             .open_group
@@ -1118,12 +1141,7 @@ impl State {
                 .iter()
                 .map(|item| (true, item.folder.clone(), item.message.clone())),
         );
-        items.retain(|(_, folder, message)| {
-            !self
-                .draft_removed
-                .borrow()
-                .contains(&self.draft_key(folder, &message.message_id))
-        });
+        items.retain(|(_, _, message)| !self.draft_was_removed(&message.message_id));
         items.sort_by_key(|(_, _, message)| std::cmp::Reverse((message.timestamp, message.uid)));
         // Stay within the same visible batch as the conversation renderer.
         items.truncate(self.conversation_limit.get());
@@ -1487,13 +1505,7 @@ impl State {
         else {
             return;
         };
-        messages.retain(|item| {
-            !self.draft_removed.borrow().contains(&(
-                account.clone(),
-                item.folder.clone(),
-                item.message.message_id.clone(),
-            ))
-        });
+        messages.retain(|item| !self.draft_was_removed(&item.message.message_id));
         let group = self.open_group.borrow();
         self.draft_local.borrow_mut().retain(|key, local| {
             if key.0 != account {
@@ -1515,5 +1527,14 @@ impl State {
             }
             true
         });
+    }
+
+    pub(super) fn draft_was_removed(&self, id: &str) -> bool {
+        self.account.borrow().as_ref().is_some_and(|account| {
+            self.draft_removed
+                .borrow()
+                .iter()
+                .any(|(owner, _, removed)| owner == &account.email && removed == id)
+        })
     }
 }

@@ -61,7 +61,10 @@ impl State {
         }
         self.thread_sidebar.set_visible(message.is_some());
         self.back.set_visible(message.is_some());
-        if message.is_some() {
+        if let Some(message) = &message {
+            self.sender_pane
+                .borrow_mut()
+                .include(std::iter::once(message));
             self.load_sender_page();
             self.render_sender_pane();
         }

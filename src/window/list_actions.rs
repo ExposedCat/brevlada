@@ -274,27 +274,50 @@ impl State {
     }
 
     fn apply_list_action(self: &Rc<Self>, targets: &[Target], action: SenderAction) {
-        let mut batches: Vec<(Location, ActionTarget)> = Vec::new();
+        let mut batches: Vec<Target> = Vec::new();
         for target in targets {
             if let ActionTarget::Messages(messages) = &target.action
-                && let Some((_, ActionTarget::Messages(batch))) =
-                    batches.iter_mut().find(|(location, action)| {
-                        *location == target.location && matches!(action, ActionTarget::Messages(_))
-                    })
+                && let Some(batch) = batches.iter_mut().find(|batch| {
+                    batch.location == target.location
+                        && matches!(batch.action, ActionTarget::Messages(_))
+                })
+                && let ActionTarget::Messages(batch_messages) = &mut batch.action
             {
                 for message in messages {
-                    if !batch.contains(message) {
-                        batch.push(message.clone());
+                    if !batch_messages.contains(message) {
+                        batch_messages.push(message.clone());
+                    }
+                }
+                for message in &target.messages {
+                    if !batch.messages.iter().any(|existing| {
+                        existing.uid == message.uid && existing.message_id == message.message_id
+                    }) {
+                        batch.messages.push(message.clone());
                     }
                 }
             } else {
-                batches.push((target.location.clone(), target.action.clone()));
+                batches.push(target.clone());
             }
         }
-        for (location, target) in batches {
-            if self.select_search_location(Some(&location)) {
-                self.sender_action_with_navigation(target, action.clone(), targets.len() == 1);
+        let undo = action
+            .undoable_move()
+            .then(|| self.undo_history.borrow_mut().begin(action.clone()));
+        self.undo_group.set(undo);
+        for target in batches {
+            if self.select_search_location(Some(&target.location)) {
+                self.sender_action_with_navigation(
+                    target.action,
+                    action.clone(),
+                    targets.len() == 1,
+                    target.messages,
+                );
             }
+        }
+        self.undo_group.set(None);
+        if let Some(id) = undo
+            && self.undo_history.borrow_mut().discard_empty(id)
+        {
+            self.show_undo_toast(id, &action);
         }
         if targets.len() > 1 {
             self.advance_message();
@@ -305,6 +328,98 @@ impl State {
 #[cfg(test)]
 mod diagnostics {
     use super::*;
+
+    #[test]
+    #[ignore = "Requires a private graphical session and fixture XDG data directories"]
+    fn undo_captures_search_sender_rows_before_the_mailbox_cache_has_loaded() {
+        let (worker, commands) = worker::Worker::recording();
+        let state = super::super::diagnostics::unread_test_state_with_worker(
+            "org.example.BrevladaSearchSenderUndoDiagnostic",
+            worker,
+        );
+        state.connect_list_actions();
+        let window = state
+            .toast
+            .root()
+            .and_downcast::<adw::ApplicationWindow>()
+            .unwrap();
+        let account = state.account.borrow().clone().unwrap();
+        let messages: Vec<_> = (1..=4)
+            .map(|uid| Message {
+                uid,
+                uid_validity: Some(7),
+                message_id: uid.to_string(),
+                sender: "GNOME <noreply@gnome.org>".into(),
+                subject: format!("GNOME {uid}"),
+                is_read: true,
+                ..Default::default()
+            })
+            .collect();
+        super::super::search::search_bar(&state.search).set_search_mode(true);
+        state.search.set_text("GNOME");
+        ui::virtual_list::update_owned(
+            &state.list,
+            vec![ui::virtual_list::Row {
+                key: "lookup-gnome".into(),
+                messages: messages.clone(),
+            }],
+            &[],
+            Some(0),
+        );
+        state.search_locations.borrow_mut().insert(
+            "lookup-gnome".into(),
+            Location {
+                account: account.email.clone(),
+                folder: "INBOX".into(),
+            },
+        );
+        assert!(state.messages.borrow().is_empty());
+        let targets = state.list_targets(false, 0);
+        assert_eq!(targets[0].messages.len(), 4);
+        state.request_list_action(targets, SenderAction::Archive);
+        assert!(state.visible_messages().is_empty());
+        assert!(state.undo_action(None));
+        assert_eq!(state.visible_messages().len(), 4);
+        assert_eq!(
+            ui::virtual_list::selected_keys(&state.list),
+            vec!["noreply@gnome.org"]
+        );
+        assert!(ui::virtual_list::selected_positions(&state.thread_list).is_empty());
+        let sender = std::iter::from_fn(|| commands.try_recv().ok())
+            .find_map(|command| match command {
+                Command::SenderAction {
+                    sender,
+                    action: SenderAction::Archive,
+                    ..
+                } => Some(sender),
+                _ => None,
+            })
+            .unwrap();
+        state.event(Event::SenderActionFinished {
+            account: account.email.clone(),
+            folder: "INBOX".into(),
+            sender: sender.clone(),
+            messages: Some(Vec::new()),
+            removed: messages.clone(),
+            error: None,
+        });
+        state.event(Event::ActionUndoReady {
+            account,
+            folder: "INBOX".into(),
+            sender,
+            destination: Some("Archive".into()),
+            removed: messages,
+        });
+        let undo = std::iter::from_fn(|| commands.try_recv().ok())
+            .find_map(|command| match command {
+                Command::UndoAction(action) => Some(action),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(undo.batches.len(), 1);
+        assert_eq!(undo.batches[0].messages.len(), 4);
+        window.close();
+    }
 
     #[test]
     #[ignore = "Requires BREVLADA_GUI_HELPER and BREVLADA_GUI_SESSION for native input on a private display"]

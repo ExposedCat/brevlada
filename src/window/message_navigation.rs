@@ -12,7 +12,7 @@ impl State {
             self.show_thread(groups[index].clone());
             return;
         }
-        if self.sender_pane.borrow().loading() {
+        if self.sender_pane.borrow().loading() && !self.sender_pane.borrow().awaiting_first_page() {
             return;
         }
         if self.sender_pane.borrow().can_load() {
@@ -39,8 +39,9 @@ impl State {
             } else {
                 self.filter_sender(Some(message.clone()));
                 self.next_message.set(Some((*index as u32, 0)));
+                self.advance_message();
             }
-        } else {
+        } else if !self.sender_pane.borrow().loading() {
             self.next_message.set(None);
             self.filter_sender(None);
         }
@@ -58,7 +59,7 @@ mod diagnostics {
 
     #[test]
     #[ignore = "Requires a graphical session; constructs widgets without mail workers"]
-    fn removing_older_mail_advances_in_order_and_waits_for_the_next_sender_page() {
+    fn removing_older_mail_advances_in_order_and_opens_cached_next_sender_immediately() {
         gtk::init().unwrap();
         adw::init().unwrap();
         let app = adw::Application::builder()
@@ -149,7 +150,8 @@ mod diagnostics {
         );
         state.sender_action(target(&messages[0]), SenderAction::Delete);
         state.sender_action(target(&messages[2]), SenderAction::Delete);
-        assert!(state.selected.borrow().is_empty());
+        assert_eq!(*state.selected.borrow(), vec![elsewhere.uid]);
+        assert!(state.cards.borrow()[&elsewhere.uid].is_expanded());
         assert_eq!(state.sender_pane.borrow().sender(), Some("b@example.com"));
         assert!(state.sender_pane.borrow().loading());
         let ticket = state.sender_pane.borrow().ticket();

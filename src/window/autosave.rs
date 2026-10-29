@@ -91,9 +91,9 @@ impl State {
             .as_ref()
             .is_some_and(|current| current.email == account)
         {
-            self.related_sent.borrow_mut().retain(|item| {
-                item.folder != target.folder || item.message.message_id != target.message_id
-            });
+            self.related_sent
+                .borrow_mut()
+                .retain(|item| item.message.message_id != target.message_id);
         }
     }
 

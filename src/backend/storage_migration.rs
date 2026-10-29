@@ -47,6 +47,10 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS rust_mailboxes (
     CREATE TABLE IF NOT EXISTS rust_notification_folders (
     account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
     last_uid INTEGER NOT NULL, PRIMARY KEY(account_id,folder));
+    CREATE TABLE IF NOT EXISTS rust_notification_restored (
+    account_id TEXT NOT NULL, folder TEXT NOT NULL, message_id TEXT NOT NULL,
+    sender_key TEXT NOT NULL, subject TEXT NOT NULL, timestamp INTEGER NOT NULL,
+    PRIMARY KEY(account_id,folder,message_id,sender_key,subject,timestamp));
     CREATE TABLE IF NOT EXISTS rust_notification_pending (
     account_id TEXT NOT NULL, folder TEXT NOT NULL, uid_validity INTEGER NOT NULL,
     uid INTEGER NOT NULL, PRIMARY KEY(account_id,folder,uid_validity,uid));

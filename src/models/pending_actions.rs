@@ -16,6 +16,8 @@ pub struct PendingActions {
     removed: HashMap<(String, String), RemovedMessages>,
     spam: HashMap<SpamKey, RetainedSpam>,
     restored: HashMap<SpamKey, Message>,
+    optimistic: HashMap<SpamKey, Message>,
+    deferred: HashMap<u64, (String, String, ActionTarget, SenderAction)>,
 }
 
 impl PendingActions {
@@ -138,7 +140,64 @@ impl PendingActions {
         });
     }
 
+    pub fn restoring(&self, account: &str, folder: &str, target: &ActionTarget) -> bool {
+        self.optimistic
+            .iter()
+            .any(|((a, f, _, _), message)| a == account && f == folder && target.matches(message))
+    }
+
+    pub fn defer(
+        &mut self,
+        id: u64,
+        account: &str,
+        folder: &str,
+        target: ActionTarget,
+        action: SenderAction,
+    ) {
+        self.deferred
+            .insert(id, (account.into(), folder.into(), target, action));
+    }
+
+    pub fn finish_deferred(&mut self, id: u64) {
+        self.deferred.remove(&id);
+    }
+
+    pub fn restore_optimistically(&mut self, account: &str, folder: &str, messages: &[Message]) {
+        for message in messages {
+            self.optimistic.insert(
+                (
+                    account.into(),
+                    folder.into(),
+                    message.uid,
+                    message.message_id.clone(),
+                ),
+                message.clone(),
+            );
+        }
+    }
+
+    pub fn finish_optimistic_restore(&mut self, account: &str, folder: &str, messages: &[Message]) {
+        for message in messages {
+            self.optimistic.remove(&(
+                account.into(),
+                folder.into(),
+                message.uid,
+                message.message_id.clone(),
+            ));
+        }
+    }
+
     pub fn hold_restored(&mut self, account: &str, folder: &str, message: &Message) {
+        if let Some(removed) = self.removed.get_mut(&(account.into(), folder.into())) {
+            let key = (message.uid, message.message_id.clone());
+            if let Some(validities) = removed.get_mut(&key) {
+                validities.remove(&message.uid_validity);
+                validities.remove(&None);
+                if validities.is_empty() {
+                    removed.remove(&key);
+                }
+            }
+        }
         self.restored.insert(
             (
                 account.into(),
@@ -157,9 +216,6 @@ impl PendingActions {
                 a == account && f == folder && super::senders::key(&retained.message) == sender;
             changed |= dismiss;
             !dismiss
-        });
-        self.restored.retain(|(a, f, _, _), message| {
-            a != account || f != folder || super::senders::key(message) != sender
         });
         changed
     }
@@ -196,7 +252,7 @@ impl PendingActions {
                 visible.push(message);
             }
         }
-        for ((a, f, _, _), restored) in &self.restored {
+        for ((a, f, _, _), restored) in self.restored.iter().chain(&self.optimistic) {
             if a == account
                 && f == folder
                 && !visible.iter().any(|message| {
@@ -247,19 +303,43 @@ impl PendingActions {
                 || message.uid_validity.is_none()
                 || retained.message.uid_validity == message.uid_validity
         });
+        let optimistic = self
+            .optimistic
+            .get(&(
+                account.into(),
+                folder.into(),
+                message.uid,
+                message.message_id.clone(),
+            ))
+            .filter(|original| {
+                original.uid_validity.is_none()
+                    || message.uid_validity.is_none()
+                    || original.uid_validity == message.uid_validity
+            });
         let keep = retained.is_some();
-        if !keep && self.is_removed(account, folder, message) {
+        if !keep && optimistic.is_none() && self.is_removed(account, folder, message) {
             return None;
         }
-        let mut visible = message.clone();
+        let mut visible = optimistic.unwrap_or(message).clone();
         if let Some(retained) = retained {
             visible.is_spam = !retained.undo_pending;
         }
         for ((pending_account, pending_folder, target), action) in &self.pending {
             if pending_account == account && pending_folder == folder && target.matches(message) {
-                if *action == SenderAction::Spam && keep {
+                if (*action == SenderAction::Spam && keep)
+                    || (optimistic.is_some() && action.removes_messages())
+                {
                     continue;
                 }
+                if let Some(read) = action.read_state() {
+                    visible.is_read = read;
+                } else {
+                    visible.is_flagged = action.flagged_state()?;
+                }
+            }
+        }
+        for (a, f, target, action) in self.deferred.values() {
+            if a == account && f == folder && target.matches(message) {
                 if let Some(read) = action.read_state() {
                     visible.is_read = read;
                 } else {
@@ -340,6 +420,80 @@ mod tests {
         pending.finish("a", "INBOX", &target);
         pending.finish_spam("a", "INBOX", &target, std::slice::from_ref(&message));
         assert!(pending.visible("a", "INBOX", &[]).is_empty());
+    }
+
+    #[test]
+    fn optimistic_undo_is_immediate_survives_late_archive_and_rolls_back_on_failure() {
+        let message = Message {
+            uid: 1,
+            uid_validity: Some(7),
+            message_id: "one".into(),
+            body_loaded: true,
+            body_text: "Already cached body".into(),
+            ..Default::default()
+        };
+        let target = ActionTarget::Messages(vec![(1, "one".into())]);
+        let mut pending = PendingActions::default();
+        pending.begin("a", "INBOX", &target, SenderAction::Archive);
+        assert!(
+            pending
+                .visible("a", "INBOX", std::slice::from_ref(&message))
+                .is_empty()
+        );
+        pending.restore_optimistically("a", "INBOX", std::slice::from_ref(&message));
+        assert_eq!(pending.visible("a", "INBOX", &[]), vec![message.clone()]);
+        pending.finish("a", "INBOX", &target);
+        pending.confirm_removed("a", "INBOX", std::slice::from_ref(&message));
+        assert_eq!(pending.visible("a", "INBOX", &[]), vec![message.clone()]);
+        let stale = Message {
+            body_loaded: false,
+            body_text: String::new(),
+            ..message.clone()
+        };
+        assert_eq!(
+            pending.project("a", "INBOX", &stale).unwrap().body_text,
+            message.body_text
+        );
+        assert!(pending.visible("b", "INBOX", &[]).is_empty());
+        assert!(pending.visible("a", "Work", &[]).is_empty());
+        pending.finish_optimistic_restore("a", "INBOX", std::slice::from_ref(&message));
+        assert!(pending.visible("a", "INBOX", &[]).is_empty());
+        assert!(pending.project("a", "INBOX", &message).is_none());
+    }
+
+    #[test]
+    fn confirmed_restore_with_original_uid_becomes_visible_without_reviving_other_removals() {
+        let message = Message {
+            uid: 1,
+            uid_validity: Some(7),
+            message_id: "one".into(),
+            sender: "sender@example.com".into(),
+            ..Default::default()
+        };
+        let other = Message {
+            uid: 2,
+            message_id: "two".into(),
+            ..message.clone()
+        };
+        let mut pending = PendingActions::default();
+        pending.confirm_removed("a", "INBOX", &[message.clone(), other.clone()]);
+        pending.confirm_removed("b", "INBOX", std::slice::from_ref(&message));
+        pending.hold_restored("a", "INBOX", &message);
+        assert_eq!(pending.visible("a", "INBOX", &[]), vec![message.clone()]);
+        assert!(
+            pending
+                .project(
+                    "a",
+                    "INBOX",
+                    &Message {
+                        uid_validity: None,
+                        ..message.clone()
+                    }
+                )
+                .is_some()
+        );
+        assert!(pending.project("a", "INBOX", &other).is_none());
+        assert!(pending.project("b", "INBOX", &message).is_none());
     }
 
     #[test]

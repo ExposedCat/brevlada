@@ -9,6 +9,7 @@ use std::{
 };
 
 mod filenames;
+mod local;
 
 static CACHE: Mutex<()> = Mutex::new(());
 
@@ -20,10 +21,76 @@ struct Location {
 
 type Index = BTreeMap<String, String>;
 
+fn downloads() -> PathBuf {
+    glib::user_special_dir(glib::UserDirectory::Downloads)
+        .unwrap_or_else(|| glib::home_dir().join("Downloads"))
+}
+
+pub fn remember(path: &Path, bytes: &[u8]) -> Result<()> {
+    let directory = downloads().join("Brevlada");
+    let _lock = CACHE.lock().unwrap();
+    let mut index = local::Index::read(&directory)?;
+    index.remember(path, bytes);
+    index.save(&directory)
+}
+
+pub fn remember_parts(
+    account: &str,
+    folder: &str,
+    message: &Message,
+    parts: &[String],
+) -> Result<()> {
+    remember_parts_at(&downloads(), account, folder, message, parts)
+}
+
+pub fn remember_saved(
+    account: &str,
+    folder: &str,
+    message: &Message,
+    index: usize,
+    path: &Path,
+) -> Result<()> {
+    let location = location(&downloads(), account, folder, message, index)?;
+    let _lock = CACHE.lock().unwrap();
+    let mut locals = local::Index::read(&location.directory)?;
+    locals.remember_copy(&location.identity, path)?;
+    locals.save(&location.directory)
+}
+
+fn remember_parts_at(
+    downloads: &Path,
+    account: &str,
+    folder: &str,
+    message: &Message,
+    parts: &[String],
+) -> Result<()> {
+    let directory = downloads.join("Brevlada");
+    let _lock = CACHE.lock().unwrap();
+    let mut index = local::Index::read(&directory)?;
+    let mut position = 0;
+    let mut changed = false;
+    for part in parts {
+        let mail = mailparse::parse_mail(part.as_bytes())?;
+        if attachment::name(&mail).is_none() {
+            continue;
+        }
+        let digest = local::digest(&mail.get_body_raw()?);
+        if index.has_source(&digest) {
+            let location = location(downloads, account, folder, message, position)?;
+            index.bind(&location.identity, &digest);
+            changed = true;
+        }
+        position += 1;
+    }
+    if changed {
+        index.save(&directory)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub fn path(account: &Account, folder: &str, message: &Message, index: usize) -> Result<PathBuf> {
-    let downloads = glib::user_special_dir(glib::UserDirectory::Downloads)
-        .unwrap_or_else(|| glib::home_dir().join("Downloads"));
+    let downloads = downloads();
     let location = location(&downloads, &account.email, folder, message, index)?;
     let _lock = CACHE.lock().unwrap();
     filename(&location, &read_index(&location.directory)?)
@@ -61,8 +128,7 @@ pub fn load(
     index: usize,
     download: impl FnOnce() -> Result<Vec<u8>>,
 ) -> Result<PathBuf> {
-    let downloads = glib::user_special_dir(glib::UserDirectory::Downloads)
-        .unwrap_or_else(|| glib::home_dir().join("Downloads"));
+    let downloads = downloads();
     load_at(
         &location(&downloads, &account.email, folder, message, index)?,
         download,
@@ -74,9 +140,16 @@ fn load_at(location: &Location, download: impl FnOnce() -> Result<Vec<u8>>) -> R
         let _lock = CACHE.lock().unwrap();
         let mut index = read_index(&location.directory)?;
         filenames::migrate(&location.directory, &mut index)?;
-        if index.contains_key(&location.identity) {
+        let mut locals = local::Index::read(&location.directory)?;
+        if let Some(path) = locals.path(&location.identity) {
+            return Ok(path);
+        }
+        if !locals.known(&location.identity) && index.contains_key(&location.identity) {
             let path = filename(location, &index)?;
             if path.is_file() {
+                let digest = locals.remember(&path, &std::fs::read(&path)?);
+                locals.bind(&location.identity, &digest);
+                locals.save(&location.directory)?;
                 return Ok(path);
             }
         }
@@ -84,24 +157,34 @@ fn load_at(location: &Location, download: impl FnOnce() -> Result<Vec<u8>>) -> R
     let bytes = download()?;
     let _lock = CACHE.lock().unwrap();
     let mut index = read_index(&location.directory)?;
-    let path = filename(location, &index)?;
-    if index.contains_key(&location.identity) && path.is_file() {
+    let mut locals = local::Index::read(&location.directory)?;
+    if let Some(path) = locals.path(&location.identity) {
         return Ok(path);
     }
+    let previous = filename(location, &index)?;
+    if locals.known(&location.identity) && previous.exists() {
+        index.remove(&location.identity);
+    }
+    let path = filename(location, &index)?;
     std::fs::create_dir_all(&location.directory)?;
+    write(&path, &bytes)?;
     index.insert(
         location.identity.clone(),
         path.file_name().unwrap().to_string_lossy().into_owned(),
     );
     write_index(&location.directory, &index)?;
-    write(&path, &bytes)?;
+    let digest = locals.remember(&path, &bytes);
+    locals.bind(&location.identity, &digest);
+    locals.save(&location.directory)?;
     Ok(path)
 }
 
 fn filename(location: &Location, index: &Index) -> Result<PathBuf> {
     let name = if let Some(name) = index.get(&location.identity) {
         anyhow::ensure!(
-            attachment::safe_name(name) == *name && name != ".attachments.json",
+            attachment::safe_name(name) == *name
+                && name != ".attachments.json"
+                && name != local::FILENAME,
             "Invalid saved attachment filename"
         );
         name.clone()

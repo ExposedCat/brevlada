@@ -297,6 +297,15 @@ impl Attachments {
             .and_then(|content_type| gtk::gio::content_type_get_mime_type(&content_type))
             .unwrap_or_else(|| "application/octet-stream".into());
         let part = attachments::encode(&name, &mime, &bytes).map_err(|error| error.to_string())?;
+        if let Some(path) = file.path() {
+            let contents = bytes.to_vec();
+            let _ = gtk::gio::spawn_blocking(move || {
+                if let Err(error) = crate::backend::attachment_cache::remember(&path, &contents) {
+                    eprintln!("Could not remember local attachment: {error}");
+                }
+            })
+            .await;
+        }
         Ok(Item {
             name,
             size: Some(bytes.len() as u64),
@@ -313,6 +322,64 @@ fn file_count(count: usize) -> String {
 #[cfg(test)]
 mod diagnostics {
     use super::*;
+
+    #[test]
+    #[ignore = "Requires a private graphical session and BREVLADA_ATTACHMENT_FIXTURE with isolated Downloads"]
+    fn selected_files_reuse_their_original_path_after_sending() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("BREVLADA_ATTACHMENT_FIXTURE").unwrap());
+        let downloads = gtk::glib::user_special_dir(gtk::glib::UserDirectory::Downloads).unwrap();
+        assert!(downloads.starts_with(&directory));
+        let source = directory.join("original.txt");
+        std::fs::write(&source, b"original").unwrap();
+        let attachments = Attachments::new();
+        let file = gtk::gio::File::for_path(&source);
+        let item = gtk::glib::MainContext::default()
+            .block_on(attachments.read(&file))
+            .unwrap();
+        let part = item.part.unwrap();
+        let message = crate::models::Message {
+            message_id: "local-path-diagnostic".into(),
+            attachments: vec![item.name],
+            ..Default::default()
+        };
+        let account = crate::models::Account {
+            email: "fixture@example.com".into(),
+            path: String::new(),
+            name: String::new(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: false,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        };
+        crate::backend::attachment_cache::remember_parts(&account.email, "", &message, &[part])
+            .unwrap();
+        assert_eq!(
+            crate::backend::attachment_cache::load(
+                &account,
+                "Sent",
+                &message,
+                0,
+                || anyhow::bail!("Must not download a selected local file")
+            )
+            .unwrap(),
+            source
+        );
+        std::fs::write(&source, b"modified").unwrap();
+        let downloaded =
+            crate::backend::attachment_cache::load(&account, "Sent", &message, 0, || {
+                Ok(b"original".to_vec())
+            })
+            .unwrap();
+        assert_ne!(downloaded, source);
+        assert_eq!(std::fs::read(source).unwrap(), b"modified");
+        assert_eq!(std::fs::read(downloaded).unwrap(), b"original");
+    }
 
     #[test]
     #[ignore = "Requires a graphical session for attachment rows"]

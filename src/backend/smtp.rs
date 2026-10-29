@@ -107,7 +107,13 @@ pub fn send(account: &Account, draft: &Draft) -> Result<Message> {
         let mut client = Client::new(tls.connect(&settings.host, stream)?);
         deliver(&mut client, account, settings, &from[0], &to, &cc, &message)?;
     }
-    super::parser::parse(0, message.as_bytes(), true, true)
+    let message = super::parser::parse(0, message.as_bytes(), true, true)?;
+    if let Err(error) =
+        super::attachment_cache::remember_parts(&account.email, "", &message, &draft.attachments)
+    {
+        eprintln!("Could not remember sent attachment paths: {error}");
+    }
+    Ok(message)
 }
 
 fn deliver<S: Read + Write>(

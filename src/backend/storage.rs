@@ -141,26 +141,38 @@ impl Storage {
         account: &str,
         target: &crate::models::draft::Target,
     ) -> Result<()> {
-        if let Some(validity) = target.validity.filter(|_| target.uid != 0) {
-            self.confirm_action(
-                account,
-                &target.folder,
-                &[Message {
-                    uid: target.uid,
-                    uid_validity: Some(validity),
-                    is_draft: true,
-                    ..Default::default()
-                }],
-                crate::models::sender_action::SenderAction::Archive,
+        self.write(|transaction| {
+            if let Some(validity) = target.validity.filter(|_| target.uid != 0) {
+                anyhow::ensure!(
+                    Self::folder_validity(transaction, account, &target.folder)?
+                        .is_none_or(|current| current == validity),
+                    "Draft mailbox changed while removing cached copies"
+                );
+                transaction.execute(
+                    "INSERT OR IGNORE INTO rust_removed_messages VALUES (?1,?2,?3,?4)",
+                    params![account, target.folder, validity, target.uid],
+                )?;
+            }
+            let id = super::parser::normalize_message_id(&target.message_id);
+            transaction.execute(
+                "INSERT OR IGNORE INTO rust_removed_messages
+                 SELECT h.account_id, h.folder, coalesce(h.uid_validity, f.uid_validity), h.uid
+                 FROM rust_conversation_keys k JOIN rust_headers h ON h.id=k.header_id
+                 JOIN rust_folders f ON f.account_id=h.account_id AND f.folder=h.folder
+                 WHERE k.account_id=?1 AND k.kind=1 AND k.value=?2
+                 AND trim(h.message_id, '<> ' || char(9) || char(10) || char(13))=?2
+                 AND coalesce(h.uid_validity, f.uid_validity) IS NOT NULL",
+                params![account, id],
             )?;
-        } else {
-            let _write = self.1.lock()?;
-            self.0.execute(
-                "DELETE FROM rust_headers WHERE account_id=?1 AND folder=?2 AND message_id=?3 AND is_draft",
-                params![account, target.folder, target.message_id],
+            transaction.execute(
+                "DELETE FROM rust_headers WHERE id IN (
+                 SELECT h.id FROM rust_conversation_keys k JOIN rust_headers h ON h.id=k.header_id
+                 WHERE k.account_id=?1 AND k.kind=1 AND k.value=?2 AND h.folder IS NOT NULL
+                 AND trim(h.message_id, '<> ' || char(9) || char(10) || char(13))=?2)",
+                params![account, id],
             )?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn store_saved_draft(
@@ -666,6 +678,85 @@ mod tests {
         assert_eq!(related.len(), 1);
         assert_eq!(related[0].message, sent);
         assert!(related[0].folder.is_empty());
+    }
+
+    #[test]
+    fn retired_draft_copies_are_removed_across_folders_and_not_restored_by_late_sync() {
+        let mut storage = storage();
+        let draft = Message {
+            uid: 1,
+            uid_validity: Some(7),
+            message_id: "draft@example.com".into(),
+            is_draft: true,
+            body_loaded: true,
+            body_text: "Unfinished reply".into(),
+            ..Default::default()
+        };
+        let copy = Message {
+            uid: 20,
+            is_draft: false,
+            ..draft.clone()
+        };
+        let sent = Message {
+            uid: 21,
+            message_id: "sent@example.com".into(),
+            ..copy.clone()
+        };
+        storage.store_saved_draft("a", "Drafts", &draft).unwrap();
+        storage.store_saved_draft("b", "Drafts", &draft).unwrap();
+        storage
+            .reconcile(
+                "a",
+                "All Mail",
+                7,
+                vec![copy.clone(), sent.clone()],
+                &[20, 21],
+            )
+            .unwrap();
+        storage
+            .reconcile("b", "All Mail", 7, vec![copy.clone()], &[20])
+            .unwrap();
+        let sent = storage.message("a", "All Mail", 21).unwrap();
+        let other_copy = storage.message("b", "All Mail", 20).unwrap();
+        storage
+            .delete_draft("a", &crate::models::draft::Target::new("Drafts", &draft))
+            .unwrap();
+        assert!(storage.message("a", "Drafts", 1).unwrap().is_none());
+        assert!(storage.message("a", "All Mail", 20).unwrap().is_none());
+        assert_eq!(storage.message("a", "All Mail", 21).unwrap(), sent);
+        assert_eq!(
+            storage.message("b", "Drafts", 1).unwrap(),
+            Some(draft.clone())
+        );
+        assert_eq!(storage.message("b", "All Mail", 20).unwrap(), other_copy);
+        storage
+            .store_headers("a", "All Mail", 7, std::slice::from_ref(&copy))
+            .unwrap();
+        storage
+            .store_conversation_headers("a", "All Mail", Some(7), 7, &[copy])
+            .unwrap();
+        storage
+            .store_headers("a", "Drafts", 7, std::slice::from_ref(&draft))
+            .unwrap();
+        assert!(storage.message("a", "All Mail", 20).unwrap().is_none());
+        assert!(storage.message("a", "Drafts", 1).unwrap().is_none());
+        storage.inventory("a", "Drafts", 8, &[]).unwrap();
+        let new_mailbox_draft = Message {
+            uid_validity: Some(8),
+            ..draft.clone()
+        };
+        storage
+            .store_saved_draft("a", "Drafts", &new_mailbox_draft)
+            .unwrap();
+        assert!(
+            storage
+                .delete_draft("a", &crate::models::draft::Target::new("Drafts", &draft))
+                .is_err()
+        );
+        assert_eq!(
+            storage.message("a", "Drafts", 1).unwrap(),
+            Some(new_mailbox_draft)
+        );
     }
 
     #[test]

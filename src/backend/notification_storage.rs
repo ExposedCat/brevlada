@@ -101,6 +101,33 @@ impl Storage {
         Ok(())
     }
 
+    pub fn expect_restored_messages(
+        &mut self,
+        account: &str,
+        folder: &str,
+        messages: &[Message],
+    ) -> Result<()> {
+        if !folder.eq_ignore_ascii_case("INBOX") {
+            return Ok(());
+        }
+        self.write(|transaction| {
+            for message in messages {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO rust_notification_restored VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![
+                        account,
+                        folder,
+                        message.message_id,
+                        senders::key(message),
+                        message.subject,
+                        message.timestamp
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn pending_notifications(
         &self,
         account: &str,
@@ -116,7 +143,11 @@ impl Storage {
              JOIN rust_folders f ON f.account_id=n.account_id AND f.folder=n.folder
              AND f.uid_validity=n.uid_validity
              WHERE n.account_id=?2 AND n.folder=?3 AND n.uid_validity=?4)
-             AND NOT h.is_read AND NOT h.is_draft ORDER BY h.uid DESC"
+             AND NOT h.is_read AND NOT h.is_draft
+             AND NOT EXISTS (SELECT 1 FROM rust_notification_restored r
+                 WHERE r.account_id=h.account_id AND r.folder=h.folder AND r.message_id=h.message_id
+                 AND r.sender_key=h.sender_key AND r.subject=h.subject AND r.timestamp=h.timestamp)
+             ORDER BY h.uid DESC"
         ))?;
         Ok(statement
             .query_map(
@@ -221,6 +252,75 @@ mod tests {
         storage
             .store_headers("account", "INBOX", validity, &messages)
             .unwrap();
+    }
+
+    #[test]
+    fn undo_does_not_notify_even_if_background_sync_sees_restored_mail_first() {
+        let mut storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        storage
+            .inventory("account", "INBOX", 7, &flags(&[(1, false)]))
+            .unwrap();
+        headers(&mut storage, 7, &[1]);
+        let original = storage.message("account", "INBOX", 1).unwrap().unwrap();
+        storage
+            .confirm_action(
+                "account",
+                "INBOX",
+                std::slice::from_ref(&original),
+                crate::models::sender_action::SenderAction::Archive,
+            )
+            .unwrap();
+        storage
+            .expect_restored_messages("account", "INBOX", std::slice::from_ref(&original))
+            .unwrap();
+        let restored = Message {
+            uid: 91,
+            ..original.clone()
+        };
+        let arrival = Message {
+            uid: 92,
+            message_id: "new-arrival".into(),
+            ..original.clone()
+        };
+        let inventory = flags(&[(91, false), (92, false)]);
+        storage
+            .inventory("account", "INBOX", 7, &inventory)
+            .unwrap();
+        storage
+            .store_headers("account", "INBOX", 7, &[restored.clone(), arrival.clone()])
+            .unwrap();
+        let pending = storage
+            .pending_notifications("account", "INBOX", 7)
+            .unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|message| message.uid)
+                .collect::<Vec<_>>(),
+            vec![92]
+        );
+        storage
+            .confirm_restored("account", "INBOX", &restored)
+            .unwrap();
+        storage
+            .inventory("account", "INBOX", 7, &inventory)
+            .unwrap();
+        assert_eq!(
+            storage
+                .pending_notifications("account", "INBOX", 7)
+                .unwrap()
+                .iter()
+                .map(|message| message.uid)
+                .collect::<Vec<_>>(),
+            vec![92]
+        );
+        assert!(
+            !storage
+                .message("account", "INBOX", 91)
+                .unwrap()
+                .unwrap()
+                .is_read
+        );
     }
 
     #[test]

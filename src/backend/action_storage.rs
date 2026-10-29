@@ -1,6 +1,9 @@
-use super::{Storage, messages::Mailbox};
+use super::{
+    Storage,
+    messages::{self, Mailbox},
+};
 use crate::models::{Message, sender_action::SenderAction};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use rusqlite::params;
 
 impl Storage {
@@ -45,6 +48,33 @@ impl Storage {
                     )?;
                 }
             }
+            Ok(())
+        })
+    }
+
+    pub fn confirm_restored(
+        &mut self,
+        account: &str,
+        folder: &str,
+        message: &Message,
+    ) -> Result<()> {
+        self.write(|transaction| {
+            let validity = message.uid_validity.context("Missing restored message UIDVALIDITY")?;
+            ensure!(Self::folder_validity(transaction, account, folder)? == Some(validity), "Mailbox changed during undo");
+            transaction.execute(
+                "DELETE FROM rust_removed_messages WHERE account_id=?1 AND folder=?2 AND uid_validity=?3 AND uid=?4",
+                params![account, folder, validity, message.uid],
+            )?;
+            transaction.execute(
+                "DELETE FROM rust_notification_pending WHERE account_id=?1 AND folder=?2 AND uid_validity=?3 AND uid=?4",
+                params![account, folder, validity, message.uid],
+            )?;
+            let mailbox = Mailbox::ensure(transaction, account, folder)?;
+            let revision = Self::next_read_revision(transaction)?;
+            let mut message = message.clone();
+            message.read_revision = revision;
+            message.flag_revision = revision;
+            messages::add(transaction, mailbox.id(message.uid), account, Some(folder), &message)?;
             Ok(())
         })
     }
@@ -95,6 +125,70 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmed_restore_clears_only_its_mailbox_and_uid_removal() {
+        let mut storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        let first = Message {
+            uid: 1,
+            uid_validity: Some(7),
+            message_id: "one".into(),
+            ..Default::default()
+        };
+        let second = Message {
+            uid: 2,
+            message_id: "two".into(),
+            ..first.clone()
+        };
+        for (account, folder) in [("a", "INBOX"), ("b", "INBOX"), ("a", "Work")] {
+            storage
+                .reconcile(
+                    account,
+                    folder,
+                    7,
+                    vec![first.clone(), second.clone()],
+                    &[1, 2],
+                )
+                .unwrap();
+            storage
+                .confirm_action(
+                    account,
+                    folder,
+                    &[first.clone(), second.clone()],
+                    SenderAction::Archive,
+                )
+                .unwrap();
+        }
+        assert!(
+            storage
+                .confirm_restored(
+                    "a",
+                    "INBOX",
+                    &Message {
+                        uid_validity: Some(8),
+                        ..first.clone()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            Storage::removed_in(&storage.0, "a", "INBOX", 7)
+                .unwrap()
+                .contains(&1)
+        );
+        storage.confirm_restored("a", "INBOX", &first).unwrap();
+        assert!(storage.message("a", "INBOX", 1).unwrap().is_some());
+        assert_eq!(
+            Storage::removed_in(&storage.0, "a", "INBOX", 7).unwrap(),
+            [2].into_iter().collect()
+        );
+        for (account, folder) in [("b", "INBOX"), ("a", "Work")] {
+            assert_eq!(
+                Storage::removed_in(&storage.0, account, folder, 7).unwrap(),
+                [1, 2].into_iter().collect()
+            );
+        }
+    }
 
     #[test]
     fn unread_and_star_changes_survive_stale_inventory_headers_and_bodies() {
