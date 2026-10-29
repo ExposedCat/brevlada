@@ -67,7 +67,7 @@ pub fn attach_view<T: Clone + 'static>(
     let lookup = sender_at.clone();
     let shortcut_activate = activate.clone();
     super::mail_shortcuts::attach_view(list, move |index, action| {
-        if let Some((target, false)) = lookup(index) {
+        if let Some((target, _)) = lookup(index) {
             shortcut_activate(target, action);
             true
         } else {
@@ -82,26 +82,13 @@ pub fn attach_view<T: Clone + 'static>(
         is_trusted,
         toggle_trust,
         menu_actions,
-        |list, x, y| {
-            let mut widget = list.pick(x, y, gtk::PickFlags::DEFAULT);
-            while let Some(current) = widget {
-                if let Some(key) = current.widget_name().strip_prefix("virtual-message-row-") {
-                    return super::virtual_list::position(list, key)
-                        .map(|position| position as i32);
-                }
-                widget = current.parent();
-            }
-            None
-        },
-        |list| super::virtual_list::selected(list).map(|index| index as i32),
-        |list, index| {
-            super::virtual_list::selection(list)
-                .set_selected(index.map_or(gtk::INVALID_LIST_POSITION, |index| index as u32))
-        },
+        |list, x, y| super::virtual_list::position_at(list, x, y).map(|position| position as i32),
+        super::virtual_list::selected_keys,
+        |list, keys| super::virtual_list::restore_selection(list, &keys),
     );
 }
 
-fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static>(
+fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static, S: Clone + 'static>(
     list: &W,
     scroll: &gtk::ScrolledWindow,
     sender_at: impl Fn(i32) -> Option<(T, bool)> + 'static,
@@ -110,8 +97,8 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static>(
     toggle_trust: impl Fn(T) + 'static,
     menu_actions: impl Fn(&T) -> Vec<SenderAction> + 'static,
     hit: impl Fn(&W, f64, f64) -> Option<i32> + 'static,
-    selected: impl Fn(&W) -> Option<i32> + 'static,
-    select: impl Fn(&W, Option<i32>) + 'static,
+    selected: impl Fn(&W) -> S + 'static,
+    select: impl Fn(&W, S) + 'static,
 ) {
     let activate = Rc::new(activate);
     let sender_at = Rc::new(sender_at);
@@ -235,10 +222,11 @@ fn attach_inner<W: IsA<gtk::Widget> + Clone + 'static, T: Clone + 'static>(
             let list = restore_list.clone();
             let scroll = restore_scroll.clone();
             let select = select.clone();
+            let selected_index = selected_index.clone();
             gtk::glib::idle_add_local_once(move || {
                 popover.unparent();
                 if let Some(list) = list.upgrade() {
-                    select(&list, selected_index);
+                    select(&list, selected_index.clone());
                 }
                 if let Some(scroll) = scroll.upgrade() {
                     scroll.vadjustment().set_value(position);
@@ -645,6 +633,30 @@ mod diagnostics {
             .unwrap()
             .emit_clicked();
         assert_eq!(*activated.borrow(), vec![(3, SenderAction::Archive)]);
+        settle();
+        super::super::virtual_list::selection(&list).select_item(1, true);
+        super::super::virtual_list::selection(&list).select_item(3, false);
+        click.emit_by_name::<()>(
+            "pressed",
+            &[&1i32, &f64::from(point.x()), &f64::from(point.y())],
+        );
+        settle();
+        let popover = host
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::PopoverMenu>()
+            .unwrap();
+        action_button(popover.upcast_ref(), "Star all")
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap()
+            .emit_clicked();
+        settle();
+        assert_eq!(
+            super::super::virtual_list::selected_positions(&list),
+            vec![1, 3]
+        );
+        assert_eq!(activated.borrow().last(), Some(&(3, SenderAction::Star)));
         window.close();
     }
 }

@@ -85,7 +85,8 @@ listview.message-list-view row:hover .message-row {
 }
 
 listview.message-list-view row .message-row-open,
-listview.message-list-view row:hover .message-row-open {
+listview.message-list-view row:hover .message-row-open,
+listview.message-list-view row:selected .message-row {
     background-color: var(--message-row-selected-bg);
 }
 

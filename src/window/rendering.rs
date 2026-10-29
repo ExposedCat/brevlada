@@ -507,7 +507,11 @@ impl State {
                 let updated = changed.then(|| glib::BoxedAnyObject::new(row.clone()));
                 drop(row);
                 if let Some(updated) = updated {
+                    let selected = ui::virtual_list::selection(list).is_selected(position);
                     model.splice(position, 1, std::slice::from_ref(&updated));
+                    if selected {
+                        ui::virtual_list::selection(list).select_item(position, false);
+                    }
                 }
             }
         }

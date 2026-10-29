@@ -7,6 +7,15 @@ impl State {
         sender: models::action_target::ActionTarget,
         action: SenderAction,
     ) {
+        self.sender_action_with_navigation(sender, action, true);
+    }
+
+    pub(super) fn sender_action_with_navigation(
+        self: &Rc<Self>,
+        sender: models::action_target::ActionTarget,
+        action: SenderAction,
+        advance: bool,
+    ) {
         if matches!(&action, SenderAction::MoveTo(folder) if folder.is_empty()) {
             self.move_dialog(sender);
             return;
@@ -86,13 +95,22 @@ impl State {
             self.toast.add_toast(adw::Toast::new(&error.to_string()));
             return;
         }
-        self.show_pending_action(&sender, &action);
+        self.show_pending_action_with_navigation(&sender, &action, advance);
     }
 
     pub(super) fn show_pending_action(
         self: &Rc<Self>,
         sender: &models::action_target::ActionTarget,
         action: &SenderAction,
+    ) {
+        self.show_pending_action_with_navigation(sender, action, true);
+    }
+
+    fn show_pending_action_with_navigation(
+        self: &Rc<Self>,
+        sender: &models::action_target::ActionTarget,
+        action: &SenderAction,
+        advance: bool,
     ) {
         let affects_open_message = self
             .open_group
@@ -131,7 +149,7 @@ impl State {
             ui::states::select_message(&self.viewer);
         }
         self.refresh_sender_view();
-        if replace_open_message {
+        if replace_open_message && advance {
             self.advance_message();
         }
     }
@@ -178,25 +196,8 @@ impl State {
             return None;
         }
         let parent = self.toast.root().and_downcast::<gtk::Window>();
-        let dialog = adw::MessageDialog::new(
-            parent.as_ref(),
-            Some("Move to…"),
-            Some("Choose a destination folder."),
-        );
-        let names: Vec<_> = folders.iter().map(String::as_str).collect();
-        let destination = gtk::DropDown::from_strings(&names);
-        destination.set_enable_search(true);
-        destination.update_property(&[gtk::accessible::Property::Label("Destination folder")]);
-        dialog.set_extra_child(Some(&destination));
-        dialog.add_responses(&[("cancel", "Cancel"), ("move", "Move")]);
-        dialog.set_response_appearance("move", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("move"));
-        dialog.set_close_response("cancel");
         let weak = Rc::downgrade(self);
-        dialog.connect_response(None, move |_, response| {
-            if response != "move" {
-                return;
-            }
+        let dialog = ui::action_dialog::move_to(parent.as_ref(), folders, move |destination| {
             let Some(state) = weak.upgrade() else {
                 return;
             };
@@ -213,11 +214,8 @@ impl State {
                 ));
                 return;
             }
-            if let Some(folder) = folders.get(destination.selected() as usize) {
-                state.sender_action(target.clone(), SenderAction::MoveTo(folder.clone()));
-            }
+            state.sender_action(target.clone(), SenderAction::MoveTo(destination.into()));
         });
-        dialog.present();
         Some(dialog)
     }
 
@@ -391,7 +389,7 @@ mod diagnostics {
                 let position =
                     ui::virtual_list::position(&state.list, &models::senders::key(message))
                         .unwrap();
-                ui::virtual_list::selection(&state.list).set_selected(position);
+                ui::virtual_list::select(&state.list, position);
                 state.list.grab_focus();
                 state
                     .list
@@ -428,7 +426,7 @@ mod diagnostics {
             layout();
             let position =
                 ui::virtual_list::position(&state.list, &models::senders::key(&marked)).unwrap();
-            ui::virtual_list::selection(&state.list).set_selected(position);
+            ui::virtual_list::select(&state.list, position);
             state.list.grab_focus();
             state
                 .list
@@ -1013,7 +1011,7 @@ mod diagnostics {
             vec![unread.clone(), newer.clone()],
             false,
         ));
-        ui::virtual_list::selection(&state.thread_list).set_selected(0);
+        ui::virtual_list::select(&state.thread_list, 0);
         state.show_thread(vec![unread.clone()]);
         let read = Message {
             is_read: true,

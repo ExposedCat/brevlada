@@ -9,6 +9,7 @@ mod body_queue;
 mod body_worker;
 mod calendar;
 mod connections;
+mod conversation_query;
 mod conversation_worker;
 mod draft_save;
 mod drafts;

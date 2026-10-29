@@ -64,19 +64,38 @@ impl State {
                 }
             });
             list.set_factory(Some(&factory));
+            let weak = Rc::downgrade(state);
+            ui::virtual_list::selection(list).connect_selection_changed(move |selection, _, _| {
+                if let Some(state) = weak.upgrade()
+                    && !state.rendering.get()
+                    && !selection.selection().is_empty()
+                {
+                    ui::virtual_list::selection(if threads {
+                        &state.list
+                    } else {
+                        &state.thread_list
+                    })
+                    .unselect_all();
+                }
+            });
         }
         let weak = Rc::downgrade(state);
         state.list.connect_activate(move |_, position| {
-            if let Some(state) = weak.upgrade() {
+            if let Some(state) = weak.upgrade()
+                && ui::virtual_list::selected_positions(&state.list).len() <= 1
+            {
                 state.activate_sender(position);
             }
         });
         let weak = Rc::downgrade(state);
         state.thread_list.connect_activate(move |_, position| {
             if let Some(state) = weak.upgrade() {
-                if state.rendering.get() {
+                if state.rendering.get()
+                    || ui::virtual_list::selected_positions(&state.thread_list).len() > 1
+                {
                     return;
                 }
+                ui::virtual_list::selection(&state.list).unselect_all();
                 let group =
                     ui::virtual_list::item(&state.thread_list, position).map(|row| row.messages);
                 if let Some(group) = group {
@@ -90,6 +109,7 @@ impl State {
         if self.rendering.get() {
             return;
         }
+        ui::virtual_list::select(&self.list, position);
         let Some((key, location, message, matches)) =
             ui::virtual_list::with_item(&self.list, position, |row| {
                 let message = models::senders::preview(&row.messages).cloned();

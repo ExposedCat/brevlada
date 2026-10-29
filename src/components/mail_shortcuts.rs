@@ -88,6 +88,7 @@ pub fn attach_open_message(
             if widget.is::<gtk::Editable>()
                 || widget.is::<gtk::TextView>()
                 || widget.is::<gtk::Popover>()
+                || widget.is::<gtk::ListView>()
                 || widget.has_css_class("compose-card")
                 || compose.as_ref() == Some(&widget)
                 || list.as_ref().is_some_and(|list| widget == *list.as_ref())

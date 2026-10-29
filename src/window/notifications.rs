@@ -156,7 +156,7 @@ impl State {
             });
         if let Some((position, group)) = target {
             self.notification_message.borrow_mut().take();
-            ui::virtual_list::selection(&self.thread_list).set_selected(position);
+            ui::virtual_list::select(&self.thread_list, position);
             self.show_thread(group);
             if let Some(card) = self.cards.borrow().get(&uid) {
                 card.expand();
@@ -563,7 +563,7 @@ mod diagnostics {
             .iter()
             .position(|group| group.iter().any(|message| message.uid == 5))
             .unwrap() as u32;
-        ui::virtual_list::selection(&state.thread_list).set_selected(position);
+        ui::virtual_list::select(&state.thread_list, position);
         state
             .thread_list
             .emit_by_name::<()>("activate", &[&position]);

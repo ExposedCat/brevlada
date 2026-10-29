@@ -8,7 +8,7 @@ impl State {
         let groups = ui::virtual_list::groups(&self.thread_list);
         if !groups.is_empty() {
             let index = (thread_index as usize).min(groups.len() - 1);
-            ui::virtual_list::selection(&self.thread_list).set_selected(index as u32);
+            ui::virtual_list::select(&self.thread_list, index as u32);
             self.show_thread(groups[index].clone());
             return;
         }

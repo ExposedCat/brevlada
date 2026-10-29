@@ -8,6 +8,7 @@ mod conversation;
 mod drafts;
 mod events;
 mod lifecycle;
+mod list_actions;
 mod lists;
 mod message_navigation;
 mod notifications;
@@ -174,109 +175,7 @@ pub fn create(app: &adw::Application, engine: &Rc<crate::application::Engine>) {
         glib::user_config_dir().join("brevlada/settings.json"),
     );
     state.remember_sorting(glib::user_config_dir().join("brevlada/sorting.json"));
-    for threads in [false, true] {
-        let lookup = Rc::downgrade(&state);
-        let activate = Rc::downgrade(&state);
-        let trust_lookup = Rc::downgrade(&state);
-        let trust_toggle = Rc::downgrade(&state);
-        let menu_lookup = Rc::downgrade(&state);
-        ui::sender_menu::attach_view(
-            if threads {
-                &state.thread_list
-            } else {
-                &state.list
-            },
-            if threads {
-                &state.thread_scroll
-            } else {
-                &state.list_scroll
-            },
-            move |index| {
-                let state = lookup.upgrade()?;
-                let row = ui::virtual_list::item(
-                    if threads {
-                        &state.thread_list
-                    } else {
-                        &state.list
-                    },
-                    index.try_into().ok()?,
-                )?;
-                let group = &row.messages;
-                let bulk = !threads && group.first()?.list_recipient.is_none();
-                let target = if bulk {
-                    models::action_target::ActionTarget::Sender(models::senders::key(
-                        group.first()?,
-                    ))
-                } else {
-                    models::action_target::ActionTarget::Messages(
-                        group
-                            .iter()
-                            .map(|message| (message.uid, message.message_id.clone()))
-                            .collect(),
-                    )
-                };
-                let location = if threads {
-                    None
-                } else {
-                    state.search_locations.borrow().get(&row.key).cloned()
-                };
-                Some(((target, location, row.messages), bulk))
-            },
-            move |(sender, location, _), action| {
-                if let Some(state) = activate.upgrade()
-                    && state.select_search_location(location.as_ref())
-                {
-                    state.sender_action(sender, action);
-                }
-            },
-            move |(target, location, _)| {
-                let Some(state) = trust_lookup.upgrade() else {
-                    return false;
-                };
-                match target {
-                    models::action_target::ActionTarget::Sender(sender) => {
-                        if let Some(location) = location {
-                            state
-                                .trusted_senders
-                                .borrow()
-                                .get(&location.account)
-                                .is_some_and(|senders| senders.contains(sender))
-                        } else {
-                            state.is_sender_trusted(sender)
-                        }
-                    }
-                    _ => false,
-                }
-            },
-            move |(target, location, _)| {
-                if let Some(state) = trust_toggle.upgrade()
-                    && let models::action_target::ActionTarget::Sender(sender) = target
-                    && state.select_search_location(location.as_ref())
-                {
-                    state.toggle_trust(&sender);
-                }
-            },
-            move |(target, location, messages)| {
-                menu_lookup.upgrade().map_or_else(Vec::new, |state| {
-                    if let Some(location) = location {
-                        let current = state
-                            .account
-                            .borrow()
-                            .as_ref()
-                            .is_some_and(|account| account.email == location.account)
-                            && *state.folder.borrow() == location.folder;
-                        if !current {
-                            return sender_actions::menu_actions_for_messages(
-                                &location.folder,
-                                messages,
-                            );
-                        }
-                    }
-                    state.menu_actions(target)
-                })
-            },
-        );
-    }
+    state.connect_list_actions();
     let weak = Rc::downgrade(&state);
     state.back.connect_clicked(move |_| {
         if let Some(state) = weak.upgrade() {
@@ -637,6 +536,9 @@ impl State {
                 let Some(state) = weak.upgrade() else {
                     return false;
                 };
+                if state.selected_list_action(action.clone()) {
+                    return true;
+                }
                 let messages: Vec<_> = state
                     .open_group
                     .borrow()
@@ -692,7 +594,7 @@ mod diagnostics {
         unread_test_state_with_worker(id, worker::Worker::disconnected())
     }
 
-    fn unread_test_state_with_worker(id: &str, worker: worker::Worker) -> Rc<State> {
+    pub(super) fn unread_test_state_with_worker(id: &str, worker: worker::Worker) -> Rc<State> {
         gtk::init().unwrap();
         adw::init().unwrap();
         let app = adw::Application::builder()
@@ -2359,7 +2261,7 @@ mod diagnostics {
         }
         state.render_list();
         assert_eq!(sender_uids(), vec![40, 30, 50]);
-        ui::virtual_list::selection(&state.list).set_selected(0);
+        ui::virtual_list::select(&state.list, 0);
         state.sender_unread_first.set_unread_first(false);
         assert_eq!(sender_uids(), vec![50, 40, 30]);
         assert_eq!(ui::virtual_list::selected(&state.list), Some(1));
@@ -2381,7 +2283,7 @@ mod diagnostics {
             false,
         ));
         assert_eq!(thread_uids(), vec![10, 40]);
-        ui::virtual_list::selection(&state.thread_list).set_selected(0);
+        ui::virtual_list::select(&state.thread_list, 0);
         state.thread_unread_first.set_unread_first(false);
         assert_eq!(thread_uids(), vec![40, 10]);
         assert_eq!(ui::virtual_list::selected(&state.thread_list), Some(1));
@@ -2594,7 +2496,7 @@ mod diagnostics {
         let hovered = ui::virtual_list::visible_row(&state.list, 1).unwrap();
         assert!(opened.has_css_class("message-row-open"));
         assert!(!hovered.has_css_class("message-row-open"));
-        ui::virtual_list::selection(&state.list).set_selected(1);
+        ui::virtual_list::select(&state.list, 1);
         hovered.set_state_flags(gtk::StateFlags::PRELIGHT, false);
         assert!(opened.has_css_class("message-row-open"));
         assert!(!hovered.has_css_class("message-row-open"));
@@ -2640,7 +2542,7 @@ mod diagnostics {
         }
         let opened_thread = ui::virtual_list::visible_row(&state.thread_list, 0).unwrap();
         let hovered_thread = ui::virtual_list::visible_row(&state.thread_list, 1).unwrap();
-        ui::virtual_list::selection(&state.thread_list).set_selected(1);
+        ui::virtual_list::select(&state.thread_list, 1);
         hovered_thread.set_state_flags(gtk::StateFlags::PRELIGHT, false);
         assert!(opened_thread.has_css_class("message-row-open"));
         assert!(!hovered_thread.has_css_class("message-row-open"));
@@ -3342,7 +3244,7 @@ mod diagnostics {
             sender_snapshot,
             false,
         ));
-        ui::virtual_list::selection(&state.thread_list).set_selected(1);
+        ui::virtual_list::select(&state.thread_list, 1);
         state.show_thread(vec![second.clone()]);
         let card = state.cards.borrow().get(&2).unwrap().widget.clone();
         state

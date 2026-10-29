@@ -22,7 +22,7 @@ const RECHECK: Duration = Duration::from_secs(300);
 struct History {
     connections: Connections,
     folders: HashMap<String, (Instant, Vec<String>)>,
-    searched: HashMap<(String, String, String), Instant>,
+    searched: HashMap<(String, String, mail_conversation::Term), Instant>,
     verified: HashMap<VerificationKey, Instant>,
 }
 
@@ -47,7 +47,7 @@ pub(super) fn start(
             if let Err(error) = history.load(&path, &command, &queue, &events)
                 && queue.current(*selection)
             {
-                eprintln!("Could not load conversation history: {error}");
+                eprintln!("Could not load conversation history: {error:#}");
             }
         }
     });

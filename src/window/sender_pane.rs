@@ -38,7 +38,7 @@ impl State {
             // This activation clears sender selection below. Clear it before
             // removing retained spam so a reordered row cannot pull focus
             // and the viewport along with it during the refresh.
-            ui::virtual_list::selection(&self.list).set_selected(gtk::INVALID_LIST_POSITION);
+            ui::virtual_list::select(&self.list, gtk::INVALID_LIST_POSITION);
             self.render_list();
         }
         if !self.sender_pane.borrow_mut().select(sender) {
@@ -66,7 +66,9 @@ impl State {
             self.render_sender_pane();
         }
         self.refresh_open_styles();
-        ui::virtual_list::selection(&self.list).set_selected(gtk::INVALID_LIST_POSITION);
+        if message.is_none() {
+            ui::virtual_list::select(&self.list, gtk::INVALID_LIST_POSITION);
+        }
         self.thread_scroll.vadjustment().set_value(0.0);
         self.refresh_composers();
     }

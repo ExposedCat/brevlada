@@ -1,67 +1,10 @@
+use super::conversation_query::query;
+pub(super) use super::conversation_query::{Term, terms};
 use super::{mail::Mail, mail_headers, special_use};
-use crate::models::{Message, senders, subject_key};
+use crate::models::Message;
 use anyhow::{Context, Result, ensure};
 use imap::{Session, types::NameAttribute};
-use std::{
-    collections::BTreeSet,
-    io::{Read, Write},
-};
-
-pub(super) fn terms<'a>(
-    account: &str,
-    messages: impl IntoIterator<Item = &'a Message>,
-) -> Vec<String> {
-    let mut terms = BTreeSet::new();
-    for message in messages {
-        let subject = subject_key(&message.subject);
-        if !subject.is_empty() {
-            let peers = std::iter::once(senders::key(message)).chain(
-                senders::recipients(message)
-                    .into_iter()
-                    .map(|(_, email)| email),
-            );
-            for peer in peers.filter(|peer| !peer.is_empty() && !peer.eq_ignore_ascii_case(account))
-            {
-                if let (Ok(subject), Ok(peer)) = (value(&subject), value(&peer)) {
-                    terms.insert(format!(
-                        "(SUBJECT {subject} OR FROM {peer} OR TO {peer} CC {peer})"
-                    ));
-                }
-            }
-        }
-        for id in std::iter::once(&message.message_id)
-            .chain(&message.references)
-            .chain(&message.in_reply_to)
-        {
-            let id = super::parser::normalize_message_id(id);
-            if let Ok(id) = value(id) {
-                terms.insert(format!(
-                    "(OR HEADER Message-ID {id} OR HEADER References {id} HEADER In-Reply-To {id})"
-                ));
-            }
-        }
-    }
-    terms.into_iter().collect()
-}
-
-fn value(value: &str) -> Result<String> {
-    ensure!(!value.trim().is_empty(), "Empty conversation search value");
-    special_use::quoted(value)
-}
-
-pub(super) fn query(terms: &[String]) -> String {
-    let joined = terms.join(" ");
-    format!(
-        "{}{}{}",
-        if joined.is_ascii() {
-            ""
-        } else {
-            "CHARSET UTF-8 "
-        },
-        "OR ".repeat(terms.len().saturating_sub(1)),
-        joined
-    )
-}
+use std::io::{Read, Write};
 
 fn folders<T: Read + Write>(session: &mut Session<T>) -> Result<Vec<String>> {
     let listed = session.list(None, Some("*"))?;
@@ -100,14 +43,46 @@ fn folders<T: Read + Write>(session: &mut Session<T>) -> Result<Vec<String>> {
 fn search<T: Read + Write>(
     session: &mut Session<T>,
     folder: &str,
-    terms: &[String],
+    terms: &[Term],
 ) -> Result<(u32, Vec<u32>)> {
     ensure!(!terms.is_empty(), "Conversation search needs a target");
     let mailbox = session.examine(folder)?;
     let validity = mailbox
         .uid_validity
         .context("Missing UIDVALIDITY during conversation search")?;
-    let mut uids: Vec<_> = session.uid_search(query(terms))?.into_iter().collect();
+    let literal_limit = if terms.iter().any(Term::needs_utf8) {
+        let capabilities = session.capabilities()?;
+        if capabilities.has_str("LITERAL+") {
+            usize::MAX
+        } else if capabilities.has_str("LITERAL-") {
+            4096
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let search = query(terms, literal_limit);
+    ensure!(
+        !search.is_empty(),
+        "Server cannot search these conversation identifiers"
+    );
+    let result = session.uid_search(&search);
+    let result = match result {
+        Err(imap::Error::Bad(_) | imap::Error::No(_)) if !search.is_ascii() => {
+            let ascii = query(terms, 0);
+            ensure!(
+                !ascii.is_empty(),
+                "Server does not support UTF-8 conversation searches"
+            );
+            session.uid_search(ascii)
+        }
+        result => result,
+    };
+    let mut uids: Vec<_> = result
+        .with_context(|| format!("Searching conversation history in {folder}"))?
+        .into_iter()
+        .collect();
     uids.sort_unstable_by(|a, b| b.cmp(a));
     Ok((validity, uids))
 }
@@ -156,7 +131,7 @@ impl Mail {
     pub(super) fn conversation_uids(
         &mut self,
         folder: &str,
-        terms: &[String],
+        terms: &[Term],
     ) -> Result<(u32, Vec<u32>)> {
         search(&mut self.session, folder, terms)
     }
@@ -240,9 +215,118 @@ mod tests {
         );
         assert!(sent.contains("HEADER References \"previous\""));
         assert!(!sent.contains("FETCH") && !sent.contains("STORE") && !sent.contains("SEARCH ALL"));
-        assert!(value("bad\r\nALL").is_err());
-        assert_eq!(value("a\"b\\c").unwrap(), "\"a\\\"b\\\\c\"");
-        assert!(query(&["SUBJECT \"Příští\"".into()]).starts_with("CHARSET UTF-8 "));
+    }
+
+    #[test]
+    fn unicode_history_uses_advertised_literals_or_ascii_candidates() {
+        let message = Message {
+            subject: "Re: příští reservation".into(),
+            sender: "salon@example.com".into(),
+            ..Default::default()
+        };
+        let terms = terms("me@example.com", [&message]);
+        for capability in [" LITERAL+", " LITERAL-", ""] {
+            let (mut session, commands) = session(&format!(
+                "* OK [UIDVALIDITY 7] valid\r\na2 OK examine\r\n* CAPABILITY IMAP4rev1{capability}\r\na3 OK caps\r\n* SEARCH 41\r\na4 OK search\r\n"
+            ));
+            assert_eq!(
+                search(&mut session, "Archive", &terms).unwrap(),
+                (7, vec![41])
+            );
+            let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+            if capability.is_empty() {
+                assert!(
+                    sent.contains("UID SEARCH (SUBJECT \"reservation\""),
+                    "{sent:?}"
+                );
+                assert!(sent.is_ascii());
+            } else {
+                assert!(
+                    sent.contains("UID SEARCH CHARSET UTF-8 (SUBJECT {22+}\r\npříští reservation"),
+                    "{sent:?}"
+                );
+            }
+            assert!(
+                !sent.contains("FETCH") && !sent.contains("STORE") && !sent.contains("SEARCH ALL")
+            );
+        }
+    }
+
+    #[test]
+    fn servers_rejecting_utf8_are_retried_without_losing_candidate_uids() {
+        let message = Message {
+            subject: "予約".into(),
+            sender: "salon@example.com".into(),
+            ..Default::default()
+        };
+        let terms = terms("me@example.com", [&message]);
+        for rejection in [
+            "BAD Could not parse command",
+            "NO [BADCHARSET (US-ASCII)] Unsupported charset",
+        ] {
+            let (mut session, commands) = session(&format!(
+                "* OK [UIDVALIDITY 7] valid\r\na2 OK examine\r\n* CAPABILITY IMAP4rev1 LITERAL+\r\na3 OK caps\r\na4 {rejection}\r\n* SEARCH 41 42\r\na5 OK search\r\n"
+            ));
+            assert_eq!(
+                search(&mut session, "Archive", &terms).unwrap(),
+                (7, vec![42, 41])
+            );
+            let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+            assert!(
+                sent.contains("a4 UID SEARCH CHARSET UTF-8 (SUBJECT {6+}\r\n予約"),
+                "{sent:?}"
+            );
+            assert!(
+                sent.contains("a5 UID SEARCH (OR FROM \"salon@example.com\""),
+                "{sent:?}"
+            );
+            assert!(!sent.contains("SEARCH ALL"));
+        }
+    }
+
+    #[test]
+    fn ascii_fallback_candidates_still_require_the_full_unicode_conversation_key() {
+        let storage =
+            crate::backend::storage::Storage::open(std::path::Path::new(":memory:")).unwrap();
+        let latest = Message {
+            uid: 1,
+            subject: "予約".into(),
+            message_id: "latest".into(),
+            sender: "salon@example.com".into(),
+            recipients: "me@example.com".into(),
+            ..Default::default()
+        };
+        let matching = Message {
+            uid: 2,
+            subject: "Re: 予約".into(),
+            message_id: "related".into(),
+            ..latest.clone()
+        };
+        let unrelated = Message {
+            uid: 3,
+            subject: "確認".into(),
+            message_id: "other".into(),
+            ..latest.clone()
+        };
+        storage
+            .store_conversation_headers(
+                "me@example.com",
+                "Archive",
+                None,
+                7,
+                &[matching, unrelated],
+            )
+            .unwrap();
+        let related = storage
+            .related_messages("me@example.com", "INBOX", &[latest], false)
+            .unwrap();
+        assert_eq!(
+            related
+                .iter()
+                .map(|item| item.message.uid)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
     }
 
     #[test]

@@ -278,8 +278,7 @@ impl State {
                                 super::rendering::overlaps(group, &self.open_group.borrow())
                             })
                         {
-                            ui::virtual_list::selection(&self.thread_list)
-                                .set_selected(position as u32);
+                            ui::virtual_list::select(&self.thread_list, position as u32);
                         }
                     }
                 }

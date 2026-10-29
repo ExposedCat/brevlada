@@ -30,6 +30,29 @@ pub fn position(list: &gtk::ListView, key: &str) -> Option<u32> {
         .find(|&position| with_item(list, position, |row| row.key == key).unwrap_or(false))
 }
 
+fn event_position(list: &gtk::ListView, event: &gtk::gdk::Event) -> Option<u32> {
+    let (x, y) = event.position()?;
+    let native = list.native()?;
+    let (dx, dy) = native.surface_transform();
+    let widget = native.dynamic_cast::<gtk::Widget>().ok()?;
+    let point = widget.compute_point(
+        list,
+        &gtk::graphene::Point::new((x + dx) as f32, (y + dy) as f32),
+    )?;
+    position_at(list, f64::from(point.x()), f64::from(point.y()))
+}
+
+pub fn position_at(list: &gtk::ListView, x: f64, y: f64) -> Option<u32> {
+    let mut widget = list.pick(x, y, gtk::PickFlags::DEFAULT);
+    while let Some(current) = widget {
+        if let Some(key) = current.widget_name().strip_prefix("virtual-message-row-") {
+            return position(list, key);
+        }
+        widget = current.parent();
+    }
+    None
+}
+
 pub fn identify(row: &impl IsA<gtk::Widget>, key: &str) {
     row.set_widget_name(&format!("virtual-message-row-{key}"));
 }
@@ -42,14 +65,38 @@ pub fn groups(list: &gtk::ListView) -> Vec<Vec<Message>> {
 
 pub fn new() -> gtk::ListView {
     let model = gio::ListStore::new::<glib::BoxedAnyObject>();
-    let selection = gtk::SingleSelection::new(Some(model));
-    selection.set_autoselect(false);
-    selection.set_can_unselect(true);
-    gtk::ListView::builder()
+    let selection = gtk::MultiSelection::new(Some(model));
+    let list = gtk::ListView::builder()
         .model(&selection)
-        .single_click_activate(true)
         .css_classes(["boxed-list", "message-list-view"])
-        .build()
+        .build();
+    let click = gtk::EventControllerLegacy::new();
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = list.downgrade();
+    click.connect_event(move |_, event| {
+        if event.event_type() == gtk::gdk::EventType::ButtonRelease
+            && let Some(button) = event.downcast_ref::<gtk::gdk::ButtonEvent>()
+            && button.button() == gtk::gdk::BUTTON_PRIMARY
+            && !event.modifier_state().intersects(
+                gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK,
+            )
+            && let Some(list) = weak.upgrade()
+            && let Some(position) = event_position(&list, event)
+        {
+            let key = with_item(&list, position, |row| row.key.clone());
+            let weak = list.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(list) = weak.upgrade()
+                    && with_item(&list, position, |row| row.key.clone()) == key
+                {
+                    list.emit_by_name::<()>("activate", &[&position]);
+                }
+            });
+        }
+        glib::Propagation::Proceed
+    });
+    list.add_controller(click);
+    list
 }
 
 pub fn scroll(list: &gtk::ListView) -> gtk::ScrolledWindow {
@@ -61,11 +108,11 @@ pub fn scroll(list: &gtk::ListView) -> gtk::ScrolledWindow {
     scroll
 }
 
-pub fn selection(list: &gtk::ListView) -> gtk::SingleSelection {
+pub fn selection(list: &gtk::ListView) -> gtk::MultiSelection {
     list.model()
         .expect("List view has a model")
         .downcast()
-        .expect("List view has single selection")
+        .expect("List view has multiple selection")
 }
 
 pub fn model(list: &gtk::ListView) -> gio::ListStore {
@@ -76,9 +123,42 @@ pub fn model(list: &gtk::ListView) -> gio::ListStore {
         .expect("Selection has a row store")
 }
 
+pub fn selected_positions(list: &gtk::ListView) -> Vec<u32> {
+    let selected = selection(list).selection();
+    (0..selected.size())
+        .map(|index| selected.nth(index as u32))
+        .collect()
+}
+
+pub fn selected_keys(list: &gtk::ListView) -> Vec<String> {
+    selected_positions(list)
+        .into_iter()
+        .filter_map(|position| with_item(list, position, |row| row.key.clone()))
+        .collect()
+}
+
+pub fn restore_selection(list: &gtk::ListView, keys: &[String]) {
+    let selected = gtk::Bitset::new_empty();
+    let keys: HashSet<_> = keys.iter().map(String::as_str).collect();
+    for position in 0..model(list).n_items() {
+        if with_item(list, position, |row| keys.contains(row.key.as_str())).unwrap_or(false) {
+            selected.add(position);
+        }
+    }
+    selection(list).set_selection(&selected, &gtk::Bitset::new_range(0, model(list).n_items()));
+}
+
+pub fn select(list: &gtk::ListView, position: u32) {
+    if position == gtk::INVALID_LIST_POSITION {
+        selection(list).unselect_all();
+    } else {
+        selection(list).select_item(position, true);
+    }
+}
+
 pub fn selected(list: &gtk::ListView) -> Option<u32> {
-    let position = selection(list).selected();
-    (position != gtk::INVALID_LIST_POSITION).then_some(position)
+    let selected = selection(list).selection();
+    (!selected.is_empty()).then(|| selected.minimum())
 }
 
 pub fn focus_selected(list: &gtk::ListView) {
@@ -90,7 +170,7 @@ pub fn focus_selected(list: &gtk::ListView) {
 
 pub fn reveal(list: &gtk::ListView, position: u32) {
     let key = with_item(list, position, |row| row.key.clone());
-    selection(list).set_selected(position);
+    select(list, position);
     list.scroll_to(position, gtk::ListScrollFlags::SELECT, None);
     let laid_out = std::cell::Cell::new(false);
     list.add_tick_callback(move |list, _| {
@@ -128,6 +208,7 @@ pub fn update_owned(
     changed: &[usize],
     selected: Option<usize>,
 ) {
+    let selected_keys = selected_keys(list);
     let restore_focus = list
         .root()
         .and_then(|root| root.focus())
@@ -249,11 +330,16 @@ pub fn update_owned(
             model.splice(index as u32, 1, &additions[index..index + 1]);
         }
     }
-    selection(list).set_selected(
-        selected
-            .filter(|position| *position < keys.len())
-            .map_or(gtk::INVALID_LIST_POSITION, |position| position as u32),
-    );
+    if selected_keys.len() > 1 {
+        restore_selection(list, &selected_keys);
+    } else {
+        select(
+            list,
+            selected
+                .filter(|position| *position < keys.len())
+                .map_or(gtk::INVALID_LIST_POSITION, |position| position as u32),
+        );
+    }
     if restore_focus {
         focus_selected(list);
     }
@@ -287,6 +373,37 @@ mod diagnostics {
         cell::{Cell, RefCell},
         rc::Rc,
     };
+
+    #[test]
+    #[ignore = "Requires a graphical session for GTK selection models"]
+    fn multiple_selection_survives_reordering_updates_and_removal() {
+        gtk::init().unwrap();
+        let list = new();
+        let rows: Vec<_> = ["a", "b", "c", "d"]
+            .into_iter()
+            .map(|key| Row {
+                key: key.into(),
+                ..Default::default()
+            })
+            .collect();
+        update(&list, &rows, &[], None);
+        selection(&list).select_item(0, true);
+        selection(&list).select_item(2, false);
+        let reordered = vec![
+            rows[2].clone(),
+            rows[1].clone(),
+            rows[3].clone(),
+            rows[0].clone(),
+        ];
+        update(&list, &reordered, &[0, 3], Some(3));
+        assert_eq!(selected_keys(&list), vec!["c", "a"]);
+        update(&list, &reordered[..3], &[], None);
+        assert_eq!(selected_keys(&list), vec!["c"]);
+        selection(&list).select_range(0, 3, true);
+        assert_eq!(selected_keys(&list), vec!["c", "b", "d"]);
+        selection(&list).unselect_item(1);
+        assert_eq!(selected_keys(&list), vec!["c", "d"]);
+    }
 
     #[test]
     #[ignore = "Requires a graphical session to inspect list item focus"]
