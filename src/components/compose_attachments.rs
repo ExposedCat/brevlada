@@ -5,6 +5,8 @@ use std::{
     rc::Rc,
 };
 
+mod open;
+
 struct Item {
     name: String,
     size: Option<u64>,
@@ -184,6 +186,7 @@ impl Attachments {
         self.grid.remove_all();
         for (index, item) in self.items.borrow().iter().enumerate() {
             let card = super::attachments::FileCard::new(&item.name, item.size);
+            open::attach(&card, &item.name, item.part.as_deref());
             let remove = super::button("window-close-symbolic", &format!("Remove {}", item.name));
             let weak = Rc::downgrade(self);
             remove.connect_clicked(move |_| {
@@ -324,6 +327,124 @@ mod diagnostics {
     use super::*;
 
     #[test]
+    #[ignore = "Requires a private graphical session and BREVLADA_ATTACHMENT_FIXTURE with an isolated image opener"]
+    fn clicking_new_screenshot_opens_selected_file_and_keeps_removal_separate() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let provider = gtk::CssProvider::new();
+        provider.load_from_string(theme::CSS);
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().unwrap(),
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("BREVLADA_ATTACHMENT_FIXTURE").unwrap());
+        assert!(gtk::glib::user_data_dir().starts_with(&directory));
+        assert_eq!(
+            gtk::gio::AppInfo::default_for_type("image/png", false)
+                .unwrap()
+                .id()
+                .as_deref(),
+            Some("brevlada-attachment-fixture.desktop")
+        );
+        let source = directory.join("Screenshot with spaces.png");
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=")
+            .unwrap();
+        std::fs::write(&source, bytes).unwrap();
+        let context = gtk::glib::MainContext::default();
+        let attachments = Attachments::new();
+        let item = context
+            .block_on(attachments.read(&gtk::gio::File::for_path(&source)))
+            .unwrap();
+        attachments.items.borrow_mut().push(item);
+        attachments.render();
+        let card = attachments.cards.borrow()[0].clone();
+        let open = card
+            .status
+            .ancestor(gtk::Button::static_type())
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        let remove = card
+            .actions
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        assert!(!remove.is_ancestor(&open));
+        let window = gtk::Window::builder()
+            .child(&attachments.widget)
+            .default_width(600)
+            .default_height(200)
+            .build();
+        window.present();
+        let wait = |condition: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !condition() && std::time::Instant::now() < deadline {
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(condition());
+        };
+        wait(&|| open.width() > 0);
+        let target = card
+            .widget
+            .pick(10.0, 10.0, gtk::PickFlags::DEFAULT)
+            .unwrap();
+        assert!(target == open || target.is_ancestor(&open));
+        let changed = Rc::new(Cell::new(false));
+        let change = changed.clone();
+        attachments.connect_changed(move || change.set(true));
+        let opened = directory.join("opened");
+        if opened.exists() {
+            std::fs::remove_file(&opened).unwrap();
+        }
+        open.emit_clicked();
+        assert!(!open.is_sensitive());
+        wait(&|| opened.exists() && open.is_sensitive());
+        assert_eq!(
+            std::fs::read_to_string(&opened).unwrap().trim(),
+            source.to_str().unwrap()
+        );
+        assert!(!card.status.text().contains("Could not"));
+        assert!(!changed.get());
+        assert_eq!(attachments.parts().len(), 1);
+        if let Some(path) = std::env::var_os("BREVLADA_ATTACHMENT_PREVIEW") {
+            let paintable = gtk::WidgetPaintable::new(Some(&window));
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
+            window
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None)
+                .save_to_png(path)
+                .unwrap();
+        }
+        remove.emit_clicked();
+        assert!(changed.get());
+        assert!(attachments.parts().is_empty());
+        assert!(!attachments.widget.is_visible());
+        attachments.load(&Draft {
+            attachments: vec!["Content-Type: image/png\r\n\r\nmissing filename".into()],
+            ..Draft::from(&crate::models::Message::default())
+        });
+        let card = attachments.cards.borrow()[0].clone();
+        let open = card
+            .status
+            .ancestor(gtk::Button::static_type())
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        open.emit_clicked();
+        wait(&|| open.is_sensitive());
+        assert!(card.status.text().contains("Could not open attachment"));
+        window.close();
+    }
+
+    #[test]
     #[ignore = "Requires a private graphical session and BREVLADA_ATTACHMENT_FIXTURE with isolated Downloads"]
     fn selected_files_reuse_their_original_path_after_sending() {
         gtk::init().unwrap();
@@ -399,7 +520,9 @@ mod diagnostics {
         assert_eq!(attachments.cards.borrow().len(), 4);
         let card = attachments.cards.borrow()[0].clone();
         fn remove_button(widget: &gtk::Widget) -> Option<gtk::Button> {
-            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>()
+                && button.icon_name().as_deref() == Some("window-close-symbolic")
+            {
                 return Some(button.clone());
             }
             let mut child = widget.first_child();

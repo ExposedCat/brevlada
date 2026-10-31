@@ -34,6 +34,34 @@ pub fn remember(path: &Path, bytes: &[u8]) -> Result<()> {
     index.save(&directory)
 }
 
+pub fn load_part(part: &str) -> Result<PathBuf> {
+    load_part_at(&downloads(), part)
+}
+
+fn load_part_at(downloads: &Path, part: &str) -> Result<PathBuf> {
+    let mail = mailparse::parse_mail(part.as_bytes())?;
+    let name = attachment::name(&mail).context("Attachment filename is unavailable")?;
+    let bytes = mail.get_body_raw()?;
+    let digest = local::digest(&bytes);
+    let directory = downloads.join("Brevlada");
+    {
+        let _lock = CACHE.lock().unwrap();
+        if let Some(path) = local::Index::read(&directory)?.source(&digest) {
+            return Ok(path);
+        }
+    }
+    let identity = serde_json::to_string(&("compose", &name, digest))?;
+    let identity = glib::compute_checksum_for_string(glib::ChecksumType::Sha256, identity).unwrap();
+    load_at(
+        &Location {
+            directory,
+            identity: identity.to_string(),
+            name: attachment::safe_name(&name),
+        },
+        || Ok(bytes),
+    )
+}
+
 pub fn remember_parts(
     account: &str,
     folder: &str,
@@ -224,6 +252,37 @@ fn write(path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn composed_parts_reuse_originals_and_preserve_changed_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "brevlada-compose-attachment-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let original = directory.join("screenshot.png");
+        let bytes = &[0, 255, 13, 10];
+        std::fs::write(&original, bytes).unwrap();
+        let cache = directory.join("Brevlada");
+        let mut index = local::Index::default();
+        index.remember(&original, bytes);
+        index.save(&cache).unwrap();
+        let part =
+            crate::backend::attachments::encode("screenshot.png", "image/png", bytes).unwrap();
+        assert_eq!(load_part_at(&directory, &part).unwrap(), original);
+        std::fs::write(&original, b"changed").unwrap();
+        let copy = load_part_at(&directory, &part).unwrap();
+        assert_eq!(std::fs::read(&copy).unwrap(), bytes);
+        assert_eq!(std::fs::read(&original).unwrap(), b"changed");
+        assert_eq!(load_part_at(&directory, &part).unwrap(), copy);
+        let other =
+            crate::backend::attachments::encode("screenshot.png", "image/png", b"other").unwrap();
+        let other_path = load_part_at(&directory, &other).unwrap();
+        assert_ne!(other_path, copy);
+        assert_eq!(std::fs::read(other_path).unwrap(), b"other");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn reuses_saved_files_and_downloads_again_after_deletion() {
