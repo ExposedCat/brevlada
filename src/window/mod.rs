@@ -89,7 +89,7 @@ struct State {
     downloaded_media: RefCell<HashSet<(String, String, u32, String)>>,
     sidebar: gtk::Box,
     account_sidebar: ui::motion::Sidebar,
-    account_title: gtk::Label,
+    account_switcher: ui::account_switcher::AccountSwitcher,
     restore_accounts_on_back: Cell<bool>,
     thread_sidebar: ui::motion::Sidebar,
     thread_list: gtk::ListView,
@@ -391,7 +391,7 @@ impl State {
             window,
             sidebar,
             account_sidebar,
-            account_title,
+            account_switcher,
             thread_sidebar,
             thread_list,
             thread_scroll,
@@ -469,7 +469,7 @@ impl State {
             downloaded_media: RefCell::new(load_downloaded_media()),
             sidebar,
             account_sidebar,
-            account_title,
+            account_switcher,
             thread_sidebar,
             thread_list,
             thread_scroll,
@@ -812,13 +812,55 @@ mod diagnostics {
         inbox.emit_clicked();
         state.event(Event::SentFolder(
             pending,
-            first,
+            first.clone(),
             "[Gmail]/Sent Mail".into(),
         ));
         assert_eq!(state.account.borrow().as_ref().unwrap().email, second.email);
         assert_eq!(state.folder.borrow().as_str(), "INBOX");
         assert!(inbox.state_flags().contains(gtk::StateFlags::CHECKED));
         assert!(!second_sent.state_flags().contains(gtk::StateFlags::CHECKED));
+        state.account_sidebar.set_visible(false);
+        assert!(state.account_switcher.widget.get_visible());
+        assert_eq!(state.account_switcher.title.text(), second.email);
+        let account_menu = state.account_switcher.widget.menu_model().unwrap();
+        assert_eq!(account_menu.n_items(), 2);
+        state
+            .account_switcher
+            .widget
+            .activate_action("account.select", Some(&first.email.to_variant()))
+            .unwrap();
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, first.email);
+        assert_eq!(state.folder.borrow().as_str(), "INBOX");
+        assert_eq!(state.account_switcher.title.text(), first.email);
+        assert!(!state.account_sidebar.get_visible());
+        assert!(!inbox.state_flags().contains(gtk::StateFlags::CHECKED));
+        let bar = state
+            .search
+            .ancestor(gtk::SearchBar::static_type())
+            .and_downcast::<gtk::SearchBar>()
+            .unwrap();
+        bar.set_search_mode(true);
+        state
+            .account_switcher
+            .widget
+            .activate_action("account.select", Some(&second.email.to_variant()))
+            .unwrap();
+        assert!(state.sender_search_active());
+        assert_eq!(
+            state.search_filters.selected_accounts(),
+            HashSet::from([second.email.clone()])
+        );
+        assert_eq!(state.account_switcher.title.text(), second.email);
+        bar.set_search_mode(false);
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, second.email);
+        assert!(inbox.state_flags().contains(gtk::StateFlags::CHECKED));
+        state.account_sidebar.set_visible(true);
+        assert!(!state.account_switcher.widget.get_visible());
+        state.event(Event::Accounts(vec![second.clone()]));
+        assert_eq!(account_menu.n_items(), 1);
+        state.event(Event::Accounts(vec![first, second]));
+        state.account_sidebar.set_visible(false);
+        assert!(state.account_switcher.widget.get_visible());
         let window = state
             .sidebar
             .root()
@@ -1503,17 +1545,17 @@ mod diagnostics {
         state.event(Event::Accounts(vec![first.clone(), second.clone()]));
         // A stale label from a previously displayed account cannot become the
         // title when the sidebar closes without a selected mailbox.
-        state.account_title.set_label(&first.email);
+        state.account_switcher.title.set_label(&first.email);
         state.account_sidebar.set_visible(false);
-        assert!(state.account_title.text().is_empty());
+        assert!(state.account_switcher.title.text().is_empty());
         let bar = state
             .search
             .ancestor(gtk::SearchBar::static_type())
             .and_downcast::<gtk::SearchBar>()
             .unwrap();
         bar.set_search_mode(true);
-        assert_eq!(state.account_title.text(), "All accounts");
-        assert!(state.account_title.get_visible());
+        assert_eq!(state.account_switcher.title.text(), "All accounts");
+        assert!(state.account_switcher.widget.get_visible());
         assert_eq!(ui::virtual_list::model(&state.list).n_items(), 0);
         assert!(!state.search_running[0].get());
         state.search.set_text("example.com");
@@ -1551,7 +1593,7 @@ mod diagnostics {
         wait(&|| labels(state.list.clone().upcast()).contains(&format!("{} · INBOX", first.email)));
         assert!(labels(state.list.clone().upcast()).contains(&format!("{} · INBOX", second.email)));
         assert!(state.account.borrow().is_none());
-        assert_eq!(state.account_title.text(), "All accounts");
+        assert_eq!(state.account_switcher.title.text(), "All accounts");
         let second_check = accounts
             .last_child()
             .unwrap()

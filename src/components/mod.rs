@@ -1,4 +1,5 @@
 pub mod account_settings;
+pub mod account_switcher;
 pub mod action_dialog;
 pub mod active_row;
 mod attachment_actions;

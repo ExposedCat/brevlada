@@ -423,6 +423,7 @@ impl State {
                 if accounts.is_empty() {
                     ui::shell::no_accounts(&self.sidebar);
                 }
+                let mut account_choices = Vec::with_capacity(accounts.len());
                 for account in accounts {
                     self.sender.expanded(
                         &account.email,
@@ -452,6 +453,7 @@ impl State {
                     );
                     let weak = Rc::downgrade(self);
                     let selected = account.clone();
+                    account_choices.push((account.email.clone(), row.select.clone()));
                     row.sent.connect_clicked(move |_| {
                         if let Some(state) = weak.upgrade() {
                             state.select_sent(selected.clone());
@@ -472,6 +474,7 @@ impl State {
                         .borrow_mut()
                         .insert(account.email.clone(), (account, row.folders));
                 }
+                self.account_switcher.set_accounts(account_choices);
                 self.refresh_composer_accounts();
             }
             Event::SidebarReady => {

@@ -110,11 +110,8 @@ impl State {
                 .map(|account| account.email.clone())
                 .unwrap_or_default()
         };
-        self.account_title.set_label(&title);
-        self.account_title
-            .set_tooltip_text((!title.is_empty()).then_some(title.as_str()));
-        self.account_title
-            .set_visible(!self.account_sidebar.get_visible() && !title.is_empty());
+        self.account_switcher
+            .set_title(&title, !self.account_sidebar.get_visible());
     }
 
     pub(super) fn sender_search_active(&self) -> bool {

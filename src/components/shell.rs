@@ -6,7 +6,7 @@ pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub sidebar: gtk::Box,
     pub account_sidebar: super::motion::Sidebar,
-    pub account_title: gtk::Label,
+    pub account_switcher: super::account_switcher::AccountSwitcher,
     pub thread_sidebar: super::motion::Sidebar,
     pub thread_list: gtk::ListView,
     pub thread_scroll: gtk::ScrolledWindow,
@@ -69,14 +69,9 @@ impl Shell {
         sidebar_wrapper.append(&scroll(&sidebar));
         sidebar_column.append(&sidebar_wrapper);
         let middle = column("message-list-wrapper");
-        let account_title = gtk::Label::builder()
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(40)
-            .css_classes(["title"])
-            .visible(false)
-            .build();
+        let account_switcher = super::account_switcher::AccountSwitcher::new();
         let list_header = adw::HeaderBar::builder()
-            .title_widget(&account_title)
+            .title_widget(&account_switcher.widget)
             .show_end_title_buttons(false)
             .width_request(theme::LIST_WIDTH)
             .css_classes(["message-list-header"])
@@ -200,13 +195,9 @@ impl Shell {
         super::pane_state::remember(&window, &account_sidebar, &content, &thread_sidebar);
         expand_sidebar.set_visible(!account_sidebar.get_visible());
         let expand = expand_sidebar.downgrade();
-        let title = account_title.downgrade();
         account_sidebar.connect_visible_notify(move |sidebar| {
             if let Some(expand) = expand.upgrade() {
                 expand.set_visible(!sidebar.get_visible());
-            }
-            if let Some(title) = title.upgrade() {
-                title.set_visible(!sidebar.get_visible() && !title.text().is_empty());
             }
         });
         let target = account_sidebar.downgrade();
@@ -240,7 +231,7 @@ impl Shell {
             window,
             sidebar,
             account_sidebar,
-            account_title,
+            account_switcher,
             thread_sidebar,
             thread_list,
             thread_scroll,

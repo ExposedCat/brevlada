@@ -81,6 +81,7 @@ impl Selection {
 
 pub struct AccountRow {
     pub widget: gtk::Box,
+    pub select: gtk::Button,
     pub folders: gtk::Box,
     pub sent: gtk::Button,
 }
@@ -159,6 +160,7 @@ impl AccountRow {
         expansion.bind("", &folders);
         Self {
             widget,
+            select: account_button,
             folders,
             sent,
         }
