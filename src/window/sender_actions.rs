@@ -214,9 +214,9 @@ impl State {
         }
     }
 
-    fn focus_sender_after_action(&self) {
+    fn focus_sender_after_action(self: &Rc<Self>) {
         let sender = self.sender_pane.borrow().sender().map(str::to_owned);
-        let position = sender
+        let current = sender
             .and_then(|sender| {
                 ui::virtual_list::groups(&self.list)
                     .iter()
@@ -226,14 +226,19 @@ impl State {
                             .any(|message| models::senders::list_key(message) == sender)
                     })
             })
-            .map(|position| position as u32)
-            .or_else(|| ui::virtual_list::selected(&self.list));
+            .map(|position| position as u32);
+        let position = current.or_else(|| ui::virtual_list::selected(&self.list));
         let rendering = self.rendering.replace(true);
         ui::virtual_list::selection(&self.thread_list).unselect_all();
         if let Some(position) = position {
             ui::virtual_list::select(&self.list, position);
         }
         self.rendering.set(rendering);
+        if current.is_none()
+            && let Some(position) = position
+        {
+            self.activate_sender(position);
+        }
         ui::virtual_list::focus_selected(&self.list);
     }
 

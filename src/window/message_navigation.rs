@@ -58,6 +58,92 @@ mod diagnostics {
     }
 
     #[test]
+    #[ignore = "Requires a private graphical session; uses a recording mail worker"]
+    fn deleting_a_sender_loads_the_selected_neighbors_messages() {
+        let (worker, commands) = worker::Worker::recording();
+        let state = super::super::diagnostics::unread_test_state_with_worker(
+            "org.example.BrevladaSenderLoadDiagnostic",
+            worker,
+        );
+        let window = state.toast.root().and_downcast::<gtk::Window>().unwrap();
+        window.present();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        let messages: Vec<_> = (1..=3)
+            .map(|uid| Message {
+                uid,
+                timestamp: 10 - i64::from(uid),
+                sender: format!("sender{uid}@example.com"),
+                subject: format!("Conversation {uid}"),
+                message_id: uid.to_string(),
+                is_read: true,
+                ..Default::default()
+            })
+            .collect();
+        for open_sender in [false, true] {
+            for position in 0..messages.len() {
+                state.filter_sender(None);
+                *state.sender_actions.borrow_mut() = Default::default();
+                *state.messages.borrow_mut() = messages.clone();
+                state.render_list();
+                if open_sender {
+                    state.activate_sender(position as u32);
+                    let ticket = state.sender_pane.borrow().ticket();
+                    state.event(Event::SenderPage(
+                        state.generation.get(),
+                        ticket,
+                        vec![messages[position].clone()],
+                        false,
+                    ));
+                } else {
+                    ui::virtual_list::select(&state.list, position as u32);
+                }
+                state.list.grab_focus();
+                while commands.try_recv().is_ok() {}
+                state.sender_action(
+                    models::senders::key(&messages[position]).into(),
+                    SenderAction::Delete,
+                );
+                let next = &messages[if position + 1 < messages.len() {
+                    position + 1
+                } else {
+                    position - 1
+                }];
+                assert_eq!(
+                    state.sender_pane.borrow().sender(),
+                    Some(next.sender.as_str())
+                );
+                assert_eq!(
+                    ui::virtual_list::selected_keys(&state.list),
+                    vec![next.sender.clone()]
+                );
+                assert!(commands.try_iter().any(|command| matches!(
+                    command,
+                    Command::LoadSenderPage { sender, before: None, .. } if sender == next.sender
+                )));
+                let ticket = state.sender_pane.borrow().ticket();
+                let older = Message {
+                    uid: 4,
+                    timestamp: 0,
+                    message_id: "older".into(),
+                    subject: "Older conversation".into(),
+                    ..next.clone()
+                };
+                state.event(Event::SenderPage(
+                    state.generation.get(),
+                    ticket,
+                    vec![next.clone(), older],
+                    false,
+                ));
+                assert_eq!(ui::virtual_list::groups(&state.thread_list).len(), 2);
+                assert!(state.selected.borrow().is_empty());
+            }
+        }
+        window.close();
+    }
+
+    #[test]
     #[ignore = "Requires a graphical session; constructs widgets without mail workers"]
     fn removing_older_mail_advances_in_order_and_opens_cached_next_sender_immediately() {
         gtk::init().unwrap();
