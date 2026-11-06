@@ -86,6 +86,17 @@ pub struct AccountRow {
     pub sent: gtk::Button,
 }
 
+pub fn navigation_button(icon: &str, title: &str) -> gtk::Button {
+    let content = horizontal("account-content", theme::SMALL_SPACING);
+    content.append(&gtk::Image::from_icon_name(icon));
+    content.append(&label(title, "account-text"));
+    gtk::Button::builder()
+        .child(&content)
+        .hexpand(true)
+        .css_classes(["flat", "account-button"])
+        .build()
+}
+
 impl AccountRow {
     pub fn new(
         account: &Account,

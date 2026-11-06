@@ -5,8 +5,8 @@ pub fn popup(anchor: &impl IsA<gtk::Widget>, title: &str, value: &str) {
     popover.set_parent(anchor);
     let content = super::column("detail-popup");
     content.set_spacing(crate::theme::SMALL_SPACING);
-    content.append(&super::label(title, "title-4"));
-    let label = super::label(value, "");
+    content.append(&super::selectable_label(title, "title-4"));
+    let label = super::selectable_label(value, "");
     label.set_wrap(true);
     label.set_ellipsize(gtk::pango::EllipsizeMode::None);
     content.append(&label);

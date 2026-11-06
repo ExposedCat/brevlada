@@ -28,6 +28,7 @@ mod sender_domains;
 mod smtp;
 mod special_use;
 pub mod storage;
+mod sync_preferences;
 mod sync_progress;
 mod sync_queue;
 mod sync_worker;

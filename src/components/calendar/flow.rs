@@ -1,14 +1,20 @@
 use crate::theme;
 use adw::prelude::*;
 use gtk::{glib, subclass::prelude::*};
-
-const COLUMN_WIDTH: i32 = 320;
+use std::cell::Cell;
 
 mod imp {
     use super::*;
 
-    #[derive(Default)]
-    pub struct Flow;
+    #[derive(Default, glib::Properties)]
+    #[properties(wrapper_type = super::Flow)]
+    pub struct Flow {
+        pub spacing: Cell<i32>,
+        pub row_spacing: Cell<i32>,
+        pub row_limit: Cell<usize>,
+        #[property(get)]
+        pub visible_items: Cell<u32>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for Flow {
@@ -17,6 +23,7 @@ mod imp {
         type ParentType = gtk::Widget;
     }
 
+    #[glib::derived_properties]
     impl ObjectImpl for Flow {
         fn dispose(&self) {
             while let Some(child) = self.obj().first_child() {
@@ -37,9 +44,9 @@ mod imp {
                 .map(|child| child.measure(gtk::Orientation::Horizontal, -1).0)
                 .max()
                 .unwrap_or(0);
-            let preferred = minimum.max(COLUMN_WIDTH);
+            let preferred = minimum.max(theme::CARD_COLUMN_WIDTH);
             let natural = if children.len() > 1 {
-                preferred * 2 + theme::SMALL_SPACING
+                preferred * 2 + self.spacing.get()
             } else {
                 preferred
             };
@@ -54,6 +61,12 @@ mod imp {
         fn size_allocate(&self, width: i32, _height: i32, _baseline: i32) {
             let children = self.obj().children();
             let (allocations, _) = self.obj().arrangement(&children, width);
+            for (index, child) in children.iter().enumerate() {
+                child.set_child_visible(index < allocations.len());
+            }
+            if self.visible_items.replace(allocations.len() as u32) != allocations.len() as u32 {
+                self.obj().notify_visible_items();
+            }
             for (child, allocation) in children.iter().zip(allocations) {
                 child.size_allocate(&allocation, -1);
             }
@@ -61,7 +74,9 @@ mod imp {
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             for child in self.obj().children() {
-                self.obj().snapshot_child(&child, snapshot);
+                if child.is_child_visible() {
+                    self.obj().snapshot_child(&child, snapshot);
+                }
             }
         }
     }
@@ -81,9 +96,18 @@ impl Flow {
             .property("valign", gtk::Align::Start)
             .build();
         flow.add_css_class("calendar-flow");
+        flow.imp().spacing.set(theme::SMALL_SPACING);
         for event in events {
             event.set_parent(&flow);
         }
+        flow
+    }
+
+    pub fn grid(events: &[gtk::Widget], rows: usize) -> Self {
+        let flow = Self::new(events);
+        flow.imp().spacing.set(theme::SPACING);
+        flow.imp().row_spacing.set(theme::SPACING);
+        flow.imp().row_limit.set(rows);
         flow
     }
 
@@ -92,7 +116,7 @@ impl Flow {
         let mut child = self.first_child();
         while let Some(widget) = child {
             child = widget.next_sibling();
-            if widget.should_layout() {
+            if widget.get_visible() {
                 children.push(widget);
             }
         }
@@ -105,20 +129,27 @@ impl Flow {
             .map(|child| child.measure(gtk::Orientation::Horizontal, -1).0)
             .max()
             .unwrap_or(0)
-            .max(COLUMN_WIDTH);
-        let columns = if children.len() > 1 && width >= minimum * 2 + theme::SMALL_SPACING {
+            .max(theme::CARD_COLUMN_WIDTH);
+        let spacing = self.imp().spacing.get();
+        let columns = if children.len() > 1 && width >= minimum * 2 + spacing {
             2
         } else {
             1
         };
-        let column_width = (width - (columns as i32 - 1) * theme::SMALL_SPACING) / columns as i32;
+        let column_width = (width - (columns as i32 - 1) * spacing) / columns as i32;
+        let limit = self.imp().row_limit.get();
+        let count = if limit == 0 {
+            children.len()
+        } else {
+            children.len().min(limit * columns)
+        };
         let mut allocations = Vec::new();
         let mut y = 0;
-        for row in children.chunks(columns) {
+        for row in children[..count].chunks(columns) {
             let row_start = allocations.len();
             let mut row_height = 0;
             for (column, child) in row.iter().enumerate() {
-                let x = column as i32 * (column_width + theme::SMALL_SPACING);
+                let x = column as i32 * (column_width + spacing);
                 let child_width = if column + 1 == columns {
                     width - x
                 } else {
@@ -136,10 +167,9 @@ impl Flow {
             for allocation in &mut allocations[row_start..] {
                 allocation.set_height(row_height);
             }
-            // Cards already include their bottom margin in their measured height.
-            y += row_height;
+            y += row_height + self.imp().row_spacing.get();
         }
-        (allocations, y)
+        (allocations, (y - self.imp().row_spacing.get()).max(0))
     }
 }
 

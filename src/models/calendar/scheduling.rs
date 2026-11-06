@@ -24,7 +24,15 @@ pub fn snapshot<'a>(source: &Event, messages: impl IntoIterator<Item = &'a Messa
     let mut result = updates
         .iter()
         .filter(|(event, _)| event.method.as_deref() != Some("REPLY"))
-        .max_by_key(|(event, message)| (event.sequence, event.stamp, message.timestamp))
+        .max_by_key(|(event, message)| {
+            (
+                event.sequence,
+                event.stamp,
+                event.uid.is_some(),
+                event.calendar.is_some(),
+                message.timestamp,
+            )
+        })
         .map(|(event, _)| event.clone())
         .unwrap_or_else(|| source.clone());
     let mut replies: Vec<_> = updates

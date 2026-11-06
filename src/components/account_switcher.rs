@@ -72,4 +72,27 @@ impl AccountSwitcher {
         self.action.set_state(&title.to_variant());
         self.widget.set_visible(visible && !title.is_empty());
     }
+
+    pub fn set_choices(&self, choices: impl IntoIterator<Item = (String, String)>) {
+        self.targets.borrow_mut().clear();
+        self.menu.remove_all();
+        for (value, title) in choices {
+            let item = gio::MenuItem::new(Some(&title), None);
+            item.set_action_and_target_value(Some("account.select"), Some(&value.to_variant()));
+            self.menu.append_item(&item);
+        }
+    }
+
+    pub fn connect_selected(&self, selected: impl Fn(&str) + 'static) {
+        self.action.connect_activate(move |_, target| {
+            if let Some(value) = target.and_then(|target| target.str()) {
+                selected(value);
+            }
+        });
+    }
+
+    pub fn set_selected(&self, value: &str, title: &str) {
+        self.set_title(title, true);
+        self.action.set_state(&value.to_variant());
+    }
 }

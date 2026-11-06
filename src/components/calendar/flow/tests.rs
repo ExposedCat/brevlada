@@ -89,7 +89,13 @@ fn wraps_long_events_with_equal_row_heights_and_no_focusable_rows() {
     GtkWindowExt::set_focus(&window, gtk::Widget::NONE);
     for _ in &events {
         assert!(window.child_focus(gtk::DirectionType::TabForward));
-        assert!(GtkWindowExt::focus(&window).unwrap().is::<gtk::Button>());
+        let focus = GtkWindowExt::focus(&window).unwrap();
+        assert!(
+            focus.is::<gtk::Button>()
+                || focus
+                    .downcast_ref::<gtk::Label>()
+                    .is_some_and(|label| label.is_selectable())
+        );
     }
     if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);

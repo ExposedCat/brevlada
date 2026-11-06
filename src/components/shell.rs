@@ -5,6 +5,9 @@ use adw::prelude::*;
 pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub sidebar: gtk::Box,
+    pub content_stack: gtk::Stack,
+    pub dashboard: super::dashboard::Dashboard,
+    pub dashboard_button: gtk::Button,
     pub account_sidebar: super::motion::Sidebar,
     pub account_switcher: super::account_switcher::AccountSwitcher,
     pub thread_sidebar: super::motion::Sidebar,
@@ -68,6 +71,8 @@ impl Shell {
         let sidebar_wrapper = column("sidebar");
         sidebar_wrapper.append(&scroll(&sidebar));
         sidebar_column.append(&sidebar_wrapper);
+        let dashboard_button = super::dashboard::navigation_button();
+        sidebar_column.append(&dashboard_button);
         let middle = column("message-list-wrapper");
         let account_switcher = super::account_switcher::AccountSwitcher::new();
         let list_header = adw::HeaderBar::builder()
@@ -189,8 +194,22 @@ impl Shell {
         let thread_sidebar =
             super::motion::Sidebar::new(&thread_sidebar, &right, theme::LIST_WIDTH, false);
         let content = pane(&middle, thread_sidebar.pane(), theme::LIST_WIDTH);
-        let account_sidebar =
-            super::motion::Sidebar::new(&sidebar_column, &content, theme::SIDEBAR_WIDTH, true);
+        let dashboard = super::dashboard::Dashboard::new();
+        let content_stack = gtk::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .hhomogeneous(false)
+            .vhomogeneous(false)
+            .build();
+        content_stack.add_named(&content, Some("mail"));
+        content_stack.add_named(&dashboard.widget, Some("dashboard"));
+        content_stack.set_visible_child_name("mail");
+        let account_sidebar = super::motion::Sidebar::new(
+            &sidebar_column,
+            &content_stack,
+            theme::SIDEBAR_WIDTH,
+            true,
+        );
         let main = account_sidebar.pane();
         super::pane_state::remember(&window, &account_sidebar, &content, &thread_sidebar);
         expand_sidebar.set_visible(!account_sidebar.get_visible());
@@ -230,6 +249,9 @@ impl Shell {
         Self {
             window,
             sidebar,
+            content_stack,
+            dashboard,
+            dashboard_button,
             account_sidebar,
             account_switcher,
             thread_sidebar,

@@ -166,6 +166,7 @@ impl State {
         self.viewer.set_vexpand(false);
         let mut parcels = self.parcel_widgets(&messages, &group);
         let mut tickets = self.ticket_widgets(&messages);
+        let mut receipts = self.receipt_widgets(&messages);
         let mut events = self.calendar_widgets(&messages);
         let threaded = messages
             .iter()
@@ -217,6 +218,7 @@ impl State {
             }
             widgets.append(&mut parcels[index]);
             widgets.append(&mut tickets[index]);
+            widgets.append(&mut receipts[index]);
             widgets.append(&mut events.before[index]);
             let hide_quotes = models::conversation::quoted_message_visible(
                 message,

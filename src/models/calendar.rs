@@ -1,4 +1,5 @@
 mod dates;
+pub(crate) mod encoding;
 mod export;
 mod ical;
 mod merge;

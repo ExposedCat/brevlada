@@ -76,7 +76,8 @@ impl State {
                     || header.attachments != preview.attachments
                     || header.attachment_details != preview.attachment_details
                     || header.parcels != preview.parcels
-                    || header.tickets != preview.tickets;
+                    || header.tickets != preview.tickets
+                    || header.receipts != preview.receipts;
                 header.list_preview = preview.list_preview;
                 header.display_prepared = preview.display_prepared;
                 header.remote_media = preview.remote_media;
@@ -90,6 +91,7 @@ impl State {
                 header.attachment_details = preview.attachment_details;
                 header.parcels = preview.parcels;
                 header.tickets = preview.tickets;
+                header.receipts = preview.receipts;
                 changed
             } else {
                 false
@@ -154,6 +156,7 @@ impl State {
             message.parcels = preview.parcels;
             message.calendar_events = preview.calendar_events;
             message.tickets = preview.tickets;
+            message.receipts = preview.receipts;
             message.unsubscribe = preview.unsubscribe.or(message.unsubscribe);
             self.update_body(&message);
             if self

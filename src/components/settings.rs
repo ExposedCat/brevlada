@@ -22,24 +22,29 @@ pub fn menu() -> (gtk::MenuButton, gio::SimpleAction) {
 }
 
 pub struct SettingsWindow {
-    pub window: adw::PreferencesWindow,
+    pub window: adw::Window,
+    pub toasts: adw::ToastOverlay,
     pub trust_all_senders: adw::SwitchRow,
     pub accounts: std::rc::Rc<super::account_settings::Accounts>,
     pub accounts_section: adw::ActionRow,
+    pub sync: std::rc::Rc<super::sync_settings::SyncSettings>,
+    pub sync_section: adw::ActionRow,
 }
 
 impl SettingsWindow {
     pub fn new(parent: &impl IsA<gtk::Window>, trust_all_senders: bool) -> Self {
-        let window = adw::PreferencesWindow::builder()
+        let window = adw::Window::builder()
             .title("Settings")
             .transient_for(parent)
             .modal(true)
             .destroy_with_parent(true)
-            .search_enabled(false)
             .default_width(theme::SETTINGS_WIDTH)
             .default_height(theme::SETTINGS_HEIGHT)
+            .width_request(theme::SETTINGS_MIN_WIDTH)
+            .height_request(theme::SETTINGS_MIN_HEIGHT)
             .build();
         window.set_application(parent.as_ref().application().as_ref());
+        let navigation = super::settings_navigation::SettingsNavigation::new(&window);
         let privacy = adw::PreferencesPage::builder()
             .title("Privacy")
             .icon_name("changes-prevent-symbolic")
@@ -52,15 +57,6 @@ impl SettingsWindow {
             .build();
         group.add(&trust_all_senders);
         privacy.add(&group);
-        let overview = adw::PreferencesPage::builder().title("Settings").build();
-        let sections = adw::PreferencesGroup::new();
-        sections.add(&section(
-            &window,
-            "Privacy",
-            "changes-prevent-symbolic",
-            &privacy,
-        ));
-        overview.add(&sections);
         let general = adw::PreferencesPage::builder()
             .title("General")
             .icon_name("preferences-system-symbolic")
@@ -79,47 +75,27 @@ impl SettingsWindow {
             .build();
         group.add(&autostart);
         general.add(&group);
-        sections.add(&section(
-            &window,
-            "General",
-            "preferences-system-symbolic",
-            &general,
-        ));
+        navigation.add_section("General", "preferences-system-symbolic", &general);
         let accounts = super::account_settings::Accounts::new();
-        let accounts_section = section(&window, "Accounts", "mail-unread-symbolic", &accounts.page);
-        sections.add(&accounts_section);
-        window.add(&overview);
+        let accounts_section =
+            navigation.add_section("Accounts", "mail-unread-symbolic", &accounts.page);
+        let sync = super::sync_settings::SyncSettings::new();
+        let sync_section =
+            navigation.add_section("Automatic sync", "view-refresh-symbolic", &sync.page);
+        navigation.add_section("Privacy", "changes-prevent-symbolic", &privacy);
+        let toasts = adw::ToastOverlay::new();
+        toasts.set_child(Some(&navigation.split));
+        window.set_content(Some(&toasts));
         Self {
             window,
+            toasts,
             trust_all_senders,
             accounts,
             accounts_section,
+            sync,
+            sync_section,
         }
     }
-}
-
-fn section(
-    window: &adw::PreferencesWindow,
-    title: &str,
-    icon: &str,
-    content: &adw::PreferencesPage,
-) -> adw::ActionRow {
-    let toolbar = adw::ToolbarView::builder().content(content).build();
-    toolbar.add_top_bar(&adw::HeaderBar::new());
-    let page = adw::NavigationPage::new(&toolbar, title);
-    let row = adw::ActionRow::builder()
-        .title(title)
-        .activatable(true)
-        .build();
-    row.add_prefix(&gtk::Image::from_icon_name(icon));
-    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-    let window = window.downgrade();
-    row.connect_activated(move |_| {
-        if let Some(window) = window.upgrade() {
-            window.push_subpage(&page);
-        }
-    });
-    row
 }
 
 #[cfg(test)]
@@ -141,8 +117,7 @@ mod tests {
         app.add_action(&autostart);
         let parent = adw::ApplicationWindow::new(&app);
         let settings = SettingsWindow::new(&parent, false);
-        let overview = settings.window.visible_page().unwrap();
-        let section = find_row(overview.upcast(), "General").unwrap();
+        let section = find_row(settings.window.clone().upcast(), "General").unwrap();
         section.emit_by_name::<()>("activated", &[]);
         let switch = find_row(
             settings.window.clone().upcast(),

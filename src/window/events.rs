@@ -2,7 +2,19 @@ use super::*;
 
 impl State {
     pub(super) fn event(self: &Rc<Self>, event: Event) {
+        match &event {
+            Event::CacheChanged(email, _)
+            | Event::CacheList(email, _, _)
+            | Event::CacheBody(email, _, _) => {
+                self.dashboard_cache_changed(email);
+            }
+            _ => {}
+        }
         match event {
+            Event::Dashboard(request, result) => self.dashboard_loaded(request, result),
+            Event::DashboardOpened(request, result) => {
+                self.dashboard_source_loaded(request, result)
+            }
             Event::NotificationActionStarted {
                 account,
                 validity,
@@ -58,6 +70,10 @@ impl State {
                 ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
                     self.render_conversation()
                 });
+                self.dashboard_cache_changed(&account);
+                if self.dashboard_visible() {
+                    self.render_dashboard();
+                }
             }
             Event::Unsubscribe {
                 account,
@@ -413,6 +429,7 @@ impl State {
                 self.dispatch_deferred_actions();
             }
             Event::Accounts(accounts) => {
+                self.dashboard_accounts(&accounts);
                 self.search_filters.set_accounts(&accounts);
                 self.refresh_account_title();
                 self.sync.set_sensitive(!accounts.is_empty());

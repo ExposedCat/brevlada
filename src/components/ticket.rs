@@ -21,8 +21,12 @@ fn detail(icon: &str, title: &str, value: &str) -> gtk::Box {
     icon.set_valign(gtk::Align::Start);
     row.append(&icon);
     let content = super::column("ticket-detail-content");
-    content.append(&text(title, "dim-label"));
-    content.append(&text(value, ""));
+    let title = text(title, "dim-label");
+    title.set_selectable(true);
+    content.append(&title);
+    let value = text(value, "");
+    value.set_selectable(true);
+    content.append(&value);
     row.append(&content);
     row
 }
@@ -35,20 +39,27 @@ fn link(url: &str, title: &str) -> gtk::Button {
 }
 
 pub fn card(reservation: &Reservation) -> gtk::Box {
+    with_actions(reservation).0
+}
+
+pub fn with_actions(reservation: &Reservation) -> (gtk::Box, gtk::FlowBox) {
     let card = super::column("ticket-card");
     card.set_spacing(theme::SPACING);
     let header = super::horizontal("ticket-header", theme::SMALL_SPACING);
-    let (icon, title) = match reservation.kind {
+    let (icon, kind) = match reservation.kind {
         Kind::Bus => ("ticket-symbolic", "Bus tickets"),
         Kind::Train => ("ticket-symbolic", "Train tickets"),
         Kind::Flight => ("airplane-mode-symbolic", "Flight reservation"),
         Kind::Event => ("ticket-symbolic", "Event tickets"),
         Kind::Ticket => ("ticket-symbolic", "Tickets"),
     };
-    header.append(&gtk::Image::from_icon_name(icon));
-    header.append(&text(title, "dim-label"));
+    let title = super::card_title(icon, &reservation.name);
+    title.set_tooltip_text(Some(kind));
+    title.set_hexpand(true);
+    header.append(&title);
     if let Some(status) = reservation.status_label() {
         let status_label = text(status, "ticket-status");
+        status_label.set_selectable(true);
         status_label.set_hexpand(false);
         status_label.add_css_class(match status {
             "Confirmed" => "ticket-confirmed",
@@ -58,7 +69,6 @@ pub fn card(reservation: &Reservation) -> gtk::Box {
         header.append(&status_label);
     }
     card.append(&header);
-    card.append(&text(&reservation.name, "title-2"));
     let provider = [
         reservation.provider.clone(),
         reservation.service.clone(),
@@ -113,19 +123,21 @@ pub fn card(reservation: &Reservation) -> gtk::Box {
     } else if let Some(holder) = &reservation.holder {
         card.append(&detail("avatar-default-symbolic", "Passenger", holder));
     }
+    let actions = super::card_actions();
+    card.append(&actions);
     if let Some(url) = reservation
         .url
         .as_deref()
         .filter(|url| ticket::web_url(url))
     {
-        card.append(&link(url, "View Booking"));
+        super::append_action(&actions, &link(url, "View Booking"));
     }
     if let Some(event) = reservation.calendar_event() {
         let error = super::error_label();
-        card.append(&super::calendar::save(&event, &error));
+        super::append_action(&actions, &super::calendar::save(&event, &error));
         card.append(&error);
     }
-    card
+    (card, actions)
 }
 
 #[cfg(test)]

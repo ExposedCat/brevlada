@@ -129,7 +129,7 @@ impl State {
         widgets
     }
 
-    fn calendar_reply(
+    pub(super) fn calendar_reply(
         self: &Rc<Self>,
         account: Account,
         message: Message,
@@ -154,9 +154,13 @@ impl State {
             self.toast
                 .add_toast(adw::Toast::new(&format!("Could not send RSVP: {error}")));
         }
-        ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
-            self.render_conversation()
-        });
+        if self.dashboard_visible() {
+            self.render_dashboard();
+        } else {
+            ui::scroll_position::preserve(&self.viewer_scroll, &self.viewer, || {
+                self.render_conversation()
+            });
+        }
     }
 
     pub(super) fn calendar_history_loaded(

@@ -1,11 +1,13 @@
-use crate::models::parcel::{Parcel, Step};
+use crate::models::parcel::Parcel;
 use adw::prelude::*;
 
 mod details;
+mod timeline;
 
 fn label(value: &str, class: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(value));
     label.set_xalign(0.0);
+    label.set_selectable(true);
     label.set_wrap(true);
     if !class.is_empty() {
         label.add_css_class(class);
@@ -15,58 +17,6 @@ fn label(value: &str, class: &str) -> gtk::Label {
 
 fn date(value: &str) -> String {
     details::date(value)
-}
-
-fn step_button(step: &Step, complete: bool, single: bool) -> gtk::Button {
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let icon = gtk::Image::from_icon_name("truck-symbolic");
-    icon.set_valign(gtk::Align::Center);
-    if !single {
-        icon.add_css_class(if complete {
-            "parcel-step-done"
-        } else {
-            "parcel-step-pending"
-        });
-    }
-    content.append(&icon);
-    if let Some(name) = &step.name {
-        let text = label(
-            name,
-            if single {
-                "parcel-single-step-name"
-            } else {
-                "parcel-step-name"
-            },
-        );
-        content.append(&text);
-    }
-    let button = gtk::Button::builder()
-        .child(&content)
-        .valign(gtk::Align::Center)
-        .build();
-    button.add_css_class("flat");
-    button.add_css_class(if single {
-        "parcel-single-step"
-    } else {
-        "parcel-step"
-    });
-    let step = step.clone();
-    button.connect_clicked(move |button| {
-        let details = [
-            step.date.as_ref().map(|date_value| date(date_value)),
-            step.location.clone(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("\n");
-        super::details::popup(
-            button,
-            step.name.as_deref().unwrap_or("Delivery update"),
-            &details,
-        );
-    });
-    button
 }
 
 fn order_popup(anchor: &gtk::Button, parcel: &Parcel, timestamp: i64) -> adw::Window {
@@ -173,21 +123,33 @@ fn order_popup(anchor: &gtk::Button, parcel: &Parcel, timestamp: i64) -> adw::Wi
 }
 
 pub fn card(parcel: &Parcel, timestamp: i64) -> gtk::Box {
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    card.add_css_class("parcel-card");
+    with_actions(parcel, timestamp).0
+}
+
+pub fn with_actions(parcel: &Parcel, timestamp: i64) -> (gtk::Box, gtk::FlowBox) {
+    let card = super::column("parcel-card");
+    card.set_spacing(crate::theme::SPACING);
     if let Some(item) = &parcel.item {
-        card.append(&label(item, "title-2"));
+        card.append(&super::card_title("truck-symbolic", item));
     }
-    if let Some(until) = &parcel.arrival_until {
-        let arrival = if let Some(from) = &parcel.arrival_from {
+    if let Some(until) = &parcel.arrival_until
+        && !parcel.completed()
+    {
+        let arrival = if parcel.overdue(chrono::Local::now()) {
+            format!("Should have arrived by {}", date(until))
+        } else if let Some(from) = &parcel.arrival_from {
             format!("Arriving on {} – {}", date(from), date(until))
         } else {
             format!("Arriving by {}", date(until))
         };
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.append(&gtk::Image::from_icon_name("truck-symbolic"));
-        row.append(&label(&arrival, "title-4"));
-        card.append(&row);
+        if parcel.item.is_none() {
+            card.append(&super::card_title("truck-symbolic", &arrival));
+        } else {
+            card.append(&label(&arrival, "dim-label"));
+        }
+    }
+    if card.first_child().is_none() {
+        card.append(&super::card_title("truck-symbolic", "Delivery"));
     }
     let delivery = [
         parcel
@@ -205,64 +167,15 @@ pub fn card(parcel: &Parcel, timestamp: i64) -> gtk::Box {
     if !delivery.is_empty() {
         card.append(&label(&delivery, "dim-label"));
     }
-    if parcel.steps.is_empty()
-        && let Some(status) = parcel
-            .details
-            .get("deliveryStatus")
-            .and_then(|value| value.as_str())
-        && !status.contains("://")
-    {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        row.add_css_class("parcel-single-step");
-        row.append(&gtk::Image::from_icon_name("truck-symbolic"));
-        row.append(&label(status, "parcel-single-step-name"));
-        card.append(&row);
-    }
-    let mut steps = parcel.steps.clone();
-    let expected_step = !steps.is_empty()
-        && parcel.arrival_until.is_some()
-        && !steps.iter().any(|step| {
-            step.name
-                .as_deref()
-                .is_some_and(|name| name.eq_ignore_ascii_case("delivered"))
-        });
-    if expected_step {
-        steps.push(Step {
-            name: Some("Expected delivery".into()),
-            date: parcel.arrival_until.clone(),
-            location: None,
-        });
-    }
-    if !steps.is_empty() {
-        let timeline = gtk::Box::new(gtk::Orientation::Horizontal, crate::theme::SPACING);
-        timeline.add_css_class("parcel-timeline");
-        let single = steps.len() == 1;
-        for (index, step) in steps.iter().enumerate() {
-            if index > 0 {
-                let line = gtk::Separator::new(gtk::Orientation::Horizontal);
-                line.set_hexpand(true);
-                line.set_valign(gtk::Align::Center);
-                line.add_css_class("parcel-line");
-                timeline.append(&line);
-            }
-            let pending = expected_step && index == steps.len() - 1;
-            timeline.append(&step_button(step, !pending, single));
-        }
-        let scroll = gtk::ScrolledWindow::builder()
-            .child(&timeline)
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .build();
-        card.append(&scroll);
-    }
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    card.append(&timeline::view(parcel));
+    let actions = super::card_actions();
     if let Some(url) = &parcel.tracking_url
         && (url.starts_with("https://") || url.starts_with("http://"))
     {
         let track = super::action_button("web-browser-symbolic", "Track Package");
         let url = url.clone();
         track.connect_clicked(move |_| super::links::open(&url));
-        actions.append(&track);
+        super::append_action(&actions, &track);
     }
     let order = super::action_button("document-properties-symbolic", "Order Details");
     let order_parcel = parcel.clone();
@@ -270,7 +183,7 @@ pub fn card(parcel: &Parcel, timestamp: i64) -> gtk::Box {
     order.connect_clicked(move |button| {
         order_popup(button, &order_parcel, timestamp);
     });
-    actions.append(&order);
+    super::append_action(&actions, &order);
     if parcel.order_url.is_none()
         && let Some(number) = order_number
     {
@@ -278,15 +191,16 @@ pub fn card(parcel: &Parcel, timestamp: i64) -> gtk::Box {
         copy.add_css_class("flat");
         copy.set_tooltip_text(Some("Copy order number"));
         copy.connect_clicked(move |button| button.clipboard().set_text(&number));
-        actions.append(&copy);
+        super::append_action(&actions, &copy);
     }
     card.append(&actions);
-    card
+    (card, actions)
 }
 
 #[cfg(test)]
 mod diagnostics {
     use super::*;
+    use crate::models::parcel::Step;
 
     fn descendants(widget: &gtk::Widget, output: &mut Vec<gtk::Widget>) {
         output.push(widget.clone());
@@ -475,8 +389,126 @@ mod diagnostics {
     }
 
     #[test]
+    #[ignore = "Requires a private graphical session to measure responsive parcel timelines"]
+    fn four_point_timeline_fits_without_scrolling_and_connectors_shrink() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        gtk::gio::resources_register_include!("brevlada.gresource").unwrap();
+        gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap())
+            .add_resource_path("/org/gtk/example/icons");
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
+        let css = gtk::CssProvider::new();
+        let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let reported = errors.clone();
+        css.connect_parsing_error(move |_, _, error| reported.borrow_mut().push(error.to_string()));
+        css.load_from_string(crate::theme::CSS);
+        assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().unwrap(),
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        let mut parcel = parcel(
+            ["Order placed", "Shipped", "At local depot"]
+                .into_iter()
+                .map(|name| Step {
+                    name: Some(name.into()),
+                    date: Some("2026-10-01T12:00:00Z".into()),
+                    location: None,
+                })
+                .collect(),
+        );
+        parcel.arrival_until = Some("2026-10-05T18:00:00Z".into());
+        parcel.order_url = Some("https://example.com/order/123".into());
+        parcel.tracking_url = Some("https://example.com/track/123".into());
+        let (card, actions) = with_actions(&parcel, 0);
+        super::super::append_action(
+            &actions,
+            &super::super::action_button("mail-unread-symbolic", "Open email"),
+        );
+        let window = gtk::Window::builder()
+            .title("Parcel layout diagnostic")
+            .child(&card)
+            .default_width(760)
+            .build();
+        window.present();
+        let settle = || {
+            gtk::glib::MainContext::default().block_on(gtk::glib::timeout_future(
+                std::time::Duration::from_millis(200),
+            ))
+        };
+        settle();
+        let mut widgets = Vec::new();
+        descendants(card.upcast_ref(), &mut widgets);
+        let points: Vec<_> = widgets
+            .iter()
+            .filter(|widget| widget.has_css_class("parcel-step"))
+            .collect();
+        let lines: Vec<_> = widgets
+            .iter()
+            .filter(|widget| widget.has_css_class("parcel-line"))
+            .collect();
+        assert_eq!(points.len(), 4);
+        assert_eq!(lines.len(), 3);
+        assert!(
+            !widgets
+                .iter()
+                .any(|widget| widget.is::<gtk::ScrolledWindow>())
+        );
+        let wide = lines.iter().map(|line| line.width()).sum::<i32>();
+        window.set_default_size(560, 0);
+        settle();
+        assert!(window.width() <= 560, "window grew to {}", window.width());
+        for point in &points {
+            let bounds = point.compute_bounds(&card).unwrap();
+            assert!(bounds.x() >= 0.0 && bounds.x() + bounds.width() <= card.width() as f32);
+        }
+        assert!(lines.iter().map(|line| line.width()).sum::<i32>() < wide);
+        if let Ok(path) = std::env::var("BREVLADA_TIMELINE_SCREENSHOT") {
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(&window)).snapshot(
+                &snapshot,
+                window.width() as f64,
+                window.height() as f64,
+            );
+            window
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None)
+                .save_to_png(path)
+                .unwrap();
+        }
+        window.set_default_size(560, 0);
+        settle();
+        actions
+            .last_child()
+            .unwrap()
+            .set_state_flags(gtk::StateFlags::PRELIGHT, false);
+        settle();
+        if let Ok(path) = std::env::var("BREVLADA_TIMELINE_WIDE_SCREENSHOT") {
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(&window)).snapshot(
+                &snapshot,
+                window.width() as f64,
+                window.height() as f64,
+            );
+            window
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None)
+                .save_to_png(path)
+                .unwrap();
+        }
+        if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+            gtk::glib::MainContext::default()
+                .block_on(gtk::glib::timeout_future(std::time::Duration::from_secs(8)));
+        }
+        window.close();
+    }
+
+    #[test]
     #[ignore = "Requires a graphical session to inspect GTK widgets"]
-    fn single_status_and_step_use_truck_and_normal_text() {
+    fn missing_history_uses_two_timeline_points_with_an_unknown_sent_date() {
         gtk::init().unwrap();
         adw::init().unwrap();
         for steps in [
@@ -490,22 +522,25 @@ mod diagnostics {
             let card = card(&parcel(steps), 0);
             let mut widgets = Vec::new();
             descendants(card.upcast_ref(), &mut widgets);
-            assert!(
-                widgets
-                    .iter()
-                    .any(|widget| widget.has_css_class("parcel-single-step-name"))
-            );
-            assert!(widgets.iter().any(|widget| {
-                widget
-                    .clone()
-                    .downcast::<gtk::Image>()
-                    .is_ok_and(|image| image.icon_name().as_deref() == Some("truck-symbolic"))
-            }));
-            assert!(
-                !widgets
-                    .iter()
-                    .any(|widget| widget.has_css_class("dim-label"))
-            );
+            let points: Vec<_> = widgets
+                .iter()
+                .filter(|widget| widget.has_css_class("parcel-step"))
+                .collect();
+            assert_eq!(points.len(), 2);
+            let texts: Vec<_> = widgets
+                .iter()
+                .filter_map(|widget| widget.downcast_ref::<gtk::Label>())
+                .map(|label| label.text().to_string())
+                .collect();
+            assert!(!texts.iter().any(|text| text == "Unknown date"));
+            for point in &points {
+                let content = point.first_child().and_downcast::<gtk::Box>().unwrap();
+                assert_eq!(content.orientation(), gtk::Orientation::Horizontal);
+                assert!(content.first_child().unwrap().is::<gtk::Image>());
+                assert!(content.last_child().unwrap().is::<gtk::Label>());
+            }
+            assert!(texts.iter().any(|text| text == "Expected delivery"));
+            assert!(points.last().unwrap().has_css_class("parcel-step-inferred"));
         }
     }
 }

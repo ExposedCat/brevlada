@@ -36,7 +36,8 @@
 
 .parcel-card,
 .calendar-card,
-.ticket-card {
+.ticket-card,
+.receipt-card {
     border-radius: var(--spacing-md);
     background: var(--headerbar-bg-color);
     border: 1px solid var(--borders);
@@ -81,21 +82,15 @@
 }
 
 .parcel-step {
-    min-width: 86px;
+    min-width: 0;
 }
 
 .parcel-step-name {
     font-size: 0.85em;
 }
 
-.parcel-single-step {
-    color: var(--color-text);
-}
-
-.parcel-single-step-name {
-    font-size: 1em;
-    color: var(--color-text);
-    opacity: 1;
+.parcel-step-inferred {
+    color: alpha(var(--color-text), 0.65);
 }
 
 .parcel-step-done {
@@ -103,11 +98,11 @@
 }
 
 .parcel-step-pending {
-    opacity: 0.65;
+    color: alpha(var(--color-text), 0.65);
 }
 
 .parcel-line {
-    min-width: 24px;
+    min-width: 0;
     min-height: 2px;
 }
 

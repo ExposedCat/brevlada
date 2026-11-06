@@ -179,8 +179,7 @@ mod diagnostics {
 
     fn statuses(widget: &gtk::Widget) -> Vec<String> {
         let mut result = Vec::new();
-        if (widget.has_css_class("parcel-step-name")
-            || widget.has_css_class("parcel-single-step-name"))
+        if widget.has_css_class("parcel-step-name")
             && let Some(label) = widget.downcast_ref::<gtk::Label>()
         {
             result.push(label.text().to_string());
@@ -292,7 +291,10 @@ mod diagnostics {
             }
             _ => panic!("Expected delivery lookup"),
         }
-        assert_eq!(statuses(state.viewer.upcast_ref()), ["In transit"]);
+        assert_eq!(
+            statuses(state.viewer.upcast_ref()),
+            ["In transit", "Expected delivery"]
+        );
         state.event(Event::ParcelHistory(
             state.generation.get(),
             state.selection.get() + 1,
@@ -300,7 +302,10 @@ mod diagnostics {
             parcel::Identifier::Order("123".into()),
             vec![message(3, Some("123"), "Delivered")],
         ));
-        assert_eq!(statuses(state.viewer.upcast_ref()), ["In transit"]);
+        assert_eq!(
+            statuses(state.viewer.upcast_ref()),
+            ["In transit", "Expected delivery"]
+        );
         state.event(Event::ParcelHistory(
             state.generation.get(),
             state.selection.get(),
@@ -308,7 +313,10 @@ mod diagnostics {
             parcel::Identifier::Order("123".into()),
             vec![message(1, Some("123"), "Sent")],
         ));
-        assert_eq!(statuses(state.viewer.upcast_ref()), ["Sent", "In transit"]);
+        assert_eq!(
+            statuses(state.viewer.upcast_ref()),
+            ["Sent", "In transit", "Expected delivery"]
+        );
         state.event(Event::CacheBody(
             "me@example.com".into(),
             "INBOX".into(),

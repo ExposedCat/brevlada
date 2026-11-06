@@ -1,4 +1,21 @@
 .message-expand { margin: 6px 0 6px 12px; }
+.dashboard { background: @window_bg_color; }
+.dashboard-header { background: transparent; box-shadow: none; }
+.date-range-popover { margin: var(--spacing-md); }
+.dashboard-type-options { margin: var(--spacing-md); }
+.dashboard-content { margin: var(--spacing-lg); }
+.dashboard-card { margin-bottom: 0; }
+.dashboard-series { margin: var(--spacing-md); }
+.card-title > image { -gtk-icon-size: 1em; margin-top: 0.1em; }
+.card-actions > flowboxchild,
+.card-actions > flowboxchild:hover,
+.card-actions > flowboxchild:active,
+.card-actions > flowboxchild:focus {
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+}
+.dashboard-navigation { margin: var(--spacing-sm); padding: var(--spacing-md); }
 .message-list-loading-spinner { min-width: 32px; min-height: 32px; }
 
 .attachment-section { padding: var(--spacing-md); }

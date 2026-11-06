@@ -235,6 +235,7 @@ pub fn parse(source: &str) -> Vec<Event> {
         }
         fold("END:VCALENDAR", &mut calendar);
         event.calendar = Some(calendar);
+        super::encoding::repair(&mut event);
         events.push(event);
     }
     events

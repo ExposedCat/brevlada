@@ -461,7 +461,7 @@ fn date_input(parent: &gtk::Box, label: &str) -> (gtk::Entry, gtk::ToggleButton)
 
 type DateTarget = Rc<RefCell<Option<gtk::glib::WeakRef<gtk::Entry>>>>;
 
-fn date_inputs(parent: &gtk::Box) -> (gtk::Entry, gtk::Entry) {
+pub(super) fn date_inputs(parent: &gtk::Box) -> (gtk::Entry, gtk::Entry) {
     let (from, from_pick) = date_input(parent, "From");
     let (to, to_pick) = date_input(parent, "To");
     // A single popup owns both the entries and calendar. Nested autohide

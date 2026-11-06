@@ -23,38 +23,36 @@ pub fn with_participants(card: &gtk::Box, participants: &gtk::Widget) -> gtk::Bo
     event
 }
 
-fn detail(icon: &str, text: &str) -> gtk::Box {
-    let row = super::horizontal("calendar-detail", theme::SMALL_SPACING);
-    let icon = gtk::Image::from_icon_name(icon);
-    icon.set_valign(gtk::Align::Start);
-    row.append(&icon);
-    let label = super::label(text, "");
-    label.set_halign(gtk::Align::Fill);
-    label.set_wrap(true);
-    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    label.set_ellipsize(gtk::pango::EllipsizeMode::None);
-    row.append(&label);
-    row
-}
-
 pub fn card(
     event: &Event,
     email: &str,
     pending: bool,
     respond: impl Fn(Response) + 'static,
 ) -> gtk::Box {
+    with_actions(event, email, pending, respond).0
+}
+
+pub fn with_actions(
+    event: &Event,
+    email: &str,
+    pending: bool,
+    respond: impl Fn(Response) + 'static,
+) -> (gtk::Box, gtk::FlowBox) {
     let card = super::column("calendar-card");
     card.set_spacing(theme::SPACING);
-    card.append(&super::label(&event.name, "title-2"));
+    card.append(&super::card_title("view-pin-symbolic", &event.name));
     let date = event.date_label();
     if !date.is_empty() {
-        card.append(&detail("x-office-calendar-symbolic", &date));
+        card.append(&super::card_detail("x-office-calendar-symbolic", &date));
     }
     if let Some(location) = &event.location {
-        card.append(&detail("location-services-active-symbolic", location));
+        card.append(&super::card_detail(
+            "location-services-active-symbolic",
+            location,
+        ));
     }
     if let Some(organizer) = &event.organizer {
-        card.append(&super::label(
+        card.append(&super::selectable_label(
             &format!("Organized by {organizer}"),
             "dim-label",
         ));
@@ -68,7 +66,7 @@ pub fn card(
             _ => None,
         };
         if let Some(status) = status {
-            card.append(&super::label(status, "dim-label"));
+            card.append(&super::selectable_label(status, "dim-label"));
         }
     }
     let error = super::label("", "error");
@@ -78,9 +76,11 @@ pub fn card(
     if let Some(response) = actions::responses(event, email, pending, respond) {
         card.append(&response);
     }
-    card.append(&actions::save(event, &error));
+    let actions = super::card_actions();
+    super::append_action(&actions, &self::actions::save(event, &error));
+    card.append(&actions);
     card.append(&error);
-    card
+    (card, actions)
 }
 
 #[cfg(test)]
@@ -153,7 +153,16 @@ mod tests {
         assert!(actions[0].has_css_class("suggested-action"));
         let row = actions[0].parent().unwrap();
         assert_eq!(row.first_child().as_ref(), Some(actions[0].upcast_ref()));
-        assert_eq!(actions[3].parent().as_ref(), Some(attendee.upcast_ref()));
+        assert_eq!(
+            actions[3]
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .as_ref(),
+            Some(attendee.upcast_ref())
+        );
         let mut texts = Vec::new();
         labels(attendee.upcast_ref(), &mut texts);
         assert!(texts.iter().any(|text| text == "Your response:"));

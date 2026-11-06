@@ -14,11 +14,15 @@ pub mod avatar;
 mod bodies;
 #[path = "calendar_storage.rs"]
 mod calendar;
+#[path = "calendar_encoding.rs"]
+mod calendar_encoding;
 #[cfg(test)]
 #[path = "storage_concurrency.rs"]
 mod concurrency_tests;
 #[path = "conversation_storage.rs"]
 mod conversation;
+#[path = "dashboard_storage.rs"]
+mod dashboard;
 #[path = "sync_history.rs"]
 mod history;
 #[path = "message_storage.rs"]
@@ -35,6 +39,8 @@ pub(super) mod reconciliation;
 mod senders;
 #[path = "sync_settings.rs"]
 mod settings;
+#[path = "structured_storage.rs"]
+mod structured;
 #[path = "sync_storage.rs"]
 mod sync;
 

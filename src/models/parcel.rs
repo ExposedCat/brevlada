@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 mod history;
+mod identity;
+mod state;
+mod timeline;
 pub use history::{Identifier, identifier, sequence};
+pub use state::combine;
+pub use timeline::Point;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Parcel {
@@ -28,6 +33,47 @@ pub struct Step {
     pub name: Option<String>,
     pub date: Option<String>,
     pub location: Option<String>,
+}
+
+impl Parcel {
+    pub fn completed(&self) -> bool {
+        let completed = |name: &str| {
+            matches!(
+                state::label(name).as_str(),
+                "Delivered" | "Cancelled" | "Returned"
+            )
+        };
+        self.details["deliveryStatus"]
+            .as_str()
+            .is_some_and(completed)
+            || self
+                .steps
+                .iter()
+                .filter_map(|step| step.name.as_deref())
+                .any(completed)
+    }
+
+    pub fn overdue(&self, now: chrono::DateTime<chrono::Local>) -> bool {
+        if self.completed() {
+            return false;
+        }
+        let Some(until) = self.arrival_until.as_deref() else {
+            return false;
+        };
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(until, "%Y-%m-%d") {
+            return date < now.date_naive();
+        }
+        chrono::DateTime::parse_from_rfc3339(until)
+            .map(|date| date.timestamp() < now.timestamp())
+            .unwrap_or_else(|_| {
+                ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"]
+                    .iter()
+                    .any(|format| {
+                        chrono::NaiveDateTime::parse_from_str(until, format)
+                            .is_ok_and(|date| date < now.naive_local())
+                    })
+            })
+    }
 }
 
 pub fn parse(html: &Html) -> Vec<Parcel> {
@@ -231,7 +277,7 @@ fn from_value(value: &Value) -> Parcel {
     let tracking_action_url = field(action, "url")
         .or_else(|| field(action, "target"))
         .or_else(|| field(&action["target"], "urlTemplate"));
-    Parcel {
+    let mut parcel = Parcel {
         item,
         arrival_from: field(value, "expectedArrivalFrom"),
         arrival_until: field(value, "expectedArrivalUntil")
@@ -242,7 +288,9 @@ fn from_value(value: &Value) -> Parcel {
         order_number: field(order, "orderNumber").or_else(|| field(value, "orderNumber")),
         steps,
         details: value.clone(),
-    }
+    };
+    parcel.hydrate_identity();
+    parcel
 }
 
 #[cfg(test)]

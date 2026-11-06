@@ -69,6 +69,7 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS rust_mailboxes (
 
 pub(super) fn run(transaction: &Transaction<'_>) -> Result<()> {
     transaction.execute_batch(SCHEMA)?;
+    super::structured::schema(transaction)?;
     if exists(transaction, "rust_messages")? {
         import_messages(transaction)?;
     }
@@ -79,6 +80,8 @@ pub(super) fn run(transaction: &Transaction<'_>) -> Result<()> {
         import_legacy(transaction)?;
     }
     super::conversation::migrate(transaction)?;
+    super::calendar_encoding::migrate(transaction)?;
+    super::structured::migrate(transaction)?;
     Ok(())
 }
 
@@ -197,6 +200,7 @@ fn import_legacy(transaction: &Transaction<'_>) -> Result<()> {
                 parcels: Vec::new(),
                 calendar_events: Vec::new(),
                 tickets: Vec::new(),
+                receipts: Vec::new(),
                 search_match: false,
                 search_rank: 0,
                 list_recipient: None,

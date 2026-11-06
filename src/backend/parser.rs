@@ -120,7 +120,7 @@ fn bodies(mail: &mime::Part<'_>, message: &mut Message, inline: bool) -> Result<
             .get("filename")
             .is_some_and(|name| name.to_ascii_lowercase().ends_with(".ics"))
     {
-        let events = crate::models::calendar::parse_ical(&mail.body()?);
+        let events = crate::models::calendar::parse_ical(&mail.calendar_body()?);
         calendar_rendered = !events.is_empty();
         message.calendar_events.extend(events);
     }

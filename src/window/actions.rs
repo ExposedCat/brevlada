@@ -33,6 +33,10 @@ impl State {
     }
 
     pub(super) fn load(self: &Rc<Self>) {
+        if self.dashboard_visible() {
+            self.refresh_dashboard();
+            return;
+        }
         let Some(account) = self.account.borrow().clone() else {
             return;
         };
@@ -98,6 +102,9 @@ impl State {
         folder: String,
         preserve_search: bool,
     ) {
+        self.content_stack.set_visible_child_name("mail");
+        self.dashboard_button
+            .unset_state_flags(gtk::StateFlags::CHECKED);
         if !preserve_search {
             self.cancel_search(false);
         }

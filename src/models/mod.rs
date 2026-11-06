@@ -2,11 +2,13 @@ pub mod action_target;
 pub mod attachment;
 pub mod calendar;
 pub mod conversation;
+pub mod dashboard;
 pub mod draft;
 pub mod html;
 pub mod parcel;
 pub mod pending_actions;
 pub mod read_state;
+pub mod receipt;
 pub mod response;
 mod schema;
 pub mod search;
@@ -116,6 +118,8 @@ pub struct Message {
     #[serde(default)]
     pub tickets: Vec<ticket::Reservation>,
     #[serde(default)]
+    pub receipts: Vec<receipt::Receipt>,
+    #[serde(default)]
     pub body_loaded: bool,
     /// Prepared on a cache worker; never persisted or recomputed while scrolling.
     #[serde(skip)]
@@ -157,6 +161,9 @@ impl Message {
             self.tickets = ticket::parse(&html);
         }
         if self.body_loaded {
+            if self.receipts.is_empty() {
+                self.receipts = receipt::parse_in(&html);
+            }
             if self.parcels.is_empty() {
                 self.parcels = parcel::parse_message_in(self, &html);
             }
@@ -202,6 +209,7 @@ impl Message {
             list_preview: preview.then(|| self.list_preview.clone()).flatten(),
             calendar_events: self.calendar_events.clone(),
             tickets: self.tickets.clone(),
+            receipts: self.receipts.clone(),
             display_prepared: true,
             search_match: self.search_match,
             search_rank: self.search_rank,

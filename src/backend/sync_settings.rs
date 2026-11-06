@@ -3,6 +3,16 @@ use anyhow::Result;
 use rusqlite::params;
 
 impl Storage {
+    pub fn set_sync_folders(&self, account: &str, folders: &[String]) -> Result<()> {
+        let _write = self.1.lock()?;
+        self.0.execute(
+            "INSERT INTO rust_sync_settings (account_id,folders) VALUES (?1,?2)
+             ON CONFLICT(account_id) DO UPDATE SET folders=excluded.folders",
+            params![account, serde_json::to_string(folders)?],
+        )?;
+        Ok(())
+    }
+
     pub fn sync_folders(&self, account: &str) -> Result<Vec<String>> {
         let _write = self.1.lock()?;
         self.0.execute(
@@ -36,19 +46,9 @@ mod tests {
         assert_eq!(storage.sync_folders("existing").unwrap(), ["INBOX"]);
         assert_eq!(storage.sync_folders("new").unwrap(), ["INBOX"]);
         storage
-            .0
-            .execute(
-                "UPDATE rust_sync_settings SET folders=?2 WHERE account_id=?1",
-                params!["existing", r#"["INBOX","Archive"]"#],
-            )
+            .set_sync_folders("existing", &["INBOX".into(), "Archive".into()])
             .unwrap();
-        storage
-            .0
-            .execute(
-                "UPDATE rust_sync_settings SET folders='[]' WHERE account_id='new'",
-                [],
-            )
-            .unwrap();
+        storage.set_sync_folders("new", &[]).unwrap();
         drop(storage);
         let storage = Storage::open(&path).unwrap();
         assert_eq!(

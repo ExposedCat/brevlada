@@ -6,6 +6,7 @@ mod cache_reconciliation;
 mod calendar;
 mod compose_controls;
 mod conversation;
+mod dashboard;
 mod drafts;
 mod events;
 mod lifecycle;
@@ -16,6 +17,7 @@ mod notifications;
 mod parcel_history;
 mod previews;
 mod read_state;
+mod receipts;
 mod rendering;
 #[cfg(test)]
 mod response_tests;
@@ -25,6 +27,7 @@ mod sender_actions;
 mod sender_pane;
 mod settings;
 mod sorting;
+mod sync_settings;
 mod tickets;
 mod undo;
 mod undo_focus;
@@ -88,6 +91,9 @@ struct State {
     settings: RefCell<models::settings::Settings>,
     downloaded_media: RefCell<HashSet<(String, String, u32, String)>>,
     sidebar: gtk::Box,
+    content_stack: gtk::Stack,
+    dashboard: dashboard::Dashboard,
+    dashboard_button: gtk::Button,
     account_sidebar: ui::motion::Sidebar,
     account_switcher: ui::account_switcher::AccountSwitcher,
     restore_accounts_on_back: Cell<bool>,
@@ -390,6 +396,9 @@ impl State {
         let ui::shell::Shell {
             window,
             sidebar,
+            content_stack,
+            dashboard,
+            dashboard_button,
             account_sidebar,
             account_switcher,
             thread_sidebar,
@@ -468,6 +477,9 @@ impl State {
             settings: RefCell::default(),
             downloaded_media: RefCell::new(load_downloaded_media()),
             sidebar,
+            content_stack,
+            dashboard: dashboard::Dashboard::new(dashboard),
+            dashboard_button,
             account_sidebar,
             account_switcher,
             thread_sidebar,
@@ -538,6 +550,7 @@ impl State {
             });
         }
         state.connect_lists();
+        state.connect_dashboard();
         let weak = Rc::downgrade(&state);
         ui::mail_shortcuts::attach_undo(&window, &state.composers, move || {
             weak.upgrade().is_some_and(|state| state.undo_action(None))
@@ -551,6 +564,9 @@ impl State {
                 let Some(state) = weak.upgrade() else {
                     return false;
                 };
+                if state.dashboard_visible() {
+                    return false;
+                }
                 if state.selected_list_action(action.clone()) {
                     return true;
                 }
@@ -597,6 +613,327 @@ impl State {
 #[cfg(test)]
 mod diagnostics {
     use super::*;
+
+    #[test]
+    #[ignore = "Requires a private graphical session; uses fixture accounts and a recording worker"]
+    fn dashboard_switches_accounts_ignores_stale_results_and_opens_source_folder() {
+        use models::dashboard::{Content, Source};
+        let (worker, commands) = worker::Worker::recording();
+        let state =
+            unread_test_state_with_worker("org.example.BrevladaDashboardDiagnostic", worker);
+        gtk::gio::resources_register_include!("brevlada.gresource").unwrap();
+        let window = state.toast.root().and_downcast::<gtk::Window>().unwrap();
+        let first = state.account.borrow().clone().unwrap();
+        let second = Account {
+            email: "work@example.com".into(),
+            ..first.clone()
+        };
+        state.event(Event::Accounts(vec![first, second.clone()]));
+        let next_request = || {
+            commands
+                .try_iter()
+                .find_map(|command| match command {
+                    Command::Dashboard {
+                        request,
+                        accounts,
+                        range,
+                    } => Some((request, accounts, range)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        state.dashboard_button.emit_clicked();
+        let (stale, accounts, range) = next_request();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(range, models::dashboard::Range::Month);
+        assert!(state.dashboard_visible());
+        state
+            .dashboard
+            .view
+            .accounts
+            .widget
+            .activate_action("account.select", Some(&second.email.to_variant()))
+            .unwrap();
+        let (request, accounts, _) = next_request();
+        assert_eq!(accounts.as_slice(), std::slice::from_ref(&second.email));
+        state.event(Event::Dashboard(stale, Ok(Vec::new())));
+        assert!(
+            labels(state.dashboard.view.widget.clone().upcast())
+                .iter()
+                .any(|text| text == "Loading dashboard…")
+        );
+        let now = chrono::Utc::now().timestamp();
+        let mut message = Message {
+            uid: 42, uid_validity: Some(7), message_id: "dashboard-source".into(),
+            sender: "Shop <shop@example.com>".into(), subject: "Your order is on the way".into(), timestamp: now,
+            calendar_events: vec![models::calendar::Event {
+                uid: Some("workshop".into()), name: "Design workshop".into(),
+                start: (chrono::Utc::now() + chrono::Duration::days(2)).to_rfc3339(),
+                location: Some("Studio, Berlin".into()), ..Default::default()
+            }],
+            body_html: r#"<script type="application/ld+json">{"@graph":[{"@type":"ParcelDelivery","itemShipped":"USB-C charging hub","carrier":{"name":"Parcel Co"},"orderNumber":"123","deliveryStatus":"In transit"},{"@type":"Order","orderNumber":"123","price":"49.90","priceCurrency":"EUR","seller":{"name":"Hardware Store"},"orderDate":"ORDER_DATE"}]}</script>"#.replace("ORDER_DATE", &chrono::Local::now().date_naive().to_string()),
+            ..Default::default()
+        };
+        message.parcels = models::parcel::parse_message(&message);
+        message.receipts = models::receipt::parse(&message.body_html);
+        message.parcels[0].tracking_url = Some("https://example.com/track/123".into());
+        message.parcels[0].order_url = Some("https://example.com/order/123".into());
+        message.parcels[0].arrival_until = Some(
+            (chrono::Local::now() - chrono::Duration::days(1))
+                .date_naive()
+                .to_string(),
+        );
+        let mut other = message.clone();
+        other.message_id = "second-parcel".into();
+        other.parcels[0].order_number = Some("456".into());
+        other.parcels[0].order_url = Some("https://example.com/order/456".into());
+        other.parcels[0].tracking_url = Some("https://example.com/track/456".into());
+        other.parcels[0].item = Some("Running shoes".into());
+        other.calendar_events.clear();
+        other.body_html.clear();
+        let sources = [message.clone(), other].map(|message| Source {
+            account: second.email.clone(),
+            folder: "Purchases".into(),
+            message,
+        });
+        let entries =
+            models::dashboard::entries(sources.into(), now, models::dashboard::Range::default());
+        assert_eq!(entries.len(), 4);
+        state.event(Event::Dashboard(request, Ok(entries.clone())));
+        let presets = state
+            .dashboard
+            .view
+            .range
+            .widget
+            .popover()
+            .unwrap()
+            .child()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        presets
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .and_downcast::<gtk::ToggleButton>()
+            .unwrap()
+            .emit_clicked();
+        let (request, _, range) = next_request();
+        assert_eq!(range, models::dashboard::Range::Week);
+        state.event(Event::Dashboard(request, Ok(entries.clone())));
+        window.present();
+        let settle = || {
+            let deadline = std::time::Instant::now() + Duration::from_millis(350);
+            while std::time::Instant::now() < deadline {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        settle();
+        assert!(!state.list.is_mapped());
+        let footer = state.dashboard_button.compute_bounds(&window).unwrap();
+        assert!(footer.y() > window.height() as f32 - 100.0, "{footer:?}");
+        let mut cards = Vec::new();
+        fn find_cards(widget: &gtk::Widget, cards: &mut Vec<gtk::Widget>) {
+            if widget.has_css_class("dashboard-card") {
+                cards.push(widget.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                find_cards(&widget, cards);
+            }
+        }
+        find_cards(state.dashboard.view.widget.upcast_ref(), &mut cards);
+        assert_eq!(cards.len(), 4);
+        assert!(cards[0].has_css_class("parcel-card"));
+        assert!(cards[2].has_css_class("calendar-card"));
+        assert!(cards[3].has_css_class("receipt-card"));
+        assert!(
+            labels(cards[0].clone())
+                .iter()
+                .any(|text| text == "Order Details")
+        );
+        let parcel_labels = labels(cards[0].clone());
+        assert!(
+            parcel_labels
+                .iter()
+                .any(|text| text.starts_with("Should have arrived by "))
+        );
+        assert!(parcel_labels.iter().any(|text| text == "Track Package"));
+        assert!(parcel_labels.iter().any(|text| text == "Open email"));
+        let event_labels = labels(cards[2].clone());
+        assert!(event_labels.iter().any(|text| text == "Studio, Berlin"));
+        assert!(event_labels.iter().any(|text| text == "Open email"));
+        assert!(event_labels.iter().any(|text| text == "Save to Calendar"));
+        let options = state
+            .dashboard
+            .view
+            .types
+            .widget
+            .popover()
+            .unwrap()
+            .child()
+            .unwrap();
+        let event_check = options
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .and_downcast::<gtk::CheckButton>()
+            .unwrap();
+        event_check.set_active(false);
+        assert!(
+            !labels(state.dashboard.view.widget.clone().upcast())
+                .iter()
+                .any(|text| text == "Design workshop")
+        );
+        event_check.set_active(true);
+        assert!(
+            labels(state.dashboard.view.widget.clone().upcast())
+                .iter()
+                .any(|text| text == "Design workshop")
+        );
+        cards.clear();
+        find_cards(state.dashboard.view.widget.upcast_ref(), &mut cards);
+        settle();
+        assert!(
+            !labels(state.dashboard.view.widget.clone().upcast())
+                .iter()
+                .any(|text| text == "Dashboard")
+        );
+        let dashboard_bounds = state.dashboard.view.widget.compute_bounds(&window).unwrap();
+        let filters = state
+            .dashboard
+            .view
+            .accounts
+            .widget
+            .parent()
+            .unwrap()
+            .compute_bounds(&window)
+            .unwrap();
+        assert!(
+            (filters.x() + filters.width() / 2.0
+                - dashboard_bounds.x()
+                - dashboard_bounds.width() / 2.0)
+                .abs()
+                <= 1.0
+        );
+        let bounds: Vec<_> = cards
+            .iter()
+            .map(|card| card.compute_bounds(&window).unwrap())
+            .collect();
+        assert!(bounds[1].x() > bounds[0].x(), "{bounds:?}");
+        assert!((bounds[1].y() - bounds[0].y()).abs() < 1.0);
+        for bounds in &bounds {
+            assert!(bounds.x() >= 0.0 && bounds.x() + bounds.width() <= window.width() as f32);
+        }
+        if let Ok(path) = std::env::var("BREVLADA_DASHBOARD_SCREENSHOT") {
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(&window)).snapshot(
+                &snapshot,
+                window.width() as f64,
+                window.height() as f64,
+            );
+            window
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None)
+                .save_to_png(path)
+                .unwrap();
+        }
+        window.set_default_size(850, 900);
+        settle();
+        let first_bounds = cards[0].compute_bounds(&window).unwrap();
+        let second_bounds = cards[1].compute_bounds(&window).unwrap();
+        assert!(second_bounds.y() >= first_bounds.y() + first_bounds.height());
+        assert!((second_bounds.x() - first_bounds.x()).abs() < 1.0);
+        let dismiss = cards[1]
+            .first_child()
+            .unwrap()
+            .last_child()
+            .and_downcast::<gtk::Button>()
+            .unwrap();
+        dismiss.emit_clicked();
+        assert!(
+            !labels(state.dashboard.view.widget.clone().upcast())
+                .iter()
+                .any(|text| text == "Running shoes")
+        );
+        let saved: HashSet<String> = serde_json::from_slice(
+            &std::fs::read(glib::user_config_dir().join("brevlada/dashboard-dismissed.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(saved.contains(&entries[1].id));
+        settle();
+        fn undo_button(widget: &gtk::Widget) -> Option<gtk::Button> {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>()
+                && button.label().as_deref() == Some("Undo")
+            {
+                return Some(button.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                if let Some(button) = undo_button(&widget) {
+                    return Some(button);
+                }
+            }
+            None
+        }
+        undo_button(state.toast.upcast_ref())
+            .unwrap()
+            .emit_clicked();
+        assert!(
+            labels(state.dashboard.view.widget.clone().upcast())
+                .iter()
+                .any(|text| text == "Running shoes")
+        );
+        cards.clear();
+        find_cards(state.dashboard.view.widget.upcast_ref(), &mut cards);
+        assert!(matches!(entries[0].content, Content::Parcel(_)));
+        let open = cards[0]
+            .last_child()
+            .unwrap()
+            .last_child()
+            .unwrap()
+            .first_child()
+            .and_downcast::<gtk::Button>()
+            .unwrap();
+        open.emit_clicked();
+        let (open_request, source) = commands
+            .try_iter()
+            .find_map(|command| match command {
+                Command::DashboardOpen { request, source } => Some((request, source)),
+                _ => None,
+            })
+            .unwrap();
+        assert!(state.dashboard_visible());
+        state.event(Event::DashboardOpened(open_request, Ok(Some(source))));
+        assert!(!state.dashboard_visible());
+        assert_eq!(state.folder.borrow().as_str(), "Purchases");
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, second.email);
+        assert_eq!(*state.selected.borrow(), [message.uid]);
+        assert!(
+            !state
+                .dashboard_button
+                .state_flags()
+                .contains(gtk::StateFlags::CHECKED)
+        );
+        state.dashboard_button.emit_clicked();
+        next_request();
+        state
+            .dashboard
+            .view
+            .accounts
+            .widget
+            .activate_action("account.select", Some(&"".to_variant()))
+            .unwrap();
+        let (_, accounts, _) = next_request();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(state.account.borrow().as_ref().unwrap().email, second.email);
+        window.close();
+    }
 
     fn sender_ticket(state: &Rc<State>) -> u64 {
         if !state.sender_pane.borrow().loading() {

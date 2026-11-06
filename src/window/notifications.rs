@@ -80,7 +80,16 @@ impl State {
         }
     }
 
-    pub(super) fn open_notification(self: &Rc<Self>, email: &str, mut message: Message) {
+    pub(super) fn open_notification(self: &Rc<Self>, email: &str, message: Message) {
+        self.open_source_message(email, "INBOX", message);
+    }
+
+    pub(super) fn open_source_message(
+        self: &Rc<Self>,
+        email: &str,
+        folder: &str,
+        mut message: Message,
+    ) {
         let account = self
             .folder_boxes
             .borrow()
@@ -96,13 +105,16 @@ impl State {
             .borrow()
             .as_ref()
             .is_some_and(|account| account.email == email)
-            && *self.folder.borrow() == "INBOX";
+            && *self.folder.borrow() == folder;
+        self.content_stack.set_visible_child_name("mail");
+        self.dashboard_button
+            .unset_state_flags(gtk::StateFlags::CHECKED);
         search_bar(&self.search).set_search_mode(false);
         search_bar(&self.thread_search).set_search_mode(false);
         self.search.set_text("");
         self.thread_search.set_text("");
         if !current {
-            self.select(account, "INBOX".into());
+            self.select(account, folder.into());
         }
         self.merge_read_states(std::slice::from_mut(&mut message));
         {

@@ -1,4 +1,4 @@
-use super::{Parcel, Step, parse_message};
+use super::{Parcel, parse_message};
 use crate::models::{Message, senders};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -16,11 +16,7 @@ impl Identifier {
 }
 
 pub fn order_id(parcel: &Parcel) -> Option<&str> {
-    parcel
-        .order_number
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
+    parcel.order_id()
 }
 
 pub fn identifier(parcel: &Parcel) -> Option<Identifier> {
@@ -34,14 +30,12 @@ pub fn identifier(parcel: &Parcel) -> Option<Identifier> {
         .map(|value| Identifier::Tracking(value.to_owned()))
 }
 
-/// Combine updates with the same sender and explicit order or tracking number.
-/// Email timestamps supply dates when an update has no event date of its own.
 pub fn sequence<'a>(
     parcel: &Parcel,
     source: &Message,
     messages: impl IntoIterator<Item = &'a Message>,
 ) -> Parcel {
-    let mut result = parcel.clone();
+    let result = parcel.clone();
     let Some(id) = identifier(parcel) else {
         return result;
     };
@@ -65,65 +59,7 @@ pub fn sequence<'a>(
             }
         }
     }
-    updates.sort_by_key(|(timestamp, _)| *timestamp);
-    let mut events: Vec<(i64, bool, Step)> = Vec::new();
-    for (timestamp, update) in updates {
-        let mut steps = update.steps;
-        if steps.is_empty()
-            && let Some(status) = update.details["deliveryStatus"]
-                .as_str()
-                .filter(|status| !status.trim().is_empty() && !status.contains("://"))
-        {
-            steps.push(Step {
-                name: Some(status.into()),
-                date: None,
-                location: None,
-            });
-        }
-        for mut step in steps {
-            let explicit_date = step.date.is_some();
-            let time = step
-                .date
-                .as_deref()
-                .and_then(event_time)
-                .unwrap_or(timestamp);
-            if step.date.is_none() {
-                step.date =
-                    chrono::DateTime::from_timestamp(timestamp, 0).map(|date| date.to_rfc3339());
-            }
-            let duplicate = events.iter_mut().find(|(_, dated, old)| {
-                normalized(&old.name) == normalized(&step.name)
-                    && normalized(&old.location) == normalized(&step.location)
-                    && (old.date == step.date || !*dated || !explicit_date)
-            });
-            if let Some(existing) = duplicate {
-                if explicit_date && !existing.1 {
-                    *existing = (time, true, step);
-                }
-            } else {
-                events.push((time, explicit_date, step));
-            }
-        }
-    }
-    events.sort_by_key(|(time, _, _)| *time);
-    result.steps = events.into_iter().map(|(_, _, step)| step).collect();
-    result
-}
-
-fn normalized(value: &Option<String>) -> Option<String> {
-    value.as_ref().map(|value| value.trim().to_lowercase())
-}
-
-fn event_time(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|date| date.timestamp())
-        .or_else(|| {
-            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                .ok()
-                .and_then(|date| date.and_hms_opt(0, 0, 0))
-                .map(|date| date.and_utc().timestamp())
-        })
+    super::combine(updates)
 }
 
 #[cfg(test)]
@@ -206,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn combines_separate_emails_in_chronological_order_with_email_dates() {
+    fn combines_separate_emails_in_chronological_order_without_inventing_event_dates() {
         let sent = message("Shop <shop@example.com>", Some("123"), "Sent", 100);
         let transit = message("SHOP@example.com", Some("123"), "In transit", 200);
         let delivered = message("shop@example.com", Some("123"), "Delivered", 300);
@@ -220,11 +156,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Sent", "In transit", "Delivered"]
         );
-        assert_eq!(
-            event_time(result.steps[0].date.as_deref().unwrap()),
-            Some(100)
-        );
-        assert_eq!(result.details, parcel.details);
+        assert!(result.steps.iter().all(|step| step.date.is_none()));
+        assert_eq!(result.details["deliveryStatus"], "Delivered");
     }
 
     #[test]

@@ -45,7 +45,9 @@ pub(super) fn view(reservation: &Reservation) -> gtk::Box {
             Some(end) => format!("{start} – {end}"),
             None => start.clone(),
         };
-        timeline.append(&super::text(&range, "dim-label"));
+        let range = super::text(&range, "dim-label");
+        range.set_selectable(true);
+        timeline.append(&range);
     }
     let grid = gtk::Grid::builder()
         .column_spacing(theme::SMALL_SPACING)

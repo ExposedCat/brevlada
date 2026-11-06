@@ -123,6 +123,42 @@ impl Part<'_> {
         };
         Ok(text.into_owned())
     }
+
+    pub fn calendar_body(&self) -> Result<String, MailParseError> {
+        let raw = self.body_raw()?;
+        let mut bytes = Vec::with_capacity(raw.len());
+        let mut index = 0;
+        while index < raw.len() {
+            let fold = if raw[index..].starts_with(b"\r\n") {
+                2
+            } else if raw[index] == b'\n' {
+                1
+            } else {
+                0
+            };
+            if fold > 0
+                && raw
+                    .get(index + fold)
+                    .is_some_and(|ch| matches!(ch, b' ' | b'\t'))
+            {
+                index += fold + 1;
+            } else {
+                bytes.push(raw[index]);
+                index += 1;
+            }
+        }
+        let label = self
+            .ctype
+            .params
+            .get("charset")
+            .map(String::as_str)
+            .unwrap_or("utf-8");
+        Ok(Charset::for_label(label.as_bytes())
+            .unwrap_or(Charset::for_label(b"utf-8").unwrap())
+            .decode(&bytes)
+            .0
+            .into_owned())
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +167,47 @@ mod tests {
     use base64::Engine;
     use mailparse::ParsedMail;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn calendar_defaults_to_utf8_unfolds_bytes_and_honors_explicit_charsets() {
+        let calendar = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:czech\r\nDTSTART:20261105T120000Z\r\nSUMMARY:Doručování nákupu\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let split = calendar.find('č').unwrap() + 1;
+        let mut folded = calendar.as_bytes()[..split].to_vec();
+        folded.extend_from_slice(b"\r\n ");
+        folded.extend_from_slice(&calendar.as_bytes()[split..]);
+        for (encoding, body) in [
+            ("8bit", folded.clone()),
+            (
+                "base64",
+                base64::engine::general_purpose::STANDARD
+                    .encode(&folded)
+                    .into_bytes(),
+            ),
+            (
+                "quoted-printable",
+                folded
+                    .iter()
+                    .map(|byte| format!("={byte:02X}"))
+                    .collect::<String>()
+                    .into_bytes(),
+            ),
+        ] {
+            let mut raw = format!(
+                "Content-Type: application/ics\r\nContent-Transfer-Encoding: {encoding}\r\n\r\n"
+            )
+            .into_bytes();
+            raw.extend(body);
+            let body = parse(&raw).unwrap().calendar_body().unwrap();
+            assert_eq!(body, calendar);
+            let event = crate::models::calendar::parse_ical(&body).remove(0);
+            assert_eq!(event.name, "Doručování nákupu");
+        }
+        let raw = b"Content-Type: text/calendar; charset=windows-1250\r\n\r\nSUMMARY:\x8a\xe1rka";
+        assert_eq!(
+            parse(raw).unwrap().calendar_body().unwrap(),
+            "SUMMARY:Šárka"
+        );
+    }
 
     #[derive(Debug, PartialEq)]
     struct Shape {

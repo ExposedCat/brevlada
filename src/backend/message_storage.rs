@@ -201,6 +201,7 @@ fn insert(
 }
 
 fn store_body(connection: &Connection, id: i64, message: &Message) -> Result<()> {
+    super::structured::store(connection, id, message)?;
     if message.body_text.is_empty()
         && message.body_html.is_empty()
         && message.inline_media.is_empty()

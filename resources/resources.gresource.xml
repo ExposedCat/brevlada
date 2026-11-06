@@ -10,5 +10,6 @@
     <file preprocess="xml-stripblanks">truck-symbolic.svg</file>
     <file preprocess="xml-stripblanks">ticket-symbolic.svg</file>
     <file preprocess="xml-stripblanks">person-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">money-symbolic.svg</file>
   </gresource>
 </gresources>

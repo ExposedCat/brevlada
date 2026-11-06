@@ -14,7 +14,7 @@ impl State {
             Settings::default()
         });
         let parent = window.downgrade();
-        let preferences = glib::WeakRef::<adw::PreferencesWindow>::new();
+        let preferences = glib::WeakRef::<adw::Window>::new();
         let weak = Rc::downgrade(self);
         action.connect_activate(move |_, _| {
             if let Some(window) = preferences.upgrade() {
@@ -30,6 +30,7 @@ impl State {
                 state.settings.borrow().trust_all_senders,
             );
             state.connect_account_settings(&settings, path.clone());
+            state.connect_sync_settings(&settings);
             let weak = Rc::downgrade(&state);
             let path = path.clone();
             settings
@@ -95,20 +96,26 @@ impl State {
 mod diagnostics {
     use super::*;
 
-    fn preferences() -> adw::PreferencesWindow {
+    fn preferences() -> adw::Window {
         gtk::Window::list_toplevels()
             .into_iter()
-            .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+            .filter_map(|window| window.downcast::<adw::Window>().ok())
+            .find(|window| window.title().as_deref() == Some("Settings"))
             .unwrap()
     }
 
-    fn descendant<T: IsA<gtk::Widget>>(widget: &gtk::Widget) -> Option<T> {
-        if let Ok(target) = widget.clone().downcast::<T>() {
+    fn descendant<T: IsA<gtk::Widget>>(
+        widget: &gtk::Widget,
+        matches: &impl Fn(&T) -> bool,
+    ) -> Option<T> {
+        if let Ok(target) = widget.clone().downcast::<T>()
+            && matches(&target)
+        {
             return Some(target);
         }
         let mut child = widget.first_child();
         while let Some(widget) = child {
-            if let Some(target) = descendant(&widget) {
+            if let Some(target) = descendant(&widget, matches) {
                 return Some(target);
             }
             child = widget.next_sibling();
@@ -116,22 +123,19 @@ mod diagnostics {
         None
     }
 
-    fn open_privacy(window: &adw::PreferencesWindow) -> adw::SwitchRow {
-        let overview = window.visible_page().unwrap();
-        let section = descendant::<adw::ActionRow>(overview.upcast_ref()).unwrap();
-        assert_eq!(section.title(), "Privacy");
+    fn open_privacy(window: &adw::Window) -> adw::SwitchRow {
+        let section =
+            descendant::<adw::ActionRow>(window.upcast_ref(), &|row| row.title() == "Privacy")
+                .unwrap();
         section.emit_by_name::<()>("activated", &[]);
-        let row = descendant::<adw::SwitchRow>(window.upcast_ref()).unwrap();
-        let page = row
-            .ancestor(adw::NavigationPage::static_type())
-            .and_downcast::<adw::NavigationPage>()
-            .unwrap();
-        assert_eq!(page.title(), "Privacy");
-        let navigation = page
-            .ancestor(adw::NavigationView::static_type())
-            .and_downcast::<adw::NavigationView>()
-            .unwrap();
-        assert_eq!(navigation.visible_page().as_ref(), Some(&page));
+        let row = descendant::<adw::SwitchRow>(window.upcast_ref(), &|row| {
+            row.title() == "Trust all senders"
+        })
+        .unwrap();
+        let navigation =
+            descendant::<adw::NavigationSplitView>(window.upcast_ref(), &|_| true).unwrap();
+        assert_eq!(navigation.content().unwrap().title(), "Privacy");
+        assert!(navigation.shows_content());
         row
     }
 
@@ -181,7 +185,14 @@ mod diagnostics {
         assert!(state.is_trusted("trusted@example.com"));
         action.activate(None);
         let settings = preferences();
-        assert!(descendant::<adw::SwitchRow>(settings.upcast_ref()).is_none());
+        assert_eq!(
+            descendant::<adw::NavigationSplitView>(settings.upcast_ref(), &|_| true)
+                .unwrap()
+                .content()
+                .unwrap()
+                .title(),
+            "General"
+        );
         let row = open_privacy(&settings);
         assert_eq!(row.title(), "Trust all senders");
         assert!(!row.is_active());
@@ -189,7 +200,9 @@ mod diagnostics {
         assert!(state.is_trusted("unknown@example.com"));
         assert!(Settings::load(&path).unwrap().trust_all_senders);
         assert!(!state.is_sender_trusted("unknown@example.com"));
-        assert!(settings.pop_subpage());
+        descendant::<adw::NavigationSplitView>(settings.upcast_ref(), &|_| true)
+            .unwrap()
+            .set_show_content(false);
         let row = open_privacy(&settings);
         assert!(row.is_active());
         action.activate(None);

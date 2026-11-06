@@ -159,7 +159,9 @@ fn execute(
             }
         }
         Task::Body { validity, uid, .. } => {
-            if storage.validity(&account.email, folder)? != Some(*validity) {
+            if queue.headers_only(&account.email, folder)
+                || storage.validity(&account.email, folder)? != Some(*validity)
+            {
                 return Ok(());
             }
             let Some(message) = storage.message(&account.email, folder, *uid)? else {
@@ -245,6 +247,9 @@ fn enqueue_bodies(
     validity: u32,
     before: Option<(i64, u32)>,
 ) -> Result<()> {
+    if queue.headers_only(&job.account.email, &job.folder) {
+        return Ok(());
+    }
     let messages = storage.pending_bodies(&job.account.email, &job.folder, before, BODY_BATCH)?;
     for (index, message) in messages.iter().enumerate() {
         queue.push(Job {
@@ -322,6 +327,7 @@ mod tests {
             )
             .unwrap();
         let queue = SyncQueue::default();
+        queue.restore_folders("a", vec!["INBOX".into()]);
         queue.focus("a", "INBOX");
         queue.push(Job {
             account: fixture_account(),
@@ -335,6 +341,24 @@ mod tests {
         });
         let job = queue.pop().unwrap();
         let (events, received) = async_channel::unbounded();
+        queue.set_folders("a", Vec::new());
+        execute(
+            &mut storage,
+            &queue,
+            &events,
+            &mut Connections::default(),
+            &job,
+        )
+        .unwrap();
+        assert!(received.is_empty());
+        assert!(
+            !storage
+                .message("a", "INBOX", 3)
+                .unwrap()
+                .unwrap()
+                .body_loaded
+        );
+        queue.set_folders("a", vec!["INBOX".into()]);
         execute(
             &mut storage,
             &queue,
@@ -411,6 +435,9 @@ mod tests {
         storage.store_headers("a", "INBOX", 1, &messages).unwrap();
         let queue = SyncQueue::default();
         enqueue_bodies(&storage, &queue, &job, 1, None).unwrap();
+        assert_eq!(queue.queued_len(), 0);
+        queue.restore_folders("a", vec!["INBOX".into()]);
+        enqueue_bodies(&storage, &queue, &job, 1, None).unwrap();
         assert_eq!(queue.queued_len(), BODY_BATCH + 1);
         let first = queue.pop().unwrap();
         assert!(matches!(
@@ -452,6 +479,7 @@ mod tests {
             "Persisted"
         );
         let queue = SyncQueue::default();
+        queue.restore_folders("a", vec!["INBOX".into()]);
         enqueue_bodies(&storage, &queue, &job, 1, None).unwrap();
         let mut seen = std::collections::HashSet::new();
         while queue.queued_len() > 0 {

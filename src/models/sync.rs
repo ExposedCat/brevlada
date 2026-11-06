@@ -1,5 +1,11 @@
 use std::time::SystemTime;
 
+#[derive(Clone, Debug)]
+pub struct Folders {
+    pub folders: Vec<String>,
+    pub selected: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Status {
     pub activity: Option<Activity>,

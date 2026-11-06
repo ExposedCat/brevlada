@@ -10,6 +10,24 @@ use std::{
 };
 
 pub enum Command {
+    Dashboard {
+        accounts: Vec<String>,
+        request: u64,
+        range: crate::models::dashboard::Range,
+    },
+    DashboardOpen {
+        source: Box<crate::models::dashboard::Source>,
+        request: u64,
+    },
+    SyncFolders {
+        account: Account,
+        reply: async_channel::Sender<Result<crate::models::sync::Folders, String>>,
+    },
+    SetSyncFolders {
+        account: Account,
+        folders: Vec<String>,
+        reply: async_channel::Sender<Result<Vec<String>, String>>,
+    },
     AccountSettings {
         account: Account,
         path: PathBuf,
@@ -139,6 +157,11 @@ pub enum Command {
 }
 
 pub enum Event {
+    Dashboard(u64, Result<Vec<crate::models::dashboard::Entry>, String>),
+    DashboardOpened(
+        u64,
+        Result<Option<Box<crate::models::dashboard::Source>>, String>,
+    ),
     NewMail {
         account: String,
         folder: String,
@@ -320,6 +343,8 @@ impl Worker {
             Command::LoadSenderPage { .. }
                 | Command::RelatedSent { .. }
                 | Command::CalendarHistory { .. }
+                | Command::Dashboard { .. }
+                | Command::DashboardOpen { .. }
         ) {
             &self.cache_commands
         } else {
@@ -450,6 +475,32 @@ fn start_cache_reads(
                 }
                 let storage = storage.as_ref().unwrap();
                 Ok(match &command {
+                    Command::DashboardOpen { source, request } => Event::DashboardOpened(
+                        *request,
+                        storage
+                            .dashboard_source(source)
+                            .map(|message| {
+                                message.map(|mut message| {
+                                    message.prepare_display();
+                                    Box::new(crate::models::dashboard::Source {
+                                        account: source.account.clone(),
+                                        folder: source.folder.clone(),
+                                        message,
+                                    })
+                                })
+                            })
+                            .map_err(|error| error.to_string()),
+                    ),
+                    Command::Dashboard {
+                        accounts,
+                        request,
+                        range,
+                    } => Event::Dashboard(
+                        *request,
+                        storage
+                            .dashboard(accounts, chrono::Utc::now().timestamp(), *range)
+                            .map_err(|error| error.to_string()),
+                    ),
                     Command::LoadSenderPage {
                         account,
                         folder,
@@ -512,6 +563,12 @@ fn start_cache_reads(
             let event = match result {
                 Ok(event) => event,
                 Err(error) => match &command {
+                    Command::DashboardOpen { request, .. } => {
+                        Event::DashboardOpened(*request, Err(error.to_string()))
+                    }
+                    Command::Dashboard { request, .. } => {
+                        Event::Dashboard(*request, Err(error.to_string()))
+                    }
                     Command::LoadSenderPage {
                         generation,
                         sender_generation,
@@ -584,6 +641,20 @@ fn execute(
     background: &super::sync_queue::SyncQueue,
 ) -> Result<()> {
     match command {
+        Command::SyncFolders { account, reply } => {
+            let result = super::sync_preferences::load(&account, storage, connections, events)
+                .map_err(|error| format!("{error:#}"));
+            let _ = reply.send_blocking(result);
+        }
+        Command::SetSyncFolders {
+            account,
+            folders,
+            reply,
+        } => {
+            let result = super::sync_preferences::save(&account, folders, storage, background)
+                .map_err(|error| format!("{error:#}"));
+            let _ = reply.send_blocking(result);
+        }
         Command::AccountSettings {
             account,
             path,
@@ -971,6 +1042,8 @@ fn execute(
             events.send_blocking(Event::Unread(account.email, vec![(folder, unread)]))?;
         }
         Command::LoadSenderPage { .. }
+        | Command::Dashboard { .. }
+        | Command::DashboardOpen { .. }
         | Command::RelatedSent { .. }
         | Command::ParcelHistory { .. }
         | Command::CalendarHistory { .. } => {

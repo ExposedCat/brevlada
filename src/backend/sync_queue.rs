@@ -224,6 +224,25 @@ impl SyncQueue {
             .folders
             .insert(account.into(), folders);
     }
+    pub fn set_folders(&self, account: &str, folders: Vec<String>) {
+        let mut state = self.state.0.lock().unwrap();
+        let removed: HashSet<_> = state
+            .jobs
+            .iter()
+            .filter(|job| {
+                job.account.email == account
+                    && matches!(job.task, Task::Body { .. } | Task::Bodies { .. })
+                    && !folders.contains(&job.folder)
+            })
+            .map(Job::key)
+            .collect();
+        state.jobs.retain(|job| !removed.contains(&job.key()));
+        for key in removed {
+            state.known.remove(&key);
+        }
+        state.folders.insert(account.into(), folders);
+        self.state.1.notify_all();
+    }
     pub fn discovered(
         &self,
         account: &str,
@@ -512,6 +531,48 @@ impl SyncQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_selected_folders_drops_pending_downloads_only_for_that_account() {
+        let queue = SyncQueue::default();
+        queue.restore_folders("a", vec!["INBOX".into(), "Archive".into()]);
+        let task = Task::Body {
+            validity: 1,
+            uid: 1,
+            preview: false,
+            timestamp: 0,
+        };
+        queue.push(job("a", "Archive", task.clone()));
+        queue.push(job(
+            "a",
+            "Archive",
+            Task::Bodies {
+                validity: 1,
+                before: (0, 1),
+            },
+        ));
+        queue.push(job("a", "INBOX", task.clone()));
+        queue.push(job("b", "Archive", task.clone()));
+        queue.push(job("a", "Sent", Task::Scan));
+        queue.set_folders("a", vec!["INBOX".into()]);
+        assert_eq!(queue.queued_len(), 3);
+        assert!(queue.headers_only("a", "Archive"));
+        assert!(!queue.headers_only("a", "INBOX"));
+        queue.set_folders("a", vec!["Archive".into()]);
+        queue.push(job("a", "Archive", task));
+        assert_eq!(queue.queued_len(), 3);
+        assert!(
+            queue
+                .state
+                .0
+                .lock()
+                .unwrap()
+                .jobs
+                .iter()
+                .any(|job| job.account.email == "a" && job.folder == "Archive")
+        );
+        queue.close();
+    }
 
     fn job(email: &str, folder: &str, task: Task) -> Job {
         Job {
