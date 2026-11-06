@@ -183,7 +183,28 @@ mod diagnostics {
         )]);
         assert!(!state.is_trusted("unknown@example.com"));
         assert!(state.is_trusted("trusted@example.com"));
-        action.activate(None);
+        state.dashboard_button.emit_clicked();
+        window.present();
+        glib::MainContext::default()
+            .block_on(glib::timeout_future(std::time::Duration::from_millis(200)));
+        let menu =
+            descendant::<gtk::MenuButton>(state.dashboard.view.widget.upcast_ref(), &|button| {
+                button.tooltip_text().as_deref() == Some("Main menu")
+            })
+            .unwrap();
+        assert!(menu.is_mapped());
+        assert_eq!(menu.menu_model().unwrap().n_items(), 2);
+        assert!(
+            menu.compute_bounds(&window).unwrap().x()
+                > state
+                    .dashboard
+                    .view
+                    .refresh
+                    .compute_bounds(&window)
+                    .unwrap()
+                    .x()
+        );
+        menu.activate_action("window.settings", None).unwrap();
         let settings = preferences();
         assert_eq!(
             descendant::<adw::NavigationSplitView>(settings.upcast_ref(), &|_| true)

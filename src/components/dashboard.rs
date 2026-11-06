@@ -29,7 +29,7 @@ pub struct Dashboard {
 }
 
 impl Dashboard {
-    pub fn new() -> Self {
+    pub fn new(settings: &gtk::gio::SimpleAction) -> Self {
         let widget = column("dashboard");
         widget.set_hexpand(true);
         widget.set_vexpand(true);
@@ -49,7 +49,9 @@ impl Dashboard {
             .build();
         let expand_sidebar = button("sidebar-show-symbolic", "Expand sidebar");
         let refresh = button("view-refresh-symbolic", "Refresh dashboard");
+        let menu = super::settings::menu_with_action(settings);
         header.pack_start(&expand_sidebar);
+        header.pack_end(&menu);
         header.pack_end(&refresh);
         widget.append(&header);
         let content = column("dashboard-content");
@@ -221,7 +223,9 @@ mod diagnostics {
             &css,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
-        let view = Rc::new(Dashboard::new());
+        let view = Rc::new(Dashboard::new(&gtk::gio::SimpleAction::new(
+            "settings", None,
+        )));
         view.accounts.set_selected("", "All accounts");
         let entries: Rc<Vec<_>> = Rc::new(
             (0..10)

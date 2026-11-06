@@ -130,6 +130,9 @@ impl State {
         if !self.select_search_location(location.as_ref()) {
             return;
         }
+        if let Some(message) = &message {
+            self.remember_sender_origin(&models::senders::list_key(message));
+        }
         if let Some(matches) = matches {
             self.open_search_sender(key, matches);
         } else if let Some(message) = message {

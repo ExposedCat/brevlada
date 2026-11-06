@@ -140,6 +140,7 @@ impl State {
         self.refresh_account_title();
         self.next_message.set(None);
         self.search_message.borrow_mut().take();
+        *self.navigation_origins.borrow_mut() = [None, None];
         self.notification_message.borrow_mut().take();
         self.search_sender.borrow_mut().take();
         self.sender_pane.borrow_mut().select(None);
@@ -205,6 +206,7 @@ impl State {
             return;
         }
         drop(opened);
+        self.remember_thread_origin(&group);
         self.new_selection();
         let selected: Vec<_> = group.iter().map(|message| message.uid).collect();
         if *self.selected.borrow() != selected {

@@ -16,6 +16,14 @@ impl State {
         let was_search = self.search_sender.borrow_mut().take().is_some();
         self.next_message.set(None);
         let sender = message.as_ref().map(models::senders::list_key);
+        if self.sender_pane.borrow().sender() != sender.as_deref() {
+            if let Some(sender) = &sender {
+                self.remember_sender_origin(sender);
+                self.navigation_origins.borrow_mut()[1] = None;
+            } else {
+                *self.navigation_origins.borrow_mut() = [None, None];
+            }
+        }
         let opening = sender.is_some() && self.sender_pane.borrow().sender().is_none();
         let dismissed = sender.as_ref().is_some_and(|sender| {
             self.account.borrow().as_ref().is_some_and(|account| {

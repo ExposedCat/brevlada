@@ -4,8 +4,12 @@ use gtk::gio;
 
 pub fn menu() -> (gtk::MenuButton, gio::SimpleAction) {
     let settings = gio::SimpleAction::new("settings", None);
+    (menu_with_action(&settings), settings)
+}
+
+pub fn menu_with_action(settings: &gio::SimpleAction) -> gtk::MenuButton {
     let actions = gio::SimpleActionGroup::new();
-    actions.add_action(&settings);
+    actions.add_action(settings);
     let menu = gio::Menu::new();
     menu.append(Some("Settings"), Some("window.settings"));
     menu.append(Some("Quit"), Some("app.quit"));
@@ -18,7 +22,7 @@ pub fn menu() -> (gtk::MenuButton, gio::SimpleAction) {
         .css_classes(["flat"])
         .build();
     button.insert_action_group("window", Some(&actions));
-    (button, settings)
+    button
 }
 
 pub struct SettingsWindow {

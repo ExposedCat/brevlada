@@ -194,7 +194,7 @@ impl Shell {
         let thread_sidebar =
             super::motion::Sidebar::new(&thread_sidebar, &right, theme::LIST_WIDTH, false);
         let content = pane(&middle, thread_sidebar.pane(), theme::LIST_WIDTH);
-        let dashboard = super::dashboard::Dashboard::new();
+        let dashboard = super::dashboard::Dashboard::new(&settings);
         let content_stack = gtk::Stack::builder()
             .hexpand(true)
             .vexpand(true)

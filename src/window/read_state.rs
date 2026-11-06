@@ -18,6 +18,115 @@ mod diagnostics {
     use models::{action_target::ActionTarget, sender_action::SenderAction};
 
     #[test]
+    #[ignore = "Requires a private graphical session; filters fixture messages without mail workers"]
+    fn only_unread_filters_sender_and_thread_rows_and_updates_after_reading() {
+        let (worker, _commands) = worker::Worker::recording();
+        let state = super::super::diagnostics::unread_test_state_with_worker(
+            "org.example.BrevladaOnlyUnreadDiagnostic",
+            worker,
+        );
+        let messages: Vec<_> = [
+            (1, "a", true, 100),
+            (2, "a", false, 200),
+            (3, "a", true, 300),
+            (4, "b", true, 400),
+            (5, "c", false, 500),
+        ]
+        .into_iter()
+        .map(|(uid, sender, is_read, timestamp)| Message {
+            uid,
+            sender: format!("{sender}@example.com"),
+            message_id: uid.to_string(),
+            subject: if uid <= 2 {
+                "Shared conversation".into()
+            } else {
+                format!("Conversation {uid}")
+            },
+            references: if uid == 2 {
+                vec!["1".into()]
+            } else {
+                Vec::new()
+            },
+            timestamp,
+            is_read,
+            read_revision: 1,
+            ..Default::default()
+        })
+        .collect();
+        *state.messages.borrow_mut() = messages.clone();
+        state.render_list();
+        assert_eq!(ui::virtual_list::groups(&state.list).len(), 3);
+        state
+            .sender_unread_first
+            .widget
+            .activate_action("sort.only-unread", None)
+            .unwrap();
+        assert_eq!(ui::virtual_list::groups(&state.list).len(), 2);
+        state.filter_sender(Some(messages[1].clone()));
+        state.sender_pane.borrow_mut().include(messages[..3].iter());
+        state.render_list();
+        assert_eq!(ui::virtual_list::groups(&state.thread_list).len(), 2);
+        state
+            .thread_unread_first
+            .widget
+            .activate_action("sort.only-unread", None)
+            .unwrap();
+        let groups = ui::virtual_list::groups(&state.thread_list);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
+        state.show_thread(groups[0].clone());
+        state.update_body(&Message {
+            is_read: true,
+            read_revision: 2,
+            ..messages[1].clone()
+        });
+        assert_eq!(ui::virtual_list::groups(&state.list).len(), 1);
+        assert!(ui::virtual_list::groups(&state.thread_list).is_empty());
+        assert!(
+            state
+                .open_group
+                .borrow()
+                .iter()
+                .any(|message| message.uid == 2 && message.is_read)
+        );
+        state.thread_unread_first.set_only_unread(false);
+        assert_eq!(ui::virtual_list::groups(&state.thread_list).len(), 2);
+        assert_eq!(ui::virtual_list::groups(&state.list).len(), 1);
+        let location = crate::backend::search::Location {
+            account: "other@example.com".into(),
+            folder: "Archive".into(),
+        };
+        state.publish_search_groups(
+            false,
+            "fixture",
+            vec![vec![messages[3].clone()], vec![messages[4].clone()]],
+            vec![
+                Some(crate::backend::search::Location {
+                    account: "read@example.com".into(),
+                    folder: "INBOX".into(),
+                }),
+                Some(location.clone()),
+            ],
+        );
+        assert_eq!(ui::virtual_list::groups(&state.list).len(), 1);
+        assert_eq!(
+            state
+                .search_locations
+                .borrow()
+                .get(&location.key(&messages[4].sender)),
+            Some(&location)
+        );
+        state.sender_unread_first.set_only_unread(false);
+        assert_eq!(ui::virtual_list::groups(&state.list).len(), 3);
+        state
+            .toast
+            .root()
+            .and_downcast::<gtk::Window>()
+            .unwrap()
+            .close();
+    }
+
+    #[test]
     #[ignore = "Requires a graphical session; constructs widgets without mail workers"]
     fn deleting_mail_keeps_the_next_message_read_despite_late_snapshots() {
         gtk::init().unwrap();

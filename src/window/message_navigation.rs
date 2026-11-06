@@ -7,12 +7,19 @@ impl State {
         };
         let groups = ui::virtual_list::groups(&self.thread_list);
         if !groups.is_empty() {
-            let index = (thread_index as usize).min(groups.len() - 1);
+            let index = self.navigation_origins.borrow()[1]
+                .as_ref()
+                .and_then(|origin| origin.next(&self.thread_list, true, |_| true))
+                .map(|position| position as usize)
+                .unwrap_or_else(|| (thread_index as usize).min(groups.len() - 1));
             ui::virtual_list::select(&self.thread_list, index as u32);
             self.show_thread(groups[index].clone());
             return;
         }
-        if self.sender_pane.borrow().loading() && !self.sender_pane.borrow().awaiting_first_page() {
+        let only_unread = self.thread_unread_first.only_unread();
+        if self.sender_pane.borrow().loading()
+            && (only_unread || !self.sender_pane.borrow().awaiting_first_page())
+        {
             return;
         }
         if self.sender_pane.borrow().can_load() {
@@ -25,14 +32,30 @@ impl State {
             .enumerate()
             .filter_map(|(index, group)| {
                 let message = group.first()?;
-                (current_sender.as_deref() != Some(models::senders::list_key(message).as_str()))
-                    .then_some((index, message.clone()))
+                (current_sender.as_deref() != Some(models::senders::list_key(message).as_str())
+                    && (!only_unread || group.iter().any(|message| !message.is_read)))
+                .then_some((index, message.clone()))
             })
             .collect();
-        let next = candidates
-            .iter()
-            .find(|(index, _)| *index >= sender_index as usize)
-            .or_else(|| candidates.last());
+        let original_next = self.navigation_origins.borrow()[0]
+            .as_ref()
+            .and_then(|origin| {
+                origin.next(&self.list, false, |row| {
+                    !only_unread || row.messages.iter().any(|message| !message.is_read)
+                })
+            });
+        let next = original_next
+            .and_then(|position| {
+                candidates
+                    .iter()
+                    .find(|(index, _)| *index == position as usize)
+            })
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find(|(index, _)| *index >= sender_index as usize)
+                    .or_else(|| candidates.last())
+            });
         if let Some((index, message)) = next {
             if message.search_match {
                 self.activate_sender(*index as u32);
@@ -55,6 +78,221 @@ mod diagnostics {
 
     fn target(message: &Message) -> ActionTarget {
         ActionTarget::Messages(vec![(message.uid, message.message_id.clone())])
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; records read, delete and archive requests without mail workers"]
+    fn deleting_or_archiving_a_read_sender_follows_its_original_unread_neighbors() {
+        for action in [SenderAction::Delete, SenderAction::Archive] {
+            for unread_first in [true, false] {
+                for only_unread in [false, true] {
+                    let (worker, commands) = worker::Worker::recording();
+                    let diagnostic = format!(
+                        "org.example.BrevladaOriginalNeighbor{action:?}{unread_first}{only_unread}"
+                    );
+                    let state = super::super::diagnostics::unread_test_state_with_worker(
+                        &diagnostic,
+                        worker,
+                    );
+                    state.sender_unread_first.set_unread_first(unread_first);
+                    state.sender_unread_first.set_only_unread(only_unread);
+                    state.thread_unread_first.set_only_unread(only_unread);
+                    let messages: Vec<_> = [
+                        (1, "first", 300, false),
+                        (2, "next", 200, false),
+                        (3, "read-newer", 400, true),
+                        (4, "read-older", 100, true),
+                    ]
+                    .into_iter()
+                    .map(|(uid, sender, timestamp, is_read)| Message {
+                        uid,
+                        sender: format!("{sender}@example.com"),
+                        message_id: uid.to_string(),
+                        subject: format!("Conversation {uid}"),
+                        timestamp,
+                        is_read,
+                        read_revision: 1,
+                        ..Default::default()
+                    })
+                    .collect();
+                    *state.messages.borrow_mut() = messages.clone();
+                    state.render_list();
+                    let position =
+                        ui::virtual_list::position(&state.list, &messages[0].sender).unwrap();
+                    state.activate_sender(position);
+                    let ticket = state.sender_pane.borrow().ticket();
+                    state.event(Event::SenderPage(
+                        state.generation.get(),
+                        ticket,
+                        vec![messages[0].clone()],
+                        false,
+                    ));
+                    state.show_thread(vec![messages[0].clone()]);
+                    state.update_body(&Message {
+                        is_read: true,
+                        read_revision: 2,
+                        ..messages[0].clone()
+                    });
+                    state.deferred_read_sort.borrow_mut().clear();
+                    state.render_list();
+                    if only_unread {
+                        assert!(
+                            ui::virtual_list::position(&state.list, &messages[0].sender).is_none()
+                        );
+                    } else if unread_first {
+                        assert!(
+                            ui::virtual_list::position(&state.list, &messages[0].sender).unwrap()
+                                > position
+                        );
+                    }
+                    state.sender_action(target(&messages[0]), action.clone());
+                    assert_eq!(
+                        state.sender_pane.borrow().sender(),
+                        Some(messages[1].sender.as_str()),
+                        "{action:?}, unread first={unread_first}, only unread={only_unread}"
+                    );
+                    assert_eq!(*state.selected.borrow(), vec![messages[1].uid]);
+                    assert!(commands.try_iter().any(|command| matches!(command,
+                        Command::LoadSenderPage { sender, .. } if sender == messages[1].sender)));
+                    state
+                        .toast
+                        .root()
+                        .and_downcast::<gtk::Window>()
+                        .unwrap()
+                        .close();
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; records navigation while only unread conversations are visible"]
+    fn unread_navigation_skips_read_senders_and_waits_for_the_next_senders_unread_mail() {
+        let (worker, commands) = worker::Worker::recording();
+        let state = super::super::diagnostics::unread_test_state_with_worker(
+            "org.example.BrevladaUnreadPageNavigationDiagnostic",
+            worker,
+        );
+        state.sender_unread_first.set_unread_first(false);
+        state.thread_unread_first.set_only_unread(true);
+        let messages: Vec<_> = [
+            (1, "first", 300, false),
+            (2, "read-between", 250, true),
+            (3, "next", 200, true),
+            (4, "next", 100, false),
+        ]
+        .into_iter()
+        .map(|(uid, sender, timestamp, is_read)| Message {
+            uid,
+            sender: format!("{sender}@example.com"),
+            message_id: uid.to_string(),
+            subject: format!("Conversation {uid}"),
+            timestamp,
+            is_read,
+            read_revision: 1,
+            ..Default::default()
+        })
+        .collect();
+        *state.messages.borrow_mut() = messages.clone();
+        state.render_list();
+        state.activate_sender(0);
+        let ticket = state.sender_pane.borrow().ticket();
+        state.event(Event::SenderPage(
+            state.generation.get(),
+            ticket,
+            vec![messages[0].clone()],
+            false,
+        ));
+        state.show_thread(vec![messages[0].clone()]);
+        state.update_body(&Message {
+            is_read: true,
+            read_revision: 2,
+            ..messages[0].clone()
+        });
+        state.deferred_read_sort.borrow_mut().clear();
+        state.render_list();
+        state.sender_action(target(&messages[0]), SenderAction::Delete);
+        assert_eq!(
+            state.sender_pane.borrow().sender(),
+            Some("next@example.com")
+        );
+        assert!(state.sender_pane.borrow().loading());
+        assert!(state.selected.borrow().is_empty());
+        assert!(commands.try_iter().any(|command| matches!(command,
+            Command::LoadSenderPage { sender, .. } if sender == "next@example.com")));
+        let ticket = state.sender_pane.borrow().ticket();
+        state.event(Event::SenderPage(
+            state.generation.get(),
+            ticket,
+            messages[2..].to_vec(),
+            false,
+        ));
+        assert_eq!(*state.selected.borrow(), vec![4]);
+        state.update_body(&Message {
+            is_read: true,
+            read_revision: 2,
+            ..messages[3].clone()
+        });
+        state.sender_action(target(&messages[3]), SenderAction::Archive);
+        assert!(state.sender_pane.borrow().sender().is_none());
+        assert!(state.selected.borrow().is_empty());
+        state
+            .toast
+            .root()
+            .and_downcast::<gtk::Window>()
+            .unwrap()
+            .close();
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; uses fixture conversations and a recording worker"]
+    fn removing_a_threads_first_message_keeps_its_remaining_messages_open() {
+        for action in [SenderAction::Delete, SenderAction::Archive] {
+            let (worker, _commands) = worker::Worker::recording();
+            let diagnostic = format!("org.example.BrevladaRemainingThread{action:?}");
+            let state =
+                super::super::diagnostics::unread_test_state_with_worker(&diagnostic, worker);
+            let messages: Vec<_> = (1..=3)
+                .map(|uid| Message {
+                    uid,
+                    sender: "sender@example.com".into(),
+                    message_id: uid.to_string(),
+                    subject: format!("Conversation {uid}"),
+                    is_read: true,
+                    timestamp: if uid == 3 { 100 } else { 200 + i64::from(uid) },
+                    references: if uid == 2 {
+                        vec!["1".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    ..Default::default()
+                })
+                .collect();
+            *state.messages.borrow_mut() = messages.clone();
+            state.render_list();
+            state.activate_sender(0);
+            let ticket = state.sender_pane.borrow().ticket();
+            state.event(Event::SenderPage(
+                state.generation.get(),
+                ticket,
+                messages.clone(),
+                false,
+            ));
+            let group = ui::virtual_list::groups(&state.thread_list)
+                .into_iter()
+                .find(|group| group.iter().any(|message| message.uid == 1))
+                .unwrap();
+            assert_eq!(group.len(), 2);
+            state.show_thread(group);
+            state.sender_action(target(&messages[0]), action);
+            assert_eq!(*state.selected.borrow(), vec![2]);
+            state
+                .toast
+                .root()
+                .and_downcast::<gtk::Window>()
+                .unwrap()
+                .close();
+        }
     }
 
     #[test]

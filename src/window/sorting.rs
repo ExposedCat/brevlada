@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 struct SortPreferences {
     senders_unread_first: bool,
     messages_unread_first: bool,
+    senders_only_unread: bool,
+    messages_only_unread: bool,
 }
 
 impl Default for SortPreferences {
@@ -13,6 +15,8 @@ impl Default for SortPreferences {
         Self {
             senders_unread_first: true,
             messages_unread_first: true,
+            senders_only_unread: false,
+            messages_only_unread: false,
         }
     }
 }
@@ -45,6 +49,10 @@ impl State {
             .set_unread_first(preferences.senders_unread_first);
         self.thread_unread_first
             .set_unread_first(preferences.messages_unread_first);
+        self.sender_unread_first
+            .set_only_unread(preferences.senders_only_unread);
+        self.thread_unread_first
+            .set_only_unread(preferences.messages_only_unread);
         for menu in [&self.sender_unread_first, &self.thread_unread_first] {
             let weak = Rc::downgrade(self);
             let path = path.clone();
@@ -53,6 +61,8 @@ impl State {
                     let preferences = SortPreferences {
                         senders_unread_first: state.sender_unread_first.unread_first(),
                         messages_unread_first: state.thread_unread_first.unread_first(),
+                        senders_only_unread: state.sender_unread_first.only_unread(),
+                        messages_only_unread: state.thread_unread_first.only_unread(),
                     };
                     if let Err(error) = preferences.save(&path) {
                         eprintln!("Could not save sorting options: {error}");
@@ -76,8 +86,10 @@ mod tests {
             std::env::temp_dir().join(format!("brevlada-sort-{}.json", glib::uuid_string_random()));
         let preferences = SortPreferences::load(&path).unwrap();
         assert!(preferences.senders_unread_first && preferences.messages_unread_first);
+        assert!(!preferences.senders_only_unread && !preferences.messages_only_unread);
         let partial: SortPreferences =
             serde_json::from_str(r#"{"senders_unread_first":false}"#).unwrap();
         assert!(!partial.senders_unread_first && partial.messages_unread_first);
+        assert!(!partial.senders_only_unread && !partial.messages_only_unread);
     }
 }

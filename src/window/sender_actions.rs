@@ -188,8 +188,14 @@ impl State {
                 .iter()
                 .position(|group| super::rendering::overlaps(group, &self.open_group.borrow()))
                 .unwrap_or(0);
-            self.next_message
-                .set(Some((sender_index as u32, thread_index as u32)));
+            let origins = self.navigation_origins.borrow();
+            let sender_index = origins[0]
+                .as_ref()
+                .map_or(sender_index as u32, |origin| origin.position());
+            let thread_index = origins[1]
+                .as_ref()
+                .map_or(thread_index as u32, |origin| origin.position());
+            self.next_message.set(Some((sender_index, thread_index)));
         }
         // Close explicitly unread mail so expanded cards do not immediately mark it read again.
         if replace_open_message || close_unread {

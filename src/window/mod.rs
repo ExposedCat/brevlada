@@ -13,6 +13,7 @@ mod lifecycle;
 mod list_actions;
 mod lists;
 mod message_navigation;
+mod navigation_origin;
 mod notifications;
 mod parcel_history;
 mod previews;
@@ -71,6 +72,7 @@ struct State {
     sender_pane: RefCell<models::sender_pane::SenderPane>,
     selected: RefCell<Vec<u32>>,
     next_message: Cell<Option<(u32, u32)>>,
+    navigation_origins: RefCell<[Option<navigation_origin::Origin>; 2]>,
     search_message: RefCell<Option<(u32, String)>>,
     notification_message: RefCell<Option<(u32, String)>>,
     search_sender: RefCell<Option<search_sender::SenderMatches>>,
@@ -457,6 +459,7 @@ impl State {
             sender_pane: RefCell::default(),
             selected: RefCell::new(Vec::new()),
             next_message: Cell::new(None),
+            navigation_origins: RefCell::new([None, None]),
             search_message: RefCell::default(),
             notification_message: RefCell::default(),
             search_sender: RefCell::default(),
@@ -2716,7 +2719,7 @@ mod diagnostics {
         for menu in [&state.sender_unread_first, &state.thread_unread_first] {
             assert!(menu.unread_first());
             let model = menu.widget.menu_model().unwrap();
-            assert_eq!(model.n_items(), 1);
+            assert_eq!(model.n_items(), 2);
             assert_eq!(
                 model
                     .item_attribute_value(0, "label", None)
@@ -2725,6 +2728,15 @@ mod diagnostics {
                     .as_deref(),
                 Some("Sort unread first")
             );
+            assert_eq!(
+                model
+                    .item_attribute_value(1, "label", None)
+                    .unwrap()
+                    .get::<String>()
+                    .as_deref(),
+                Some("Only unread")
+            );
+            assert!(!menu.only_unread());
             menu.widget
                 .activate_action("sort.unread-first", None)
                 .unwrap();
@@ -2737,12 +2749,19 @@ mod diagnostics {
         restored
             .sender_unread_first
             .widget
+            .activate_action("sort.only-unread", None)
+            .unwrap();
+        restored
+            .sender_unread_first
+            .widget
             .activate_action("sort.unread-first", None)
             .unwrap();
         let restarted = unread_test_state("org.example.BrevladaRestartedSortDiagnostic");
         restarted.remember_sorting(path);
         assert!(restarted.sender_unread_first.unread_first());
         assert!(!restarted.thread_unread_first.unread_first());
+        assert!(restarted.sender_unread_first.only_unread());
+        assert!(!restarted.thread_unread_first.only_unread());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

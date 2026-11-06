@@ -262,6 +262,18 @@ impl State {
             }
         }
         self.search_published_queries.borrow_mut()[usize::from(threads)] = query.to_owned();
+        let only_unread = if threads {
+            self.thread_unread_first.only_unread()
+        } else {
+            self.sender_unread_first.only_unread()
+        };
+        if only_unread {
+            (groups, locations) = groups
+                .into_iter()
+                .zip(locations.into_iter().chain(std::iter::repeat(None)))
+                .filter(|(group, _)| group.iter().any(|message| !message.is_read))
+                .unzip();
+        }
         let selected_group = ui::virtual_list::selected(list).and_then(|index| {
             ui::virtual_list::with_item(list, index, |row| {
                 (
@@ -441,6 +453,8 @@ impl State {
                     "Loading messages..."
                 } else if searching {
                     "No matching messages"
+                } else if only_unread {
+                    "No unread messages"
                 } else if sender.is_some() {
                     if self.recipient_mode() {
                         "No messages to this recipient"
@@ -521,6 +535,13 @@ impl State {
         let mut message = message.clone();
         self.merge_read_states(std::slice::from_mut(&mut message));
         message.prepare_display();
+        let read_changed = self
+            .messages
+            .borrow()
+            .iter()
+            .chain(self.sender_pane.borrow().messages())
+            .find(|old| old.uid == message.uid && old.message_id == message.message_id)
+            .is_some_and(|old| old.is_read != message.is_read);
         let search_changed = self
             .messages
             .borrow()
@@ -604,7 +625,13 @@ impl State {
             return;
         };
         let message = &visible;
-        self.refresh_message_rows(message);
+        if read_changed
+            && (self.sender_unread_first.only_unread() || self.thread_unread_first.only_unread())
+        {
+            self.render_list();
+        } else {
+            self.refresh_message_rows(message);
+        }
         *self.search_snapshots.borrow_mut() = [None, None];
         if search_changed {
             for threads in [false, true] {
