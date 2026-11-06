@@ -327,7 +327,7 @@ impl State {
             move |message| {
                 if let Some(state) = unsubscribe_state.upgrade() {
                     let Some(account) = state.account.borrow().clone() else {
-                        return;
+                        return false;
                     };
                     let folder = unsubscribe_folder
                         .clone()
@@ -338,12 +338,12 @@ impl State {
                         uid: message.uid,
                         message_id: message.message_id.clone(),
                     }) {
-                        if let Some(card) = state.cards.borrow().get(&message.uid) {
-                            card.finish_unsubscribe(false);
-                        }
                         state.toast.add_toast(adw::Toast::new(&error.to_string()));
+                        return false;
                     }
+                    return true;
                 }
+                false
             },
         )
     }

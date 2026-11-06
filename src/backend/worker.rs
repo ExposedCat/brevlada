@@ -277,6 +277,7 @@ pub struct Worker {
     commands: mpsc::Sender<Command>,
     cache_commands: mpsc::Sender<Command>,
     parcel_commands: mpsc::Sender<Command>,
+    unsubscribe_commands: mpsc::Sender<Command>,
     background: super::sync_queue::SyncQueue,
     bodies: super::body_queue::BodyQueue,
     avatars: AvatarQueue,
@@ -298,6 +299,7 @@ impl Worker {
                 background: super::sync_queue::SyncQueue::default(),
                 cache_commands: commands.clone(),
                 parcel_commands: commands.clone(),
+                unsubscribe_commands: commands.clone(),
                 commands,
                 bodies: super::body_queue::BodyQueue::default(),
                 avatars: AvatarQueue::default(),
@@ -336,7 +338,9 @@ impl Worker {
             });
             return Ok(());
         }
-        let channel = if matches!(command, Command::ParcelHistory { .. }) {
+        let channel = if matches!(command, Command::Unsubscribe { .. }) {
+            &self.unsubscribe_commands
+        } else if matches!(command, Command::ParcelHistory { .. }) {
             &self.parcel_commands
         } else if matches!(
             command,
@@ -422,6 +426,7 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     let (sender, receiver) = mpsc::channel();
     let (cache_sender, cache_receiver) = mpsc::channel();
     let (parcel_sender, parcel_receiver) = mpsc::channel();
+    let (unsubscribe_sender, unsubscribe_receiver) = mpsc::channel();
     let (events, results) = async_channel::unbounded();
     let background = super::sync_queue::SyncQueue::default();
     let bodies = super::body_queue::BodyQueue::with_background(background.clone());
@@ -430,6 +435,7 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
     super::avatar_worker::start(path.clone(), avatars.clone(), events.clone());
     super::sync_worker::start(path.clone(), background.clone(), events.clone());
     start_commands(path.clone(), receiver, events.clone(), background.clone());
+    super::unsubscribe::start(path.clone(), unsubscribe_receiver, events.clone());
     super::parcel_worker::start(
         path.clone(),
         parcel_receiver,
@@ -452,6 +458,7 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
             commands: sender,
             cache_commands: cache_sender,
             parcel_commands: parcel_sender,
+            unsubscribe_commands: unsubscribe_sender,
             background,
             bodies,
             avatars,
@@ -789,29 +796,6 @@ fn execute(
                 result,
             })?;
         }
-        Command::Unsubscribe {
-            account,
-            folder,
-            uid,
-            message_id,
-        } => {
-            let result = super::unsubscribe::execute(
-                &account,
-                &folder,
-                uid,
-                &message_id,
-                storage,
-                connections,
-            )
-            .map_err(|error| error.to_string());
-            events.send_blocking(Event::Unsubscribe {
-                account: account.email,
-                folder,
-                uid,
-                message_id,
-                result,
-            })?;
-        }
         Command::SaveDraft {
             account,
             from,
@@ -1041,6 +1025,7 @@ fn execute(
             storage.store_unread(&account.email, &folder, unread)?;
             events.send_blocking(Event::Unread(account.email, vec![(folder, unread)]))?;
         }
+        Command::Unsubscribe { .. } => unreachable!("unsubscribe uses its own worker"),
         Command::LoadSenderPage { .. }
         | Command::Dashboard { .. }
         | Command::DashboardOpen { .. }
@@ -1056,6 +1041,91 @@ fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsubscribe_finishes_without_waiting_for_mail_commands() {
+        let path = std::env::temp_dir().join(format!(
+            "brevlada-unsubscribe-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let account = Account {
+            email: "me@example.com".into(),
+            path: String::new(),
+            name: String::new(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        };
+        let message = super::super::parser::parse(
+            1,
+            b"Message-ID: <newsletter>\r\nList-Unsubscribe: <https://example.com/preferences>\r\n\r\n",
+            false,
+            false,
+        )
+        .unwrap();
+        Storage::open(&path)
+            .unwrap()
+            .store(&account.email, "INBOX", &message)
+            .unwrap();
+        let (mut worker, mail_commands) = Worker::recording();
+        let (unsubscribe_commands, receiver) = mpsc::channel();
+        worker.unsubscribe_commands = unsubscribe_commands;
+        let (events, results) = async_channel::unbounded();
+        super::super::unsubscribe::start(path.clone(), receiver, events);
+        worker.send(Command::Folders(account.clone())).unwrap();
+        for uid in [1, 2] {
+            worker
+                .send(Command::Unsubscribe {
+                    account: account.clone(),
+                    folder: "INBOX".into(),
+                    uid,
+                    message_id: message.message_id.clone(),
+                })
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let event = loop {
+                if let Ok(event) = results.try_recv() {
+                    break event;
+                }
+                assert!(std::time::Instant::now() < deadline, "Unsubscribe stalled");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            let Event::Unsubscribe {
+                account: email,
+                folder,
+                uid: completed_uid,
+                message_id,
+                result,
+            } = event
+            else {
+                panic!("Expected unsubscribe completion")
+            };
+            assert_eq!(email, account.email);
+            assert_eq!(folder, "INBOX");
+            assert_eq!(completed_uid, uid);
+            assert_eq!(message_id, "newsletter");
+            if uid == 1 {
+                assert!(
+                    matches!(result, Ok(super::super::unsubscribe::Outcome::Open(url)) if url == "https://example.com/preferences")
+                );
+            } else {
+                assert!(matches!(result, Err(error) if error.contains("no longer cached")));
+            }
+        }
+        assert!(matches!(mail_commands.try_recv(), Ok(Command::Folders(_))));
+        assert!(mail_commands.try_recv().is_err());
+        drop(worker);
+        assert!(results.recv_blocking().is_err());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn stale_or_missing_notification_targets_fail_before_accessing_accounts_or_mail() {
@@ -1165,6 +1235,7 @@ mod tests {
             record_commands: true,
             request: AtomicU64::default(),
             parcel_commands: commands.clone(),
+            unsubscribe_commands: commands.clone(),
             commands,
             cache_commands,
             background: super::super::sync_queue::SyncQueue::default(),

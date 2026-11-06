@@ -31,7 +31,7 @@ struct Content {
     on_media: Rc<dyn Fn()>,
     open: Rc<dyn Fn()>,
     respond: Rc<Respond>,
-    unsubscribe: Rc<dyn Fn(&Message)>,
+    unsubscribe: Rc<dyn Fn(&Message) -> bool>,
     response_pending: std::cell::RefCell<Vec<Action>>,
     signals: std::cell::RefCell<Vec<(gtk::Adjustment, gtk::glib::SignalHandlerId)>>,
 }
@@ -253,7 +253,7 @@ pub fn card(
     open: impl Fn() + 'static,
     respond: impl Fn(&Message, Action) + 'static,
     download_media: impl Fn() + 'static,
-    unsubscribe: impl Fn(&Message) + 'static,
+    unsubscribe: impl Fn(&Message) -> bool + 'static,
 ) -> Card {
     let widget = column("message-row-widget");
     widget.set_vexpand(false);
@@ -453,7 +453,10 @@ pub fn card(
             }
             button.set_sensitive(false);
             button.set_label("Unsubscribing…");
-            (content.unsubscribe)(&content.message.borrow());
+            if !(content.unsubscribe)(&content.message.borrow()) {
+                button.set_label("Unsubscribe");
+                button.set_sensitive(true);
+            }
         });
         row.add_suffix(&unsubscribe_button);
     }
@@ -485,6 +488,53 @@ mod diagnostics {
     use super::*;
 
     #[test]
+    #[ignore = "Requires a private graphical session; uses fixture messages without network access"]
+    fn unsubscribe_button_recovers_from_rejected_and_failed_requests() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let message = Message {
+            unsubscribe: Some(crate::models::Unsubscribe {
+                url: "https://example.com/preferences".into(),
+                one_click: Some(false),
+            }),
+            ..Default::default()
+        };
+        let accepted = Rc::new(Cell::new(false));
+        let request_accepted = accepted.clone();
+        let card = card(
+            &message,
+            false,
+            false,
+            false,
+            false,
+            &Avatars::new(|_| {}),
+            false,
+            false,
+            None,
+            String::new(),
+            || {},
+            |_, _| {},
+            || {},
+            move |_| request_accepted.get(),
+        );
+        let button = &card.content.unsubscribe_button;
+        button.emit_clicked();
+        assert_eq!(button.label().as_deref(), Some("Unsubscribe"));
+        assert!(button.is_sensitive());
+        accepted.set(true);
+        button.emit_clicked();
+        assert_eq!(button.label().as_deref(), Some("Unsubscribing…"));
+        assert!(!button.is_sensitive());
+        card.finish_unsubscribe(false);
+        assert_eq!(button.label().as_deref(), Some("Unsubscribe"));
+        assert!(button.is_sensitive());
+        button.emit_clicked();
+        card.finish_unsubscribe(true);
+        assert_eq!(button.label().as_deref(), Some("Unsubscribed"));
+        assert!(!button.is_sensitive());
+    }
+
+    #[test]
     #[ignore = "Requires a graphical session; maps a message card"]
     fn rsvp_body_never_creates_a_webview_before_its_invitation_loads() {
         gtk::init().unwrap();
@@ -507,7 +557,7 @@ mod diagnostics {
             || {},
             |_, _| {},
             || panic!("RSVP bodies must not request media"),
-            |_| {},
+            |_| false,
         );
         let window = gtk::Window::builder().child(&card.widget).build();
         window.present();
@@ -546,7 +596,7 @@ mod diagnostics {
             || {},
             |_, _| {},
             || panic!("RSVP bodies must not request media"),
-            |_| {},
+            |_| false,
         );
         window.set_child(Some(&known.widget));
         while context.pending() {

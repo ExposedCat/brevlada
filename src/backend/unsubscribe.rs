@@ -1,10 +1,57 @@
+use super::worker::{Command, Event};
 use super::{connections::Connections, parser::normalize_message_id, storage::Storage};
 use crate::models::Account;
 use anyhow::{Context, Result, ensure};
+use std::{path::PathBuf, sync::mpsc};
 
 pub enum Outcome {
     Open(String),
     Done,
+}
+
+pub fn start(
+    path: PathBuf,
+    requests: mpsc::Receiver<Command>,
+    events: async_channel::Sender<Event>,
+) {
+    std::thread::spawn(move || {
+        let mut connections = Connections::default();
+        while let Ok(command) = requests.recv() {
+            let Command::Unsubscribe {
+                account,
+                folder,
+                uid,
+                message_id,
+            } = command
+            else {
+                unreachable!("unsubscribe worker only accepts unsubscribe requests")
+            };
+            let result = Storage::open(&path)
+                .and_then(|storage| {
+                    execute(
+                        &account,
+                        &folder,
+                        uid,
+                        &message_id,
+                        &storage,
+                        &mut connections,
+                    )
+                })
+                .map_err(|error| error.to_string());
+            if events
+                .send_blocking(Event::Unsubscribe {
+                    account: account.email,
+                    folder,
+                    uid,
+                    message_id,
+                    result,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
 }
 
 pub fn execute(
