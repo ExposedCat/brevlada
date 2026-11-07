@@ -37,7 +37,8 @@
 .parcel-card,
 .calendar-card,
 .ticket-card,
-.receipt-card {
+.receipt-card,
+.subscription-card {
     border-radius: var(--spacing-md);
     background: var(--headerbar-bg-color);
     border: 1px solid var(--borders);

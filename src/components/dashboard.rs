@@ -1,6 +1,8 @@
 mod cards;
 mod filters;
+mod sections;
 mod series;
+mod subscriptions;
 
 use super::{account_switcher::AccountSwitcher, button, column, horizontal, label, scroll};
 use crate::{
@@ -8,7 +10,7 @@ use crate::{
     theme,
 };
 use adw::prelude::*;
-use std::{cell::RefCell, collections::HashSet, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 pub use cards::Tile;
 
@@ -24,7 +26,9 @@ pub struct Dashboard {
     stack: gtk::Stack,
     state: adw::StatusPage,
     content: gtk::Box,
-    expanded: Rc<RefCell<HashSet<Section>>>,
+    subscriptions: gtk::Box,
+    unsubscribe_buttons: RefCell<HashMap<String, gtk::Button>>,
+    expanded_limits: Rc<RefCell<HashMap<Section, usize>>>,
     callbacks: Changed,
 }
 
@@ -54,11 +58,23 @@ impl Dashboard {
         header.pack_end(&menu);
         header.pack_end(&refresh);
         widget.append(&header);
-        let content = column("dashboard-content");
+        let content = column("dashboard-sections");
         content.set_spacing(theme::DASHBOARD_SECTION_SPACING);
         content.set_valign(gtk::Align::Start);
+        content.set_hexpand(true);
+        let subscriptions = column("dashboard-subscriptions");
+        subscriptions.set_spacing(theme::SMALL_SPACING);
+        subscriptions.set_valign(gtk::Align::Start);
+        subscriptions.set_visible(false);
+        let layout = super::columns::Columns::new(
+            &subscriptions,
+            &content,
+            theme::DASHBOARD_SUBSCRIPTIONS_WIDTH,
+            theme::DASHBOARD_SECTION_SPACING,
+        );
+        layout.add_css_class("dashboard-content");
         let clamp = adw::Clamp::builder()
-            .child(&content)
+            .child(&layout)
             .maximum_size(theme::DASHBOARD_MAX_WIDTH)
             .tightening_threshold(theme::DASHBOARD_MAX_WIDTH)
             .build();
@@ -82,7 +98,9 @@ impl Dashboard {
             stack,
             state,
             content,
-            expanded: Rc::default(),
+            subscriptions,
+            unsubscribe_buttons: RefCell::default(),
+            expanded_limits: Rc::default(),
             callbacks: Rc::default(),
         }
     }
@@ -99,7 +117,19 @@ impl Dashboard {
         show_accounts: bool,
         pending: impl Fn(&Entry) -> bool,
     ) -> Vec<Tile> {
+        if let Some(focus) = self
+            .widget
+            .root()
+            .and_downcast::<gtk::Window>()
+            .and_then(|window| gtk::prelude::GtkWindowExt::focus(&window))
+            && (focus.is_ancestor(&self.content) || focus.is_ancestor(&self.subscriptions))
+        {
+            self.refresh.grab_focus();
+        }
+        self.unsubscribe_buttons.borrow_mut().clear();
         super::clear(&self.content);
+        super::clear(&self.subscriptions);
+        self.subscriptions.set_visible(false);
         if entries.is_empty() {
             self.status(
                 "Nothing in this range",
@@ -109,8 +139,12 @@ impl Dashboard {
         }
         let mut tiles = Vec::new();
         let selected = self.types.selected();
-        for section in Section::ALL
-            .into_iter()
+        for section in std::iter::once(Section::Subscriptions)
+            .chain(
+                Section::ALL
+                    .into_iter()
+                    .filter(|section| *section != Section::Subscriptions),
+            )
             .filter(|section| selected.contains(section))
         {
             let items: Vec<_> = entries
@@ -120,64 +154,24 @@ impl Dashboard {
             if items.is_empty() {
                 continue;
             }
-            let group = column("dashboard-section");
-            group.set_spacing(theme::SMALL_SPACING);
-            let heading = horizontal("dashboard-section-heading", theme::SMALL_SPACING);
-            heading.append(&label(section.title(), "title-3"));
-            group.append(&heading);
-            let mut widgets = Vec::new();
-            let count = items.len();
-            let expanded = self.expanded.borrow().contains(&section);
-            for entry in items.into_iter().take(if expanded {
-                count
-            } else {
-                theme::DASHBOARD_ROWS * 2
-            }) {
-                let tile = Tile::new(entry, show_accounts, pending(entry));
-                widgets.push(tile.widget.clone().upcast());
-                tiles.push(tile);
+            let (group, section_tiles) = self.section(section, items, show_accounts, &pending);
+            for tile in &section_tiles {
+                if let Some(button) = &tile.unsubscribe {
+                    self.unsubscribe_buttons
+                        .borrow_mut()
+                        .insert(tile.entry.id.clone(), button.clone());
+                }
             }
-            let flow = super::calendar::Flow::grid(
-                &widgets,
-                if expanded { 0 } else { theme::DASHBOARD_ROWS },
-            );
-            group.append(&flow);
-            let more = super::action_button(
-                if expanded {
-                    "pan-up-symbolic"
-                } else {
-                    "pan-down-symbolic"
-                },
-                &if expanded {
-                    "Show less".into()
-                } else {
-                    format!("Show all {count}")
-                },
-            );
-            more.remove_css_class("pill");
-            more.add_css_class("flat");
-            more.set_visible(expanded || count > theme::DASHBOARD_ROWS);
-            let target = more.downgrade();
-            flow.connect_visible_items_notify(move |flow| {
-                if let Some(button) = target.upgrade() {
-                    button.set_visible(expanded || count > flow.visible_items() as usize);
-                }
-            });
-            let expanded_sections = self.expanded.clone();
-            let callbacks = self.callbacks.clone();
-            more.connect_clicked(move |_| {
-                if expanded {
-                    expanded_sections.borrow_mut().remove(&section);
-                } else {
-                    expanded_sections.borrow_mut().insert(section);
-                }
-                for callback in callbacks.borrow().iter() {
-                    callback();
-                }
-            });
-            group.append(&more);
-            self.content.append(&group);
+            if section == Section::Subscriptions {
+                self.subscriptions.append(&group);
+                self.subscriptions.set_visible(true);
+            } else {
+                self.content.append(&group);
+            }
+            tiles.extend(section_tiles);
         }
+        self.content
+            .set_visible(self.content.first_child().is_some());
         if tiles.is_empty() {
             self.status(
                 "No items of these types",
@@ -187,6 +181,12 @@ impl Dashboard {
         }
         self.stack.set_visible_child_name("cards");
         tiles
+    }
+
+    pub fn unsubscribe_pending(&self, id: &str, pending: bool) {
+        if let Some(button) = self.unsubscribe_buttons.borrow().get(id) {
+            subscriptions::pending(button, pending);
+        }
     }
 
     pub fn connect_changed(&self, callback: impl Fn() + 'static) {
@@ -212,6 +212,198 @@ mod diagnostics {
     use std::time::Duration;
 
     #[test]
+    #[ignore = "Requires a private graphical session; presents fixture subscriptions and dashboard sections"]
+    fn subscriptions_sit_left_of_the_first_section_and_stack_in_narrow_windows() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let css = gtk::CssProvider::new();
+        css.load_from_string(theme::CSS);
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().unwrap(),
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        let view = Rc::new(Dashboard::new(&gtk::gio::SimpleAction::new(
+            "settings", None,
+        )));
+        view.accounts.set_selected("", "All accounts");
+        let source = Source {
+            account: "fixture@example.com".into(),
+            folder: "Newsletters".into(),
+            message: Message {
+                sender: "GNOME News <news@gnome.org>".into(),
+                unsubscribe: Some(crate::models::Unsubscribe {
+                    url: "https://example.com/unsubscribe".into(),
+                    one_click: Some(true),
+                }),
+                ..Default::default()
+            },
+        };
+        let entries = vec![
+            Entry {
+                id: "subscription".into(),
+                source: source.clone(),
+                content: Content::Subscription,
+                series: Vec::new(),
+            },
+            Entry {
+                id: "event".into(),
+                source,
+                content: Content::Event(Event {
+                    name: "Design workshop".into(),
+                    start: "2026-11-08T12:00:00Z".into(),
+                    ..Default::default()
+                }),
+                series: Vec::new(),
+            },
+        ];
+        let tiles = view.render(&entries, true, |_| false);
+        assert_eq!(tiles.len(), 2);
+        let button = tiles[0].unsubscribe.as_ref().unwrap();
+        let button_text = |button: &gtk::Button| {
+            button
+                .child()
+                .unwrap()
+                .last_child()
+                .and_downcast::<gtk::Label>()
+                .unwrap()
+                .text()
+                .to_string()
+        };
+        assert_eq!(button_text(button), "Unsubscribe");
+        assert!(button.has_css_class("pill"));
+        assert_eq!(
+            button
+                .child()
+                .unwrap()
+                .first_child()
+                .and_downcast::<gtk::Image>()
+                .unwrap()
+                .icon_name()
+                .as_deref(),
+            Some("list-remove-symbolic")
+        );
+        assert!(button.is_sensitive());
+        let window = gtk::Window::builder()
+            .title("Brevlada dashboard subscriptions diagnostic")
+            .child(&view.widget)
+            .default_width(1200)
+            .default_height(800)
+            .build();
+        window.present();
+        let settle = || {
+            gtk::glib::MainContext::default()
+                .block_on(gtk::glib::timeout_future(Duration::from_millis(200)))
+        };
+        settle();
+        let subscriptions = view.subscriptions.compute_bounds(&window).unwrap();
+        let sections = view.content.compute_bounds(&window).unwrap();
+        assert!(subscriptions.x() + subscriptions.width() < sections.x());
+        assert_eq!(subscriptions.y(), sections.y());
+        if std::env::var_os("BREVLADA_DIAGNOSTIC_HOLD").is_some() {
+            gtk::glib::MainContext::default()
+                .block_on(gtk::glib::timeout_future(Duration::from_secs(8)));
+        }
+        window.set_default_size(420, 800);
+        settle();
+        let subscriptions = view.subscriptions.compute_bounds(&window).unwrap();
+        let sections = view.content.compute_bounds(&window).unwrap();
+        assert_eq!(subscriptions.x(), sections.x());
+        assert!(subscriptions.y() + subscriptions.height() < sections.y());
+        let tiles = view.render(&entries, true, |entry| {
+            matches!(entry.content, Content::Subscription)
+        });
+        let button = tiles[0].unsubscribe.as_ref().unwrap();
+        assert_eq!(button_text(button), "Unsubscribing…");
+        assert!(!button.is_sensitive());
+        view.render(&entries[1..], false, |_| false);
+        settle();
+        assert!(!view.subscriptions.get_visible());
+        assert!(view.content.get_visible());
+        assert_eq!(view.stack.visible_child_name().as_deref(), Some("cards"));
+        view.render(&entries[..1], false, |_| false);
+        settle();
+        assert!(view.subscriptions.get_visible());
+        assert!(!view.content.get_visible());
+        assert_eq!(view.stack.visible_child_name().as_deref(), Some("cards"));
+        let subscriptions: Rc<Vec<_>> = Rc::new(
+            (0..27)
+                .map(|index| Entry {
+                    id: format!("subscription-{index}"),
+                    ..entries[0].clone()
+                })
+                .collect(),
+        );
+        let weak = Rc::downgrade(&view);
+        let items = subscriptions.clone();
+        view.connect_changed(move || {
+            if let Some(view) = weak.upgrade() {
+                view.render(&items, true, |_| false);
+            }
+        });
+        view.render(&subscriptions, true, |_| false);
+        settle();
+        let count = || {
+            view.subscriptions
+                .first_child()
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .next_sibling()
+                .unwrap()
+                .observe_children()
+                .n_items()
+        };
+        let more = || {
+            view.subscriptions
+                .first_child()
+                .unwrap()
+                .last_child()
+                .unwrap()
+                .first_child()
+                .and_downcast::<gtk::Button>()
+                .unwrap()
+        };
+        let less = || {
+            view.subscriptions
+                .first_child()
+                .unwrap()
+                .last_child()
+                .unwrap()
+                .last_child()
+                .and_downcast::<gtk::Button>()
+                .unwrap()
+        };
+        assert_eq!(count(), theme::DASHBOARD_ROWS as u32);
+        assert!(more().get_visible());
+        assert!(!less().get_visible());
+        assert_eq!(button_text(&more()), "Show 10 more");
+        more().emit_clicked();
+        settle();
+        assert_eq!(count(), 13);
+        assert!(less().get_visible());
+        assert_eq!(button_text(&more()), "Show 10 more");
+        more().emit_clicked();
+        settle();
+        assert_eq!(count(), 23);
+        assert_eq!(button_text(&more()), "Show 4 more");
+        more().emit_clicked();
+        settle();
+        assert_eq!(count(), 27);
+        assert!(!more().get_visible());
+        assert!(less().get_visible());
+        assert_eq!(button_text(&less()), "Show less");
+        less().emit_clicked();
+        settle();
+        assert_eq!(count(), theme::DASHBOARD_ROWS as u32);
+        assert!(!less().get_visible());
+        assert_eq!(button_text(&more()), "Show 10 more");
+        view.render(&[], false, |_| false);
+        assert_eq!(view.stack.visible_child_name().as_deref(), Some("state"));
+        window.close();
+    }
+
+    #[test]
     #[ignore = "Requires a private graphical session; presents fixture dashboard sections"]
     fn sections_limit_rows_expand_and_keep_equal_grid_spacing() {
         gtk::init().unwrap();
@@ -228,7 +420,7 @@ mod diagnostics {
         )));
         view.accounts.set_selected("", "All accounts");
         let entries: Rc<Vec<_>> = Rc::new(
-            (0..10)
+            (0..29)
                 .map(|index| Entry {
                     id: index.to_string(),
                     series: Vec::new(),
@@ -286,29 +478,59 @@ mod diagnostics {
         let c = third.compute_bounds(&grid()).unwrap();
         assert_eq!(b.x() - a.x() - a.width(), theme::SPACING as f32);
         assert_eq!(c.y() - a.y() - a.height(), theme::SPACING as f32);
-        let more = view
-            .content
-            .first_child()
-            .unwrap()
-            .last_child()
-            .and_downcast::<gtk::Button>()
-            .unwrap();
-        assert!(more.is_visible());
-        more.emit_clicked();
+        let more = || {
+            view.content
+                .first_child()
+                .unwrap()
+                .last_child()
+                .unwrap()
+                .first_child()
+                .and_downcast::<gtk::Button>()
+                .unwrap()
+        };
+        let less = || {
+            view.content
+                .first_child()
+                .unwrap()
+                .last_child()
+                .unwrap()
+                .last_child()
+                .and_downcast::<gtk::Button>()
+                .unwrap()
+        };
+        let text = |button: &gtk::Button| {
+            button
+                .child()
+                .unwrap()
+                .last_child()
+                .and_downcast::<gtk::Label>()
+                .unwrap()
+                .text()
+                .to_string()
+        };
+        assert!(more().get_visible());
+        assert!(!less().get_visible());
+        assert_eq!(text(&more()), "Show 10 more");
+        more().emit_clicked();
         settle();
-        assert_eq!(grid().visible_items(), 10);
-        view.content
-            .first_child()
-            .unwrap()
-            .last_child()
-            .and_downcast::<gtk::Button>()
-            .unwrap()
-            .emit_clicked();
+        assert_eq!(grid().visible_items(), 16);
+        assert!(less().get_visible());
+        more().emit_clicked();
+        settle();
+        assert_eq!(grid().visible_items(), 26);
+        assert_eq!(text(&more()), "Show 3 more");
+        more().emit_clicked();
+        settle();
+        assert_eq!(grid().visible_items(), 29);
+        assert!(!more().get_visible());
+        assert!(less().get_visible());
+        less().emit_clicked();
         settle();
         assert_eq!(grid().visible_items(), 6);
         window.set_default_size(420, 900);
         settle();
         assert_eq!(grid().visible_items(), 3);
+        assert_eq!(text(&more()), "Show 10 more");
         assert!(
             grid()
                 .first_child()
@@ -320,6 +542,13 @@ mod diagnostics {
                 .y()
                 > 0.0
         );
+        more().emit_clicked();
+        settle();
+        assert_eq!(grid().visible_items(), 13);
+        assert_eq!(text(&more()), "Show 10 more");
+        less().emit_clicked();
+        settle();
+        assert_eq!(grid().visible_items(), 3);
         window.close();
     }
 }

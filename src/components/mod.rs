@@ -11,6 +11,7 @@ mod body;
 mod body_layout;
 pub(crate) mod body_renderer;
 pub mod calendar;
+pub mod columns;
 pub mod compose;
 mod compose_attachments;
 pub mod dashboard;

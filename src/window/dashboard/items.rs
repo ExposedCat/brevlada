@@ -18,11 +18,25 @@ impl State {
                     event.uid.clone().unwrap_or_default(),
                     event.recurrence_id.clone(),
                 ))
+            } else if matches!(entry.content, models::dashboard::Content::Subscription) {
+                self.dashboard
+                    .unsubscribing
+                    .borrow()
+                    .contains_key(&entry.id)
             } else {
                 false
             }
         };
         for tile in self.dashboard.view.render(&entries, show_accounts, pending) {
+            if let Some(button) = &tile.unsubscribe {
+                let weak = Rc::downgrade(self);
+                let entry = tile.entry.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(state) = weak.upgrade() {
+                        state.unsubscribe_dashboard(&entry);
+                    }
+                });
+            }
             let weak = Rc::downgrade(self);
             let entry = tile.entry.clone();
             tile.connect_response(move |response| {
@@ -107,7 +121,7 @@ impl State {
         }
     }
 
-    fn save_dashboard_dismissed(&self) {
+    pub(super) fn save_dashboard_dismissed(&self) {
         let result = (|| -> anyhow::Result<()> {
             let path = dismissed_path();
             std::fs::create_dir_all(path.parent().unwrap())?;

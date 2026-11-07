@@ -21,7 +21,7 @@ impl Storage {
              WHERE h.id IN (
                 SELECT id FROM rust_headers WHERE account_id IN (SELECT value FROM json_each(?1))
                 AND folder IS NOT NULL AND NOT is_draft AND NOT is_spam
-                AND (parcels<>'[]' OR calendar_events<>'[]' OR tickets<>'[]')
+                AND (parcels<>'[]' OR calendar_events<>'[]' OR tickets<>'[]' OR unsubscribe<>'null')
                 UNION SELECT id FROM rust_headers WHERE account_id IN (SELECT value FROM json_each(?1))
                 AND folder IS NULL AND NOT is_draft AND calendar_events<>'[]'
                 UNION SELECT h.id FROM rust_message_items i JOIN rust_headers h ON h.id=i.header_id
@@ -57,6 +57,102 @@ impl Storage {
 mod tests {
     use super::*;
     use crate::models::{Message, calendar::Event};
+
+    #[test]
+    fn subscriptions_aggregate_all_indexed_folders_by_account_and_sender_outside_the_date_range() {
+        let storage = Storage::open(std::path::Path::new(":memory:")).unwrap();
+        let now = dashboard::timestamp("2026-11-07T12:00:00Z").unwrap();
+        let message = Message {
+            uid: 1,
+            message_id: "newsletter-old".into(),
+            sender: "News <news@example.com>".into(),
+            timestamp: now - 400 * 86400,
+            unsubscribe: Some(crate::models::Unsubscribe {
+                url: "https://example.com/unsubscribe/old".into(),
+                one_click: Some(true),
+            }),
+            ..Default::default()
+        };
+        for (account, folder) in [
+            ("one", "INBOX"),
+            ("one", "Archive"),
+            ("two", "Newsletters"),
+            ("other", "INBOX"),
+        ] {
+            storage.store(account, folder, &message).unwrap();
+        }
+        let latest = Message {
+            uid: 2,
+            message_id: "newsletter-latest".into(),
+            timestamp: now - 200 * 86400,
+            unsubscribe: Some(crate::models::Unsubscribe {
+                url: "https://example.com/unsubscribe/latest".into(),
+                one_click: Some(true),
+            }),
+            ..message.clone()
+        };
+        storage.store("one", "Archive", &latest).unwrap();
+        storage
+            .store(
+                "one",
+                "INBOX",
+                &Message {
+                    uid: 3,
+                    message_id: "not-a-subscription".into(),
+                    timestamp: now,
+                    unsubscribe: None,
+                    ..message.clone()
+                },
+            )
+            .unwrap();
+        for folder in ["Trash", "Junk", "Drafts"] {
+            storage
+                .store(
+                    "one",
+                    folder,
+                    &Message {
+                        sender: format!("{folder}@example.com"),
+                        is_draft: folder == "Drafts",
+                        ..message.clone()
+                    },
+                )
+                .unwrap();
+        }
+        let items = storage
+            .dashboard(&["one".into(), "two".into()], now, Range::Week)
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(
+            items
+                .iter()
+                .all(|entry| matches!(entry.content, dashboard::Content::Subscription))
+        );
+        let one = items
+            .iter()
+            .find(|entry| entry.source.account == "one")
+            .unwrap();
+        assert_eq!(one.source.folder, "Archive");
+        assert_eq!(one.source.message.uid, 2);
+        assert_eq!(
+            one.source.message.unsubscribe.as_ref().unwrap().url,
+            "https://example.com/unsubscribe/latest"
+        );
+        assert!(
+            !storage
+                .message("one", "Archive", 2)
+                .unwrap()
+                .unwrap()
+                .is_read
+        );
+        assert_eq!(
+            storage
+                .dashboard(&["two".into()], now, Range::Year)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(storage.dashboard(&[], now, Range::Week).unwrap().is_empty());
+    }
 
     #[test]
     fn dashboard_events_include_local_rsvp_state() {

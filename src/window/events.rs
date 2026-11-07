@@ -83,6 +83,7 @@ impl State {
                 result,
             } => {
                 let done = matches!(&result, Ok(crate::backend::unsubscribe::Outcome::Done));
+                self.dashboard_unsubscribe_finished(&account, &folder, uid, &message_id, done);
                 if self
                     .account
                     .borrow()

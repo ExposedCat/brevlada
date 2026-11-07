@@ -3,6 +3,7 @@ mod event_identity;
 mod events;
 mod parcels;
 mod range;
+mod subscriptions;
 
 use super::{Message, calendar, parcel, receipt, ticket};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
@@ -12,6 +13,7 @@ pub use range::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Section {
+    Subscriptions,
     Parcels,
     Events,
     Tickets,
@@ -20,16 +22,18 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Parcels,
         Self::Events,
         Self::Tickets,
         Self::Receipts,
         Self::Orders,
+        Self::Subscriptions,
     ];
 
     pub fn title(self) -> &'static str {
         match self {
+            Self::Subscriptions => "Subscriptions",
             Self::Parcels => "Parcels",
             Self::Events => "Events",
             Self::Tickets => "Tickets",
@@ -48,6 +52,7 @@ pub struct Source {
 
 #[derive(Clone, Debug)]
 pub enum Content {
+    Subscription,
     Parcel(parcel::Parcel),
     Event(calendar::Event),
     Ticket(ticket::Reservation),
@@ -71,6 +76,7 @@ pub struct Occurrence {
 impl Entry {
     pub fn section(&self) -> Section {
         match &self.content {
+            Content::Subscription => Section::Subscriptions,
             Content::Parcel(_) => Section::Parcels,
             Content::Event(_) => Section::Events,
             Content::Ticket(_) => Section::Tickets,
@@ -86,6 +92,7 @@ impl Entry {
 
     pub fn date(&self) -> Option<&str> {
         match &self.content {
+            Content::Subscription => None,
             Content::Parcel(parcel) => {
                 let state = parcel.details["deliveryStatus"].as_str();
                 let completed = matches!(state, Some("Delivered" | "Returned" | "Cancelled"));

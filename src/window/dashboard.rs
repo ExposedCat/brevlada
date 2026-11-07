@@ -1,4 +1,5 @@
 mod items;
+mod subscriptions;
 
 use super::*;
 use items::dismissed_path;
@@ -15,6 +16,7 @@ pub(super) struct Dashboard {
     dirty: Cell<bool>,
     items: RefCell<Vec<Entry>>,
     dismissed: RefCell<HashSet<String>>,
+    unsubscribing: RefCell<HashMap<String, models::dashboard::Source>>,
 }
 
 impl Dashboard {
@@ -34,6 +36,7 @@ impl Dashboard {
             dirty: Cell::new(false),
             items: RefCell::default(),
             dismissed: RefCell::new(dismissed),
+            unsubscribing: RefCell::default(),
         }
     }
 }

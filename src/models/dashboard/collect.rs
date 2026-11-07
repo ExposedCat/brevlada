@@ -9,6 +9,7 @@ pub fn entries(mut sources: Vec<Source>, now: i64, range: Range) -> Vec<Entry> {
     sources.sort_by_key(|source| std::cmp::Reverse(source.message.timestamp));
     let mut seen = HashSet::new();
     let mut result = super::parcels::entries(&sources, now, range);
+    result.extend(super::subscriptions::entries(&sources));
     result.extend(super::events::entries(&sources, now, range));
     for source in &sources {
         if source.folder.is_empty() {

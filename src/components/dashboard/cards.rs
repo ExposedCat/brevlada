@@ -11,6 +11,7 @@ pub struct Tile {
     pub widget: gtk::Box,
     pub open: gtk::Button,
     pub dismiss: gtk::Button,
+    pub unsubscribe: Option<gtk::Button>,
     pub entry: Entry,
     pub series_open: Vec<(gtk::Button, Source)>,
     respond: Respond,
@@ -22,6 +23,7 @@ impl Tile {
         let sender = if name.is_empty() { address } else { name };
         let respond: Respond = Rc::default();
         let (widget, actions) = match &entry.content {
+            Content::Subscription => super::subscriptions::with_actions(entry, show_accounts),
             Content::Parcel(parcel) => {
                 super::super::parcel::with_actions(parcel, entry.source.message.timestamp)
             }
@@ -43,6 +45,19 @@ impl Tile {
         };
         widget.add_css_class("dashboard-card");
         widget.set_hexpand(true);
+        let unsubscribe = matches!(entry.content, Content::Subscription).then(|| {
+            let button = super::super::action_button(
+                "list-remove-symbolic",
+                if pending {
+                    "Unsubscribing…"
+                } else {
+                    "Unsubscribe"
+                },
+            );
+            button.set_sensitive(!pending);
+            super::super::append_action(&actions, &button);
+            button
+        });
         let open = super::super::action_button("mail-unread-symbolic", "Open email");
         if show_accounts {
             open.set_tooltip_text(Some(&entry.source.account));
@@ -68,6 +83,7 @@ impl Tile {
             widget,
             open,
             dismiss,
+            unsubscribe,
             entry: entry.clone(),
             series_open,
             respond,
