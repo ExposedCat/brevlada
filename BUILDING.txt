@@ -119,7 +119,10 @@ change establishes a new baseline because the old message IDs are invalid.
 Checking uses the existing five-minute sync cycle, including retries after a
 network failure and refreshing Online Accounts. IMAP IDLE is not implemented.
 
-Interactive folder/message loads and background caching run on separate workers.
+Cached message lists load independently of the network command queue and remain
+available while an interactive refresh is pending. Background list updates also
+appear during that refresh. Interactive folder/message loads and background
+caching run on separate workers.
 Opened conversation bodies load from top to bottom before previews and history
 lookups. Background caching pauses while those bodies load and then resumes.
 Background caching starts for all accounts at launch and checks again every five
@@ -139,8 +142,9 @@ Trash/Junk special-use folders and common Trash/Spam names are excluded.
 The sync header shows completed/total accounts, folders, and message-cache entries
 across all accounts, hiding totals until discovery is complete. A message present
 in multiple folders is cached and counted separately in each folder. The last-sync
-timestamp is saved at the start of a new sync and restored on startup; "Last synced"
-uses that start time, including when a sync was interrupted.
+timestamp is saved at the start of a new sync and restored on startup; "Last sync"
+uses that start time, including when a sync was interrupted. Failed background
+requests show "Sync failed" instead of implying successful completion.
 
 Headers and bodies are saved incrementally in SQLite WAL transactions. Cache
 connections share a write gate, so background sync, body loads, and avatar saves

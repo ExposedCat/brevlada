@@ -344,7 +344,8 @@ impl Worker {
             &self.parcel_commands
         } else if matches!(
             command,
-            Command::LoadSenderPage { .. }
+            Command::Load { .. }
+                | Command::LoadSenderPage { .. }
                 | Command::RelatedSent { .. }
                 | Command::CalendarHistory { .. }
                 | Command::Dashboard { .. }
@@ -449,7 +450,7 @@ pub fn start(path: PathBuf) -> (Worker, async_channel::Receiver<Event>) {
         bodies.clone(),
         events.clone(),
     );
-    start_cache_reads(path, cache_receiver, events, history_sender);
+    start_cache_reads(path, cache_receiver, events, history_sender, sender.clone());
     (
         Worker {
             #[cfg(test)]
@@ -472,6 +473,7 @@ fn start_cache_reads(
     receiver: mpsc::Receiver<Command>,
     events: async_channel::Sender<Event>,
     history: mpsc::Sender<Command>,
+    network: mpsc::Sender<Command>,
 ) {
     std::thread::spawn(move || {
         let mut storage = None;
@@ -482,6 +484,15 @@ fn start_cache_reads(
                 }
                 let storage = storage.as_ref().unwrap();
                 Ok(match &command {
+                    Command::Load {
+                        account,
+                        folder,
+                        generation,
+                    } => Event::Messages(
+                        *generation,
+                        storage.sender_headers(&account.email, folder)?,
+                        true,
+                    ),
                     Command::DashboardOpen { source, request } => Event::DashboardOpened(
                         *request,
                         storage
@@ -570,6 +581,9 @@ fn start_cache_reads(
             let event = match result {
                 Ok(event) => event,
                 Err(error) => match &command {
+                    Command::Load { generation, .. } => {
+                        Event::Error(Some(*generation), error.to_string())
+                    }
                     Command::DashboardOpen { request, .. } => {
                         Event::DashboardOpened(*request, Err(error.to_string()))
                     }
@@ -589,10 +603,24 @@ fn start_cache_reads(
                     _ => continue,
                 },
             };
+            let refresh = matches!(event, Event::Messages(_, _, true));
             if events.send_blocking(event).is_err() {
                 break;
             }
-            if matches!(command, Command::RelatedSent { .. }) {
+            // Publish cached rows before joining the network queue. A stalled
+            // request for another mailbox must not hide mail already on disk.
+            if refresh {
+                let Command::Load { generation, .. } = &command else {
+                    unreachable!()
+                };
+                let generation = *generation;
+                if network.send(command).is_err() {
+                    let _ = events.send_blocking(Event::Error(
+                        Some(generation),
+                        "Mail service stopped".into(),
+                    ));
+                }
+            } else if matches!(command, Command::RelatedSent { .. }) {
                 let _ = history.send(command);
             }
         }
@@ -1000,11 +1028,6 @@ fn execute(
             folder,
             generation,
         } => {
-            events.send_blocking(Event::Messages(
-                generation,
-                storage.sender_headers(&account.email, &folder)?,
-                true,
-            ))?;
             let revision = storage.read_revision()?;
             let (validity, messages, uids) =
                 connections.execute(&account, |mail| mail.headers(&folder))?;
@@ -1041,6 +1064,99 @@ fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_lists_load_while_network_commands_are_stalled() {
+        let path = std::env::temp_dir().join(format!(
+            "brevlada-list-cache-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let account = Account {
+            email: "me@example.com".into(),
+            path: String::new(),
+            name: String::new(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        };
+        Storage::open(&path)
+            .unwrap()
+            .store(
+                &account.email,
+                "INBOX",
+                &Message {
+                    uid: 42,
+                    sender: "sender@example.com".into(),
+                    subject: "Already cached".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let (mut worker, network_commands) = Worker::recording();
+        let (cache_commands, cache_receiver) = mpsc::channel();
+        worker.cache_commands = cache_commands;
+        let (events, results) = async_channel::unbounded();
+        let (history_sender, _history_receiver) = mpsc::channel();
+        start_cache_reads(
+            path.clone(),
+            cache_receiver,
+            events,
+            history_sender,
+            worker.commands.clone(),
+        );
+        // No consumer drains the network queue, simulating a stalled request.
+        worker.send(Command::Folders(account.clone())).unwrap();
+        for (generation, folder, expected) in [(3, "INBOX", 1), (4, "Empty", 0)] {
+            worker
+                .send(Command::Load {
+                    account: account.clone(),
+                    folder: folder.into(),
+                    generation,
+                })
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let event = loop {
+                match results.try_recv() {
+                    Ok(event) => break event,
+                    Err(async_channel::TryRecvError::Empty)
+                        if std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("Cached list did not complete: {error}"),
+                }
+            };
+            let Event::Messages(actual, messages, true) = event else {
+                panic!("Expected cached list before network refresh")
+            };
+            assert_eq!(actual, generation);
+            assert_eq!(messages.len(), expected);
+            if expected > 0 {
+                assert_eq!(messages[0].uid, 42);
+                assert_eq!(messages[0].subject, "Already cached");
+            }
+        }
+        assert!(matches!(
+            network_commands.try_recv(),
+            Ok(Command::Folders(_))
+        ));
+        for expected in [3, 4] {
+            assert!(matches!(
+                network_commands.recv_timeout(std::time::Duration::from_secs(5)),
+                Ok(Command::Load { generation, .. }) if generation == expected
+            ));
+        }
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn unsubscribe_finishes_without_waiting_for_mail_commands() {
@@ -1230,7 +1346,13 @@ mod tests {
         let (cache_commands, cache_receiver) = mpsc::channel();
         let (events, results) = async_channel::unbounded();
         let (history_sender, _history_receiver) = mpsc::channel();
-        start_cache_reads(path.clone(), cache_receiver, events, history_sender);
+        start_cache_reads(
+            path.clone(),
+            cache_receiver,
+            events,
+            history_sender,
+            commands.clone(),
+        );
         let worker = Worker {
             record_commands: true,
             request: AtomicU64::default(),

@@ -673,9 +673,13 @@ impl State {
                     .is_some_and(|account| account.email == email)
                     && *self.folder.borrow() == folder;
                 if current {
-                    if !self.loading.get() {
-                        self.event(Event::Messages(self.generation.get(), messages, false));
-                    }
+                    // Background sync can deliver usable rows while the
+                    // interactive refresh is still waiting for the server.
+                    self.event(Event::Messages(
+                        self.generation.get(),
+                        messages,
+                        self.loading.get(),
+                    ));
                 } else {
                     if let Some(previous) = self
                         .folder_cache

@@ -3165,6 +3165,74 @@ mod diagnostics {
     }
 
     #[test]
+    #[ignore = "Requires a private graphical session; cached fixtures and a recording worker"]
+    fn background_lists_appear_during_a_pending_interactive_refresh() {
+        gtk::init().unwrap();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("org.example.BrevladaCachedListDiagnostic")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let shell = ui::shell::Shell::new(&app);
+        let window = shell.window.clone();
+        let state = State::new(
+            shell,
+            worker::Worker::disconnected(),
+            ui::expansion::Expansion::default(),
+            ui::avatars::Avatars::new(|_| {}),
+        );
+        *state.account.borrow_mut() = Some(Account {
+            email: "fixture".into(),
+            path: String::new(),
+            name: String::new(),
+            host: String::new(),
+            username: String::new(),
+            port: 993,
+            ssl: true,
+            tls: false,
+            oauth2: false,
+            smtp: None,
+        });
+        let first = Message {
+            uid: 1,
+            sender: "sender@example.com".into(),
+            subject: "Cached message".into(),
+            ..Default::default()
+        };
+        state.messages.borrow_mut().clear();
+        state.folder_cache.borrow_mut().clear();
+        state.loading.set(true);
+        state.render_list();
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("state")
+        );
+        // A completed background list must reveal cached rows even when an
+        // interactive refresh is still blocked on the mail server.
+        state.event(Event::CacheList(
+            "fixture".into(),
+            state.folder.borrow().clone(),
+            vec![first],
+        ));
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("list")
+        );
+        assert_eq!(ui::virtual_list::groups(&state.list).len(), 1);
+        assert!(state.loading.get());
+        assert!(!state.refresh.is_sensitive());
+        state.event(Event::Error(Some(state.generation.get()), "Offline".into()));
+        assert!(!state.loading.get());
+        assert!(state.refresh.is_sensitive());
+        assert_eq!(
+            state.list_stack.visible_child_name().as_deref(),
+            Some("list")
+        );
+        window.close();
+    }
+
+    #[test]
     #[ignore = "Requires a graphical session; constructs widgets without presenting a window"]
     fn loading_and_refresh_keep_selection_rows_and_cards() {
         gtk::init().unwrap();
@@ -3277,7 +3345,7 @@ mod diagnostics {
         assert!(!folders_counter.get_visible() && !messages_counter.get_visible());
         assert!(
             labels(state.sync_status.widget.clone().upcast())
-                .contains(&"Last synced: just now".into())
+                .contains(&"Last sync: just now".into())
         );
         *state.account.borrow_mut() = Some(Account {
             path: String::new(),

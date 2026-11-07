@@ -31,7 +31,7 @@ impl State {
             .into_iter()
             .enumerate()
             .filter_map(|(index, group)| {
-                let message = group.first()?;
+                let message = models::senders::preview(&group)?;
                 (current_sender.as_deref() != Some(models::senders::list_key(message).as_str())
                     && (!only_unread || group.iter().any(|message| !message.is_read)))
                 .then_some((index, message.clone()))
@@ -78,6 +78,79 @@ mod diagnostics {
 
     fn target(message: &Message) -> ActionTarget {
         ActionTarget::Messages(vec![(message.uid, message.message_id.clone())])
+    }
+
+    #[test]
+    #[ignore = "Requires a private graphical session; uses fixture conversations and a recording worker"]
+    fn removing_the_last_thread_opens_the_next_senders_unread_preview() {
+        for action in [SenderAction::Delete, SenderAction::Archive] {
+            for only_unread in [false, true] {
+                let (worker, _commands) = worker::Worker::recording();
+                let diagnostic =
+                    format!("org.example.BrevladaUnreadPreview{action:?}{only_unread}");
+                let state =
+                    super::super::diagnostics::unread_test_state_with_worker(&diagnostic, worker);
+                state.thread_unread_first.set_only_unread(only_unread);
+                let messages: Vec<_> = [
+                    (1, "first", 400, false),
+                    (2, "next", 300, true),
+                    (3, "next", 200, false),
+                    (4, "next", 100, true),
+                ]
+                .into_iter()
+                .map(|(uid, sender, timestamp, is_read)| Message {
+                    uid,
+                    sender: format!("{sender}@example.com"),
+                    message_id: uid.to_string(),
+                    subject: format!("Conversation {uid}"),
+                    timestamp,
+                    is_read,
+                    read_revision: 1,
+                    ..Default::default()
+                })
+                .collect();
+                *state.messages.borrow_mut() = messages.clone();
+                state.render_list();
+                let position =
+                    ui::virtual_list::position(&state.list, &messages[0].sender).unwrap();
+                state.activate_sender(position);
+                let ticket = state.sender_pane.borrow().ticket();
+                state.event(Event::SenderPage(
+                    state.generation.get(),
+                    ticket,
+                    vec![messages[0].clone()],
+                    false,
+                ));
+                state.show_thread(vec![messages[0].clone()]);
+                state.sender_action(target(&messages[0]), action.clone());
+                assert_eq!(
+                    state.sender_pane.borrow().sender(),
+                    Some("next@example.com")
+                );
+                assert_eq!(
+                    *state.selected.borrow(),
+                    vec![3],
+                    "{action:?}, only unread={only_unread}"
+                );
+                let ticket = state.sender_pane.borrow().ticket();
+                state.event(Event::SenderPage(
+                    state.generation.get(),
+                    ticket,
+                    messages[1..].to_vec(),
+                    false,
+                ));
+                assert_eq!(*state.selected.borrow(), vec![3]);
+                let position = ui::virtual_list::selected(&state.thread_list).unwrap();
+                let row = ui::virtual_list::item(&state.thread_list, position).unwrap();
+                assert_eq!(row.messages[0].uid, 3);
+                state
+                    .toast
+                    .root()
+                    .and_downcast::<gtk::Window>()
+                    .unwrap()
+                    .close();
+            }
+        }
     }
 
     #[test]
@@ -167,7 +240,7 @@ mod diagnostics {
 
     #[test]
     #[ignore = "Requires a private graphical session; records navigation while only unread conversations are visible"]
-    fn unread_navigation_skips_read_senders_and_waits_for_the_next_senders_unread_mail() {
+    fn unread_navigation_skips_read_senders_and_opens_the_next_senders_cached_unread_mail() {
         let (worker, commands) = worker::Worker::recording();
         let state = super::super::diagnostics::unread_test_state_with_worker(
             "org.example.BrevladaUnreadPageNavigationDiagnostic",
@@ -217,7 +290,7 @@ mod diagnostics {
             Some("next@example.com")
         );
         assert!(state.sender_pane.borrow().loading());
-        assert!(state.selected.borrow().is_empty());
+        assert_eq!(*state.selected.borrow(), vec![4]);
         assert!(commands.try_iter().any(|command| matches!(command,
             Command::LoadSenderPage { sender, .. } if sender == "next@example.com")));
         let ticket = state.sender_pane.borrow().ticket();

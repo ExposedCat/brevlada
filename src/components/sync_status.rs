@@ -23,7 +23,7 @@ impl SyncStatus {
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
-        let label = label("Last synced: —", "sync-status-label");
+        let label = label("Last sync: —", "sync-status-label");
         label.set_max_width_chars(24);
         label.set_hexpand(false);
         widget.append(&spinner);
@@ -146,9 +146,14 @@ fn presentation(status: &Status, now: SystemTime) -> (String, String) {
             3600..86400 => format!("{}h ago", seconds / 3600),
             _ => format!("{}d ago", seconds / 86400),
         };
-        return (format!("Last synced: {ago}"), detail);
+        let label = if status.failed > 0 {
+            "Sync failed"
+        } else {
+            "Last sync"
+        };
+        return (format!("{label}: {ago}"), detail);
     }
-    ("Last synced: —".into(), detail)
+    ("Last sync: —".into(), detail)
 }
 
 #[cfg(test)]
@@ -157,10 +162,10 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn shows_elapsed_time_since_start_even_when_sync_has_failed() {
+    fn shows_elapsed_time_since_start_and_surfaces_sync_failures() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100_000);
         let mut status = Status::default();
-        assert_eq!(presentation(&status, now).0, "Last synced: —");
+        assert_eq!(presentation(&status, now).0, "Last sync: —");
         for (seconds, expected) in [
             (0, "just now"),
             (59, "just now"),
@@ -171,11 +176,11 @@ mod tests {
             status.last_started = Some(now - Duration::from_secs(seconds));
             assert_eq!(
                 presentation(&status, now).0,
-                format!("Last synced: {expected}")
+                format!("Last sync: {expected}")
             );
         }
         status.failed = 1;
-        assert_eq!(presentation(&status, now).0, "Last synced: 1d ago");
+        assert_eq!(presentation(&status, now).0, "Sync failed: 1d ago");
         assert!(presentation(&status, now).1.contains("Last sync started"));
     }
 }
