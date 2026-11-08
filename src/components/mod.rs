@@ -32,6 +32,7 @@ pub mod motion;
 mod pane_state;
 pub mod parcel;
 pub(crate) mod preview;
+pub mod process_button;
 pub mod receipt;
 mod reply_quote;
 pub mod scroll_position;
@@ -43,6 +44,7 @@ pub mod shell;
 pub mod sidebar;
 pub mod sort_menu;
 pub mod states;
+pub mod subscriptions;
 pub mod sync_settings;
 pub mod sync_status;
 #[allow(dead_code)]

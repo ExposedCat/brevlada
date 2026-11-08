@@ -93,6 +93,7 @@ pub(super) fn key(source: &Source, kind: &str, identifier: &str) -> String {
 
 fn entry(source: &Source, id: String, content: Content) -> Entry {
     Entry {
+        recent_emails: 0,
         id,
         source: Source {
             account: source.account.clone(),

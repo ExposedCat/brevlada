@@ -112,6 +112,7 @@ pub(super) fn entries(sources: &[Source], now: i64, range: Range) -> Vec<Entry> 
                     && combined.steps.is_empty()
                     && latest.message.timestamp >= now - 60 * 86400);
             matches.then(|| Entry {
+                recent_emails: 0,
                 id,
                 source: Source {
                     account: source.account.clone(),

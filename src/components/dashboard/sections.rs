@@ -1,21 +1,159 @@
+use super::controls::Controls;
 use super::*;
-use std::cell::Cell;
 
-struct Controls {
-    widget: gtk::Box,
-    more: gtk::Button,
-    shown: Rc<Cell<usize>>,
+pub(super) struct SectionView {
+    pub widget: gtk::Box,
+    cards: Option<gtk::Box>,
+    flow: Option<super::super::calendar::Flow>,
+    controls: Rc<Controls>,
+    items: Vec<(Entry, bool)>,
+    pub unsubscribe_buttons: HashMap<String, gtk::Button>,
+    widgets: HashMap<String, gtk::Box>,
+    show_accounts: bool,
+    expanded: bool,
 }
 
-fn update_more(button: &gtk::Button, shown: usize, count: usize) {
-    let remaining = count.saturating_sub(shown).min(theme::DASHBOARD_PAGE_SIZE);
-    let label = button
-        .child()
-        .and_then(|content| content.last_child())
-        .and_downcast::<gtk::Label>()
-        .unwrap();
-    label.set_text(&format!("Show {remaining} more"));
-    button.set_visible(remaining > 0);
+fn same_card(left: &Entry, right: &Entry) -> bool {
+    left.id == right.id
+        && left.source == right.source
+        && left.content == right.content
+        && left.series == right.series
+}
+
+impl SectionView {
+    fn new(dashboard: &Dashboard, section: Section) -> Self {
+        let widget = column("dashboard-section");
+        widget.set_spacing(theme::SMALL_SPACING);
+        let heading = horizontal("dashboard-section-heading", theme::SMALL_SPACING);
+        heading.append(&label(section.title(), "title-3"));
+        widget.append(&heading);
+        let cards = (section == Section::Subscriptions).then(|| {
+            let cards = column("dashboard-subscription-cards");
+            cards.set_spacing(theme::SPACING);
+            widget.append(&cards);
+            cards
+        });
+        let controls = Controls::new(dashboard, section);
+        widget.append(&controls.widget);
+        Self {
+            widget,
+            cards,
+            flow: None,
+            controls,
+            items: Vec::new(),
+            widgets: HashMap::new(),
+            unsubscribe_buttons: HashMap::new(),
+            show_accounts: false,
+            expanded: false,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        if let Some(cards) = &self.cards {
+            super::super::clear(cards);
+        }
+        if let Some(flow) = self.flow.take() {
+            self.widget.remove(&flow);
+        }
+        self.widgets.clear();
+        self.unsubscribe_buttons.clear();
+        self.items.clear();
+    }
+
+    pub fn pending(&mut self, id: &str, pending: bool) {
+        if let Some((_, value)) = self.items.iter_mut().find(|(entry, _)| entry.id == id) {
+            *value = pending;
+        }
+    }
+
+    fn update(
+        &mut self,
+        items: Vec<(Entry, bool)>,
+        show_accounts: bool,
+        expanded: bool,
+    ) -> Vec<Tile> {
+        if self.items.len() == items.len()
+            && self
+                .items
+                .iter()
+                .zip(&items)
+                .all(|((old, old_pending), (entry, pending))| {
+                    same_card(old, entry) && old_pending == pending
+                })
+            && self.show_accounts == show_accounts
+            && self.expanded == expanded
+        {
+            return Vec::new();
+        }
+        let mut tiles = Vec::new();
+        if let Some(cards) = &self.cards {
+            let removed: Vec<_> = self
+                .widgets
+                .keys()
+                .filter(|id| !items.iter().any(|(entry, _)| &entry.id == *id))
+                .cloned()
+                .collect();
+            for id in removed {
+                cards.remove(&self.widgets.remove(&id).unwrap());
+                self.unsubscribe_buttons.remove(&id);
+            }
+            let mut previous: Option<gtk::Widget> = None;
+            for (entry, pending) in &items {
+                let unchanged = self.show_accounts == show_accounts
+                    && self
+                        .items
+                        .iter()
+                        .any(|(old, old_pending)| same_card(old, entry) && old_pending == pending);
+                if !unchanged {
+                    if let Some(old) = self.widgets.remove(&entry.id) {
+                        cards.remove(&old);
+                    }
+                    let tile = Tile::new(entry, show_accounts, *pending);
+                    cards.insert_child_after(&tile.widget, previous.as_ref());
+                    self.widgets.insert(entry.id.clone(), tile.widget.clone());
+                    if let Some(button) = &tile.unsubscribe {
+                        self.unsubscribe_buttons
+                            .insert(entry.id.clone(), button.clone());
+                    }
+                    tiles.push(tile);
+                }
+                let widget = self.widgets.get(&entry.id).unwrap();
+                if widget.prev_sibling() != previous {
+                    cards.reorder_child_after(widget, previous.as_ref());
+                }
+                previous = Some(widget.clone().upcast());
+            }
+        } else {
+            if let Some(flow) = self.flow.take() {
+                self.widget.remove(&flow);
+            }
+            tiles = items
+                .iter()
+                .map(|(entry, pending)| Tile::new(entry, show_accounts, *pending))
+                .collect();
+            let widgets: Vec<_> = tiles
+                .iter()
+                .map(|tile| tile.widget.clone().upcast())
+                .collect();
+            let flow = super::super::calendar::Flow::grid(
+                &widgets,
+                if expanded { 0 } else { theme::DASHBOARD_ROWS },
+            );
+            let controls = Rc::downgrade(&self.controls);
+            flow.connect_visible_items_notify(move |flow| {
+                if let Some(controls) = controls.upgrade() {
+                    controls.show(flow.visible_items() as usize);
+                }
+            });
+            self.widget
+                .insert_child_after(&flow, self.widget.first_child().as_ref());
+            self.flow = Some(flow);
+        }
+        self.items = items;
+        self.show_accounts = show_accounts;
+        self.expanded = expanded;
+        tiles
+    }
 }
 
 impl Dashboard {
@@ -26,102 +164,26 @@ impl Dashboard {
         show_accounts: bool,
         pending: &impl Fn(&Entry) -> bool,
     ) -> (gtk::Box, Vec<Tile>) {
-        let group = column("dashboard-section");
-        group.set_spacing(theme::SMALL_SPACING);
-        let heading = horizontal("dashboard-section-heading", theme::SMALL_SPACING);
-        heading.append(&label(section.title(), "title-3"));
-        group.append(&heading);
         let count = items.len();
         let expanded_limit = self.expanded_limits.borrow().get(&section).copied();
         let subscriptions = section == Section::Subscriptions;
         let limit =
             expanded_limit.unwrap_or(theme::DASHBOARD_ROWS * if subscriptions { 1 } else { 2 });
-        let tiles: Vec<_> = items
+        let items = items
             .into_iter()
             .take(limit)
-            .map(|entry| Tile::new(entry, show_accounts, pending(entry)))
+            .map(|entry| (entry.clone(), pending(entry)))
             .collect();
-        let controls =
-            self.section_controls(section, count, limit.min(count), expanded_limit.is_some());
-        if subscriptions {
-            let cards = column("dashboard-subscription-cards");
-            cards.set_spacing(theme::SPACING);
-            for tile in &tiles {
-                cards.append(&tile.widget);
-            }
-            group.append(&cards);
-        } else {
-            let widgets: Vec<_> = tiles
-                .iter()
-                .map(|tile| tile.widget.clone().upcast())
-                .collect();
-            let flow = super::super::calendar::Flow::grid(
-                &widgets,
-                if expanded_limit.is_some() {
-                    0
-                } else {
-                    theme::DASHBOARD_ROWS
-                },
-            );
-            let target = controls.more.downgrade();
-            let shown = controls.shown.clone();
-            flow.connect_visible_items_notify(move |flow| {
-                shown.set(flow.visible_items() as usize);
-                if let Some(button) = target.upgrade() {
-                    update_more(&button, shown.get(), count);
-                }
-            });
-            group.append(&flow);
-        }
-        group.append(&controls.widget);
-        (group, tiles)
-    }
-
-    fn section_controls(
-        &self,
-        section: Section,
-        count: usize,
-        visible: usize,
-        expanded: bool,
-    ) -> Controls {
-        let widget = column("dashboard-section-controls");
-        widget.set_spacing(theme::SMALL_SPACING);
-        let shown = Rc::new(Cell::new(visible));
-        let more = super::super::action_button("pan-down-symbolic", "");
-        more.remove_css_class("pill");
-        more.add_css_class("flat");
-        update_more(&more, visible, count);
-        let expanded_limits = self.expanded_limits.clone();
-        let visible = shown.clone();
-        let callbacks = self.callbacks.clone();
-        more.connect_clicked(move |_| {
-            let next = visible.get()
-                + count
-                    .saturating_sub(visible.get())
-                    .min(theme::DASHBOARD_PAGE_SIZE);
-            expanded_limits.borrow_mut().insert(section, next);
-            for callback in callbacks.borrow().iter() {
-                callback();
-            }
-        });
-        widget.append(&more);
-        let less = super::super::action_button("pan-up-symbolic", "Show less");
-        less.remove_css_class("pill");
-        less.add_css_class("flat");
-        less.set_visible(expanded);
-        let expanded_limits = self.expanded_limits.clone();
-        let callbacks = self.callbacks.clone();
-        less.connect_clicked(move |_| {
-            expanded_limits.borrow_mut().remove(&section);
-            for callback in callbacks.borrow().iter() {
-                callback();
-            }
-        });
-        widget.append(&less);
-        Controls {
-            widget,
-            more,
-            shown,
-        }
+        let mut sections = self.sections.borrow_mut();
+        let view = sections
+            .entry(section)
+            .or_insert_with(|| SectionView::new(self, section));
+        let tiles = view.update(items, show_accounts, expanded_limit.is_some());
+        let shown = view
+            .flow
+            .as_ref()
+            .map_or(view.items.len(), |flow| flow.visible_items() as usize);
+        view.controls.update(count, shown, expanded_limit.is_some());
+        (view.widget.clone(), tiles)
     }
 }

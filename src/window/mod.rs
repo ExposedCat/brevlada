@@ -95,6 +95,7 @@ struct State {
     sidebar: gtk::Box,
     content_stack: gtk::Stack,
     dashboard: dashboard::Dashboard,
+    subscriptions: Rc<ui::subscriptions::Subscriptions>,
     dashboard_button: gtk::Button,
     account_sidebar: ui::motion::Sidebar,
     account_switcher: ui::account_switcher::AccountSwitcher,
@@ -428,6 +429,8 @@ impl State {
             toast,
             settings: _,
         } = shell;
+        let subscriptions = ui::subscriptions::Subscriptions::new(avatars.clone());
+        content_stack.add_named(&subscriptions.widget, Some("subscriptions"));
         let (search_worker, search_results) = crate::backend::search::Search::start();
         let conversation_more = gtk::Button::with_label("Load older messages");
         conversation_more.set_halign(gtk::Align::Center);
@@ -482,6 +485,7 @@ impl State {
             sidebar,
             content_stack,
             dashboard: dashboard::Dashboard::new(dashboard),
+            subscriptions,
             dashboard_button,
             account_sidebar,
             account_switcher,

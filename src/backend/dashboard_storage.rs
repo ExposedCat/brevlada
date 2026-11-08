@@ -49,7 +49,18 @@ impl Storage {
             .into_iter()
             .filter(|source| !crate::backend::mail_sync::excluded_folder(&source.folder, &[]))
             .collect();
-        Ok(dashboard::entries(sources, now, range))
+        let counts = self.subscription_counts(accounts, now)?;
+        let mut entries = dashboard::entries(sources, now, range);
+        for entry in &mut entries {
+            if matches!(entry.content, dashboard::Content::Subscription) {
+                let sender = crate::models::senders::key(&entry.source.message);
+                entry.recent_emails = counts
+                    .get(&(entry.source.account.clone(), sender))
+                    .copied()
+                    .unwrap_or(0);
+            }
+        }
+        Ok(entries)
     }
 }
 
@@ -118,6 +129,63 @@ mod tests {
                 )
                 .unwrap();
         }
+        let recent = Message {
+            uid: 5,
+            message_id: "recent".into(),
+            timestamp: now,
+            unsubscribe: None,
+            ..message.clone()
+        };
+        for (account, folder) in [("one", "INBOX"), ("one", "Archive"), ("two", "INBOX")] {
+            storage.store(account, folder, &recent).unwrap();
+        }
+        storage
+            .store(
+                "one",
+                "INBOX",
+                &Message {
+                    uid: 6,
+                    message_id: "too-old".into(),
+                    timestamp: now - 31 * 86400,
+                    ..recent.clone()
+                },
+            )
+            .unwrap();
+        storage
+            .store(
+                "one",
+                "Spam",
+                &Message {
+                    uid: 7,
+                    message_id: "spam-folder".into(),
+                    ..recent.clone()
+                },
+            )
+            .unwrap();
+        storage
+            .store(
+                "one",
+                "INBOX",
+                &Message {
+                    uid: 8,
+                    message_id: "spam".into(),
+                    is_spam: true,
+                    ..recent.clone()
+                },
+            )
+            .unwrap();
+        storage
+            .store(
+                "one",
+                "Drafts",
+                &Message {
+                    uid: 9,
+                    message_id: "draft".into(),
+                    is_draft: true,
+                    ..recent
+                },
+            )
+            .unwrap();
         let items = storage
             .dashboard(&["one".into(), "two".into()], now, Range::Week)
             .unwrap();
@@ -131,6 +199,15 @@ mod tests {
             .iter()
             .find(|entry| entry.source.account == "one")
             .unwrap();
+        assert_eq!(one.recent_emails, 2);
+        assert_eq!(
+            items
+                .iter()
+                .find(|entry| entry.source.account == "two")
+                .unwrap()
+                .recent_emails,
+            1
+        );
         assert_eq!(one.source.folder, "Archive");
         assert_eq!(one.source.message.uid, 2);
         assert_eq!(

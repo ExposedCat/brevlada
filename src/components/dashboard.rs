@@ -1,4 +1,5 @@
 mod cards;
+mod controls;
 mod filters;
 mod sections;
 mod series;
@@ -23,11 +24,16 @@ pub struct Dashboard {
     pub types: Rc<filters::Types>,
     pub refresh: gtk::Button,
     pub expand_sidebar: gtk::Button,
+    pub unsubscribe_all: gtk::Button,
+    pub unsubscribe_stop: gtk::Button,
+    unsubscribe_status: gtk::Box,
+    unsubscribe_progress: gtk::Label,
+    unsubscribe_blocked: std::cell::Cell<bool>,
     stack: gtk::Stack,
     state: adw::StatusPage,
     content: gtk::Box,
     subscriptions: gtk::Box,
-    unsubscribe_buttons: RefCell<HashMap<String, gtk::Button>>,
+    sections: RefCell<HashMap<Section, sections::SectionView>>,
     expanded_limits: Rc<RefCell<HashMap<Section, usize>>>,
     callbacks: Changed,
 }
@@ -58,6 +64,18 @@ impl Dashboard {
         header.pack_end(&menu);
         header.pack_end(&refresh);
         widget.append(&header);
+        let unsubscribe_all = super::action_button("list-remove-symbolic", "Unsubscribe..");
+        unsubscribe_all.remove_css_class("pill");
+        unsubscribe_all.add_css_class("flat");
+        let unsubscribe_status = horizontal("dashboard-unsubscribe-status", theme::SPACING);
+        let unsubscribe_progress = label("", "");
+        unsubscribe_progress.set_wrap(true);
+        unsubscribe_progress.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        let unsubscribe_stop = super::action_button("process-stop-symbolic", "Stop");
+        unsubscribe_status.append(&unsubscribe_progress);
+        unsubscribe_status.append(&unsubscribe_stop);
+        unsubscribe_status.set_visible(false);
+        widget.append(&unsubscribe_status);
         let content = column("dashboard-sections");
         content.set_spacing(theme::DASHBOARD_SECTION_SPACING);
         content.set_valign(gtk::Align::Start);
@@ -95,11 +113,16 @@ impl Dashboard {
             types,
             refresh,
             expand_sidebar,
+            unsubscribe_all,
+            unsubscribe_stop,
+            unsubscribe_status,
+            unsubscribe_progress,
+            unsubscribe_blocked: std::cell::Cell::new(false),
             stack,
             state,
             content,
             subscriptions,
-            unsubscribe_buttons: RefCell::default(),
+            sections: RefCell::default(),
             expanded_limits: Rc::default(),
             callbacks: Rc::default(),
         }
@@ -117,26 +140,10 @@ impl Dashboard {
         show_accounts: bool,
         pending: impl Fn(&Entry) -> bool,
     ) -> Vec<Tile> {
-        if let Some(focus) = self
-            .widget
-            .root()
-            .and_downcast::<gtk::Window>()
-            .and_then(|window| gtk::prelude::GtkWindowExt::focus(&window))
-            && (focus.is_ancestor(&self.content) || focus.is_ancestor(&self.subscriptions))
-        {
-            self.refresh.grab_focus();
-        }
-        self.unsubscribe_buttons.borrow_mut().clear();
-        super::clear(&self.content);
-        super::clear(&self.subscriptions);
-        self.subscriptions.set_visible(false);
-        if entries.is_empty() {
-            self.status(
-                "Nothing in this range",
-                "Try another date range or account.",
-            );
-            return Vec::new();
-        }
+        let mut visible_sections = std::collections::HashSet::new();
+        let mut has_subscriptions = false;
+        let mut has_content = false;
+        let mut previous_content: Option<gtk::Widget> = None;
         let mut tiles = Vec::new();
         let selected = self.types.selected();
         for section in std::iter::once(Section::Subscriptions)
@@ -152,27 +159,51 @@ impl Dashboard {
                 .filter(|entry| entry.section() == section)
                 .collect();
             if items.is_empty() {
+                if let Some(view) = self.sections.borrow_mut().get_mut(&section) {
+                    view.clear();
+                }
                 continue;
             }
             let (group, section_tiles) = self.section(section, items, show_accounts, &pending);
-            for tile in &section_tiles {
-                if let Some(button) = &tile.unsubscribe {
-                    self.unsubscribe_buttons
-                        .borrow_mut()
-                        .insert(tile.entry.id.clone(), button.clone());
-                }
-            }
-            if section == Section::Subscriptions {
-                self.subscriptions.append(&group);
-                self.subscriptions.set_visible(true);
+            let parent = if section == Section::Subscriptions {
+                has_subscriptions = true;
+                &self.subscriptions
             } else {
-                self.content.append(&group);
+                has_content = true;
+                &self.content
+            };
+            if group.parent().is_none() {
+                parent.append(&group);
             }
+            if section != Section::Subscriptions {
+                if group.prev_sibling() != previous_content {
+                    parent.reorder_child_after(&group, previous_content.as_ref());
+                }
+                previous_content = Some(group.clone().upcast());
+            }
+            visible_sections.insert(section);
             tiles.extend(section_tiles);
         }
-        self.content
-            .set_visible(self.content.first_child().is_some());
-        if tiles.is_empty() {
+        if self.unsubscribe_blocked.get()
+            && let Some(view) = self.sections.borrow().get(&Section::Subscriptions)
+        {
+            for button in view.unsubscribe_buttons.values() {
+                button.set_sensitive(false);
+            }
+        }
+        for (section, view) in self.sections.borrow().iter() {
+            view.widget.set_visible(visible_sections.contains(section));
+        }
+        self.subscriptions.set_visible(has_subscriptions);
+        self.content.set_visible(has_content);
+        if entries.is_empty() {
+            self.status(
+                "Nothing in this range",
+                "Try another date range or account.",
+            );
+            return tiles;
+        }
+        if visible_sections.is_empty() {
             self.status(
                 "No items of these types",
                 "Choose other types or a different date range.",
@@ -184,9 +215,34 @@ impl Dashboard {
     }
 
     pub fn unsubscribe_pending(&self, id: &str, pending: bool) {
-        if let Some(button) = self.unsubscribe_buttons.borrow().get(id) {
-            subscriptions::pending(button, pending);
+        if let Some(view) = self.sections.borrow_mut().get_mut(&Section::Subscriptions) {
+            view.pending(id, pending);
+            if let Some(button) = view.unsubscribe_buttons.get(id) {
+                subscriptions::pending(button, pending);
+                if self.unsubscribe_blocked.get() {
+                    button.set_sensitive(false);
+                }
+            }
         }
+    }
+
+    pub fn unsubscribe_progress(&self, text: &str, active: bool, stopping: bool) {
+        self.unsubscribe_blocked.set(active);
+        if let Some(view) = self.sections.borrow().get(&Section::Subscriptions) {
+            for button in view.unsubscribe_buttons.values() {
+                let pending = button
+                    .child()
+                    .and_then(|child| child.last_child())
+                    .and_downcast::<gtk::Label>()
+                    .is_some_and(|label| label.text() == "Unsubscribing…");
+                button.set_sensitive(!active && !pending);
+            }
+        }
+        self.unsubscribe_all.set_sensitive(!active);
+        self.unsubscribe_stop.set_visible(active);
+        self.unsubscribe_stop.set_sensitive(!stopping);
+        self.unsubscribe_progress.set_text(text);
+        self.unsubscribe_status.set_visible(!text.is_empty());
     }
 
     pub fn connect_changed(&self, callback: impl Fn() + 'static) {
@@ -241,12 +297,14 @@ mod diagnostics {
         };
         let entries = vec![
             Entry {
+                recent_emails: 0,
                 id: "subscription".into(),
                 source: source.clone(),
                 content: Content::Subscription,
                 series: Vec::new(),
             },
             Entry {
+                recent_emails: 0,
                 id: "event".into(),
                 source,
                 content: Content::Event(Event {
@@ -296,6 +354,47 @@ mod diagnostics {
                 .block_on(gtk::glib::timeout_future(Duration::from_millis(200)))
         };
         settle();
+        let group = view.subscriptions.first_child().unwrap();
+        let controls = group.last_child().unwrap();
+        let bulk_parent = view.unsubscribe_all.parent().unwrap();
+        let card = group
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        let detached = Rc::new(std::cell::Cell::new(0));
+        let changes = detached.clone();
+        view.unsubscribe_all
+            .connect_parent_notify(move |_| changes.set(changes.get() + 1));
+        assert!(view.render(&entries, true, |_| false).is_empty());
+        let mut count_update = entries.clone();
+        count_update[0].recent_emails += 1;
+        assert!(view.render(&count_update, true, |_| false).is_empty());
+        let mut refreshed = entries.clone();
+        refreshed.push(Entry {
+            recent_emails: 0,
+            id: "new-subscription".into(),
+            ..entries[0].clone()
+        });
+        let added = view.render(&refreshed, true, |_| false);
+        assert_eq!(added.len(), 1);
+        assert_eq!(view.unsubscribe_all.parent().as_ref(), Some(&bulk_parent));
+        assert_eq!(group.last_child().as_ref(), Some(&controls));
+        assert_eq!(
+            group
+                .first_child()
+                .unwrap()
+                .next_sibling()
+                .unwrap()
+                .first_child()
+                .as_ref(),
+            Some(&card)
+        );
+        view.render(&entries, true, |_| false);
+        assert_eq!(detached.get(), 0);
+        assert_eq!(button_text(&view.unsubscribe_all), "Unsubscribe..");
         let subscriptions = view.subscriptions.compute_bounds(&window).unwrap();
         let sections = view.content.compute_bounds(&window).unwrap();
         assert!(subscriptions.x() + subscriptions.width() < sections.x());
@@ -329,6 +428,7 @@ mod diagnostics {
         let subscriptions: Rc<Vec<_>> = Rc::new(
             (0..27)
                 .map(|index| Entry {
+                    recent_emails: 0,
                     id: format!("subscription-{index}"),
                     ..entries[0].clone()
                 })
@@ -359,6 +459,8 @@ mod diagnostics {
                 .first_child()
                 .unwrap()
                 .last_child()
+                .unwrap()
+                .first_child()
                 .unwrap()
                 .first_child()
                 .and_downcast::<gtk::Button>()
@@ -422,6 +524,7 @@ mod diagnostics {
         let entries: Rc<Vec<_>> = Rc::new(
             (0..29)
                 .map(|index| Entry {
+                    recent_emails: 0,
                     id: index.to_string(),
                     series: Vec::new(),
                     source: Source {

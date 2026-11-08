@@ -81,6 +81,7 @@ mod diagnostics {
             message: message.clone(),
         };
         let entry = models::dashboard::Entry {
+            recent_emails: 0,
             id: "order".into(),
             source,
             content: models::dashboard::Content::Receipt(message.receipts[0].clone()),

@@ -31,6 +31,7 @@ pub(super) fn entries(sources: &[Source], now: i64, range: Range) -> Vec<Entry> 
                 events.insert(
                     id.clone(),
                     Entry {
+                        recent_emails: 0,
                         id,
                         source: Source {
                             account: source.account.clone(),

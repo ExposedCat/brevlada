@@ -83,7 +83,7 @@ impl State {
                 result,
             } => {
                 let done = matches!(&result, Ok(crate::backend::unsubscribe::Outcome::Done));
-                self.dashboard_unsubscribe_finished(&account, &folder, uid, &message_id, done);
+                self.dashboard_unsubscribe_finished(&account, &folder, uid, &message_id, &result);
                 if self
                     .account
                     .borrow()
@@ -103,6 +103,9 @@ impl State {
                     if let Some(card) = self.sent_cards.borrow().get(&message_id) {
                         card.finish_unsubscribe(done);
                     }
+                }
+                if self.bulk_unsubscribe_finished(&account, &folder, uid, &message_id, &result) {
+                    return;
                 }
                 match result {
                     Ok(crate::backend::unsubscribe::Outcome::Open(url)) => ui::links::open(&url),

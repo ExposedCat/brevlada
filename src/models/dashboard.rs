@@ -11,6 +11,8 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 pub use collect::entries;
 pub use range::Range;
 
+pub const SUBSCRIPTION_RECENT_DAYS: i64 = 30;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Section {
     Subscriptions,
@@ -43,14 +45,14 @@ impl Section {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Source {
     pub account: String,
     pub folder: String,
     pub message: Message,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Content {
     Subscription,
     Parcel(parcel::Parcel),
@@ -59,15 +61,16 @@ pub enum Content {
     Receipt(receipt::Receipt),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
+    pub recent_emails: usize,
     pub id: String,
     pub source: Source,
     pub content: Content,
     pub series: Vec<Occurrence>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Occurrence {
     pub event: calendar::Event,
     pub source: Source,

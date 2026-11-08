@@ -1,3 +1,4 @@
+mod bulk_unsubscribe;
 mod items;
 mod subscriptions;
 
@@ -16,6 +17,7 @@ pub(super) struct Dashboard {
     dirty: Cell<bool>,
     items: RefCell<Vec<Entry>>,
     dismissed: RefCell<HashSet<String>>,
+    bulk_unsubscribe: RefCell<Option<bulk_unsubscribe::Batch>>,
     unsubscribing: RefCell<HashMap<String, models::dashboard::Source>>,
 }
 
@@ -36,6 +38,7 @@ impl Dashboard {
             dirty: Cell::new(false),
             items: RefCell::default(),
             dismissed: RefCell::new(dismissed),
+            bulk_unsubscribe: RefCell::default(),
             unsubscribing: RefCell::default(),
         }
     }
@@ -43,10 +46,51 @@ impl Dashboard {
 
 impl State {
     pub(super) fn dashboard_visible(&self) -> bool {
-        self.content_stack.visible_child_name().as_deref() == Some("dashboard")
+        matches!(
+            self.content_stack.visible_child_name().as_deref(),
+            Some("dashboard" | "subscriptions")
+        )
     }
 
     pub(super) fn connect_dashboard(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.subscriptions.back.connect_clicked(move |_| {
+            if let Some(state) = weak.upgrade() {
+                state.content_stack.set_visible_child_name("dashboard");
+                state.render_dashboard();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.subscriptions.stop.connect_clicked(move |_| {
+            if let Some(state) = weak.upgrade() {
+                state.stop_bulk_unsubscribe();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.subscriptions
+            .connect_unsubscribe(move |entries, retry| {
+                if let Some(state) = weak.upgrade() {
+                    state.confirm_subscription_selection(entries, retry);
+                }
+            });
+        let weak = Rc::downgrade(self);
+        self.dashboard
+            .view
+            .unsubscribe_all
+            .connect_clicked(move |_| {
+                if let Some(state) = weak.upgrade() {
+                    state.show_subscriptions();
+                }
+            });
+        let weak = Rc::downgrade(self);
+        self.dashboard
+            .view
+            .unsubscribe_stop
+            .connect_clicked(move |_| {
+                if let Some(state) = weak.upgrade() {
+                    state.stop_bulk_unsubscribe();
+                }
+            });
         let weak = Rc::downgrade(self);
         self.dashboard.view.connect_changed(move || {
             if let Some(state) = weak.upgrade() {
@@ -206,6 +250,7 @@ impl State {
                 *self.dashboard.items.borrow_mut() = items;
                 if self.dashboard_visible() {
                     self.render_dashboard();
+                    self.refresh_subscriptions();
                 }
             }
             Err(error) => self

@@ -41,6 +41,8 @@ mod senders;
 mod settings;
 #[path = "structured_storage.rs"]
 mod structured;
+#[path = "subscription_storage.rs"]
+mod subscriptions;
 #[path = "sync_storage.rs"]
 mod sync;
 

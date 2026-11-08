@@ -10,6 +10,7 @@ pub(super) fn entries(sources: &[Source]) -> Vec<Entry> {
         .filter_map(|source| {
             let id = key(source, "subscription", &senders::key(&source.message));
             seen.insert(id.clone()).then(|| Entry {
+                recent_emails: 0,
                 id,
                 source: Source {
                     account: source.account.clone(),

@@ -28,6 +28,7 @@ struct Content {
     status_icons: gtk::Box,
     media_button: gtk::Button,
     unsubscribe_button: gtk::Button,
+    unsubscribe_blocked: Cell<bool>,
     on_media: Rc<dyn Fn()>,
     open: Rc<dyn Fn()>,
     respond: Rc<Respond>,
@@ -49,7 +50,16 @@ impl Card {
         } else {
             "Unsubscribe"
         });
-        self.content.unsubscribe_button.set_sensitive(!done);
+        self.content
+            .unsubscribe_button
+            .set_sensitive(!done && !self.content.unsubscribe_blocked.get());
+    }
+
+    pub fn block_unsubscribe(&self, blocked: bool) {
+        self.content.unsubscribe_blocked.set(blocked);
+        self.content.unsubscribe_button.set_sensitive(
+            !blocked && self.content.unsubscribe_button.label().as_deref() == Some("Unsubscribe"),
+        );
     }
 
     pub fn set_trusted(&self, trusted: bool) {
@@ -307,6 +317,7 @@ pub fn card(
         status_icons: icons.clone(),
         media_button: media_button.clone(),
         unsubscribe_button: unsubscribe_button.clone(),
+        unsubscribe_blocked: Cell::new(false),
         on_media: Rc::new(download_media),
         open: Rc::new(open),
         respond: Rc::new(respond),
@@ -448,7 +459,7 @@ pub fn card(
             let Some(content) = weak.upgrade() else {
                 return;
             };
-            if content.message.borrow().unsubscribe.is_none() {
+            if content.unsubscribe_blocked.get() || content.message.borrow().unsubscribe.is_none() {
                 return;
             }
             button.set_sensitive(false);
@@ -522,15 +533,29 @@ mod diagnostics {
         assert_eq!(button.label().as_deref(), Some("Unsubscribe"));
         assert!(button.is_sensitive());
         accepted.set(true);
+        card.block_unsubscribe(true);
+        button.emit_clicked();
+        assert_eq!(button.label().as_deref(), Some("Unsubscribe"));
+        assert!(!button.is_sensitive());
+        card.block_unsubscribe(false);
+        assert!(button.is_sensitive());
         button.emit_clicked();
         assert_eq!(button.label().as_deref(), Some("Unsubscribing…"));
         assert!(!button.is_sensitive());
+        card.block_unsubscribe(true);
+        card.block_unsubscribe(false);
+        assert!(!button.is_sensitive());
+        card.block_unsubscribe(true);
         card.finish_unsubscribe(false);
+        assert!(!button.is_sensitive());
+        card.block_unsubscribe(false);
         assert_eq!(button.label().as_deref(), Some("Unsubscribe"));
         assert!(button.is_sensitive());
         button.emit_clicked();
         card.finish_unsubscribe(true);
         assert_eq!(button.label().as_deref(), Some("Unsubscribed"));
+        card.block_unsubscribe(true);
+        card.block_unsubscribe(false);
         assert!(!button.is_sensitive());
     }
 

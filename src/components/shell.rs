@@ -72,6 +72,7 @@ impl Shell {
         sidebar_wrapper.append(&scroll(&sidebar));
         sidebar_column.append(&sidebar_wrapper);
         let dashboard_button = super::dashboard::navigation_button();
+        sidebar_column.append(&super::process_button::previews());
         sidebar_column.append(&dashboard_button);
         let middle = column("message-list-wrapper");
         let account_switcher = super::account_switcher::AccountSwitcher::new();

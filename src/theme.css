@@ -69,3 +69,27 @@
 .ticket-passenger:hover .ticket-copy-actions,
 .ticket-passenger:focus-within .ticket-copy-actions { opacity: 1; }
 .detail-popup { margin: var(--spacing-md); }
+
+.dashboard-unsubscribe-status { margin: var(--spacing-sm) var(--spacing-lg); }
+
+.subscriptions-screen { background: @window_bg_color; }
+.subscriptions-content { margin: var(--spacing-lg); }
+.subscriptions-toolbar { padding: var(--spacing-md) var(--spacing-lg); }
+.subscriptions-list > row { color: var(--color-text); }
+.subscriptions-row { padding: var(--spacing-sm) var(--spacing-md); }
+.subscriptions-list > row:not(:last-child) .subscriptions-row { border-bottom: 1px solid var(--border-color); }
+.subscriptions-list > row:hover .subscriptions-row { background-color: var(--message-row-hover-bg); }
+.subscriptions-list > row:selected .subscriptions-row { background-color: var(--message-row-selected-bg); }
+.subscriptions-list > row:selected:hover .subscriptions-row { background-color: alpha(@accent_color, 0.15); }
+.subscriptions-status { margin: var(--spacing-sm) var(--spacing-lg); }
+
+.process-previews { margin: var(--spacing-sm); }
+.process-button > button { padding: var(--spacing-md); border-radius: var(--spacing-md); }
+.process-ring { color: @accent_color; }
+.process-percentage { opacity: 0.65; font-variant-numeric: tabular-nums; }
+.process-popover-content { margin: var(--spacing-md); }
+.process-queue-current { background-color: var(--message-row-selected-bg); }
+
+popover.process-popover > contents { border-radius: var(--spacing-lg); }
+
+.process-queue-failed .subtitle { color: var(--error-color); }

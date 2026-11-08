@@ -284,7 +284,7 @@ impl State {
         let sender = models::senders::key(message);
         let own = self.correspondence().own.contains(&sender);
         let trusted = own || self.is_trusted(&sender);
-        ui::viewer::card(
+        let card = ui::viewer::card(
             message,
             expanded,
             threaded,
@@ -326,6 +326,9 @@ impl State {
             },
             move |message| {
                 if let Some(state) = unsubscribe_state.upgrade() {
+                    if state.bulk_unsubscribe_active() {
+                        return false;
+                    }
                     let Some(account) = state.account.borrow().clone() else {
                         return false;
                     };
@@ -345,7 +348,9 @@ impl State {
                 }
                 false
             },
-        )
+        );
+        card.block_unsubscribe(self.bulk_unsubscribe_active());
+        card
     }
 
     pub(super) fn open_sent(&self, folder: &str, uid: u32, id: &str, load_inline: bool) {

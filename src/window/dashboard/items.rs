@@ -307,6 +307,7 @@ mod diagnostics {
         state.event(Event::Dashboard(
             request,
             Ok(vec![Entry {
+                recent_emails: 0,
                 id: "event".into(),
                 source,
                 content: models::dashboard::Content::Event(event),
