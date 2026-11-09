@@ -84,7 +84,7 @@
 .subscriptions-status { margin: var(--spacing-sm) var(--spacing-lg); }
 
 .process-previews { margin: var(--spacing-sm); }
-.process-button > button { padding: var(--spacing-md); border-radius: var(--spacing-md); }
+.process-button > button { padding: var(--spacing-md); border-radius: var(--spacing-md); font-weight: normal; }
 .process-ring { color: @accent_color; }
 .process-percentage { opacity: 0.65; font-variant-numeric: tabular-nums; }
 .process-popover-content { margin: var(--spacing-md); }
